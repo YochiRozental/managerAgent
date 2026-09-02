@@ -1,0 +1,10 @@
+services:
+  whatsapp-agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./auth:/app/auth
+      - ./google-credentials.json:/app/google-credentials.json:ro
+      - ./data/hf-cache:/app/node_modules/@huggingface/transformers/.cache

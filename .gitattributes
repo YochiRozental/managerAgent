@@ -1,0 +1,5 @@
+# Normalize line endings — repo stores LF, checkout native.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.db binary

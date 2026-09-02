@@ -1,0 +1,8 @@
+node_modules
+dist
+data
+auth
+.env
+google-credentials.json
+.git
+*.log

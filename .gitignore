@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# secrets and local state
+.env
+google-credentials.json
+data/
+auth/
+*.db
+*.db-journal
+
+npm-debug.log*
+*.log

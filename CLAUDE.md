@@ -140,6 +140,7 @@ env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_W
 
 ## 10. הצעד הבא
 
-**מצב 2026-09-02:** הקוד עבר למחשב של יוכי (`managerAgent`), `npm install` רץ, `git init` בוצע (main), זהות git = `YochiRozental` / `yochistudies@gmail.com`, Git Credential Manager פעיל. מסמך האפיון הועתק לריפו כ-`ops-agent-spec.md`. 6 קבצי הזיכרון הוזרקו למחשב הזה.
+**מצב 2026-09-02:** הקוד עבר למחשב של יוכי (`managerAgent`), `npm install` רץ, מסמך האפיון בריפו כ-`ops-agent-spec.md`, 6 קבצי הזיכרון הוזרקו למחשב הזה.
+מאגר פרטי: **https://github.com/YochiRozental/managerAgent** (main, Git Credential Manager). קומיט ראשון נדחף.
 
-**הבא:** (1) מאגר GitHub פרטי + push ראשון. (2) שלב 0 — הקמת שרת ענן והעברת הסוכן הקיים — מחכה לאישור מוטי.
+**הבא:** (1) סמוק-טסט לחיבורים (`test:monday` / `test:google`). (2) שלב 0 — הקמת שרת ענן והעברת הסוכן הקיים — מחכה לאישור מוטי.

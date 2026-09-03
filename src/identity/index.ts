@@ -17,5 +17,6 @@ export {
   resolveUserByMondayId,
   resolveUserByEmail,
   resolveUserByKey,
+  resolveUsersByAssigneeText,
   userCan,
 } from "./resolve.js";

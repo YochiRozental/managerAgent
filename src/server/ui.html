@@ -12,10 +12,10 @@
     --paper:#F5F7F9; --surface:#FFFFFF; --surface-alt:#EEF2F5;
     --ink:#18242F; --ink-soft:#566673; --ink-faint:#8A98A3;
     --line:#D5DCE3; --line-strong:#A9B4BF;
-    --accent:#2E6AAF; --accent-ink:#fff;
+    --accent:#2E6AAF; --accent-ink:#fff; --accent-soft:#e7eef7;
     --bubble-me:#2E6AAF; --bubble-bot:#FFFFFF;
     --overdue:#B23A3A; --overdue-soft:#f6e5e5;
-    --warn:#A96A11; --ok:#2C7A68;
+    --warn:#A96A11; --warn-soft:#f5ecdd; --ok:#2C7A68;
     --shadow:0 1px 2px rgba(24,36,47,.05),0 8px 24px rgba(24,36,47,.06);
   }
   @media (prefers-color-scheme:dark){
@@ -23,10 +23,10 @@
       --paper:#0D141C; --surface:#151F29; --surface-alt:#1B2833;
       --ink:#E3E9EE; --ink-soft:#94A3AF; --ink-faint:#6C7B87;
       --line:#29373F; --line-strong:#3C4C55;
-      --accent:#6FA8DD; --accent-ink:#0D141C;
+      --accent:#6FA8DD; --accent-ink:#0D141C; --accent-soft:#1c2c3c;
       --bubble-me:#2E6AAF; --bubble-bot:#1B2833;
       --overdue:#E4736B; --overdue-soft:#3a2422;
-      --warn:#DBA654; --ok:#5DB6A0;
+      --warn:#DBA654; --warn-soft:#332a1b; --ok:#5DB6A0;
       --shadow:0 1px 2px rgba(0,0,0,.25),0 10px 30px rgba(0,0,0,.3);
     }
   }
@@ -92,6 +92,12 @@
   .pchips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}
   .pchip{font-size:.75rem;padding:.1rem .5rem;border-radius:999px;background:var(--surface-alt);color:var(--ink-soft)}
   .pchip.hot{background:var(--overdue-soft);color:var(--overdue);font-weight:600}
+
+  #notif{margin:.7rem clamp(.8rem,3vw,1.4rem) 0;display:flex;flex-direction:column;gap:.5rem}
+  .nt{background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:.6rem .8rem;font-size:.9rem;white-space:pre-wrap}
+  .nt.briefing{background:var(--accent-soft);border-color:var(--accent)}
+  .nt-head{font-weight:700;font-size:.8rem;margin-bottom:.2rem}
+  #notif .dismiss{align-self:flex-start;font:inherit;font-size:.8rem;background:none;border:none;color:var(--accent);cursor:pointer;padding:0}
 </style>
 </head>
 <body>
@@ -117,6 +123,7 @@
     </div>
   </header>
 
+  <div id="notif"></div>
   <div id="chat"></div>
 
   <form id="composer">
@@ -188,6 +195,25 @@ function startApp() {
   $("#oversightBtn").hidden = !state.user.canOversee;
   loadHistory();
   renderChat();
+  loadNotifications();
+}
+
+const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר" };
+async function loadNotifications() {
+  const box = $("#notif"); box.innerHTML = "";
+  let list;
+  try { ({ notifications: list } = await api("/api/notifications")); }
+  catch { return; }
+  if (!list.length) return;
+  for (const n of list) {
+    const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : ""));
+    d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
+    d.appendChild(document.createTextNode(n.body));
+    box.appendChild(d);
+  }
+  const btn = el("button", "dismiss", "סמן הכל כנקרא");
+  btn.onclick = async () => { await api("/api/notifications/seen", { method:"POST" }); box.innerHTML = ""; };
+  box.appendChild(btn);
 }
 $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST" }); location.reload(); };
 $("#resetBtn").onclick = () => { state.history = []; saveHistory(); renderChat(); };

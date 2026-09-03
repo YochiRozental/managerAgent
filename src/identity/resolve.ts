@@ -47,3 +47,20 @@ export function resolveUserByKey(key: string): IdentifiedUser | null {
 export function userCan(user: IdentifiedUser | null, permission: Permission): boolean {
   return user?.permissions.includes(permission) ?? false;
 }
+
+/**
+ * מקבל טקסט של עמודת אחראי מ-Monday ("מוטי, דוב שפירא") ומחזיר את חברי הצוות המוכרים שבו.
+ * שימושי להסלמה — להפוך "מי אחראי" לשם מזהה שאפשר לשלוח אליו.
+ */
+export function resolveUsersByAssigneeText(text: string): IdentifiedUser[] {
+  if (!text) return [];
+  const parts = text.split(/[,،·/]| ו| and /).map((s) => s.trim()).filter(Boolean);
+  const out: IdentifiedUser[] = [];
+  for (const part of parts) {
+    const member = TEAM_DIRECTORY.find(
+      (m) => m.name === part || m.name.includes(part) || part.includes(m.name),
+    );
+    if (member && !out.some((u) => u.key === member.key)) out.push(identify(member));
+  }
+  return out;
+}

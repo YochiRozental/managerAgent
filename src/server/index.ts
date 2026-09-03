@@ -15,11 +15,17 @@ import {
   TEAM_DIRECTORY,
   type IdentifiedUser,
 } from "../identity/index.js";
+import {
+  listUnseenNotifications,
+  markNotificationsSeen,
+} from "../db/repositories/notifications.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import { getControlScan } from "../ops/controlScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
+import { runDailyControlCycle } from "../ops/escalation.js";
 import { getOversightReport } from "../ops/oversight.js";
+import { startScheduler } from "../ops/scheduler.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
 import { REQUIRE_ACCESS_LINK, verifyAccessToken } from "./accessLink.js";
@@ -177,6 +183,27 @@ const server = createServer(async (req, res) => {
       return send(res, 200, await getControlScan(user));
     }
 
+    if (req.method === "POST" && path === "/api/control/run") {
+      const user = currentUser(req);
+      if (!user || !user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "למוטי בלבד" });
+      }
+      return send(res, 200, await runDailyControlCycle());
+    }
+
+    if (req.method === "GET" && path === "/api/notifications") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      return send(res, 200, { notifications: listUnseenNotifications(user.key) });
+    }
+
+    if (req.method === "POST" && path === "/api/notifications/seen") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      markNotificationsSeen(user.key);
+      return send(res, 200, { ok: true });
+    }
+
     return send(res, 404, { error: "לא נמצא" });
   } catch (err) {
     logger.error(err, `בקשת ${path} נכשלה`);
@@ -205,6 +232,8 @@ function lanAddresses(): string[] {
   }
   return out;
 }
+
+startScheduler();
 
 server.listen(PORT, () => {
   logger.info(`העוזר התפעולי עלה. מקומי: http://localhost:${PORT}`);

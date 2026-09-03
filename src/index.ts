@@ -3,6 +3,7 @@ import { allowedWhatsappJids, env } from "./config/env.js";
 import { transcribeHebrew } from "./integrations/stt/whisper.js";
 import { startLeadEmailWatcher } from "./integrations/google/leadEmailWatcher.js";
 import { connectWhatsApp } from "./integrations/whatsapp/client.js";
+import { startOutboxDrainer } from "./integrations/whatsapp/outboxDrainer.js";
 import { sendText } from "./integrations/whatsapp/send.js";
 import { handleIncomingMessage } from "./pipeline/messageHandler.js";
 import { logger } from "./utils/logger.js";
@@ -60,6 +61,7 @@ async function main() {
   );
 
   startLeadEmailWatcher(sock);
+  startOutboxDrainer(sock);
 }
 
 main();

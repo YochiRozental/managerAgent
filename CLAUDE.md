@@ -134,7 +134,7 @@
 
 `.env` · `google-credentials.json` · `data/google-token.json` · `auth/whatsapp/` (session Baileys) · `data/*.db`.
 כולם ב-`.gitignore`. בשרת החדש — להעביר בנפרד ובבטחה, לא בקוד.
-env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_WHATSAPP_JIDS`, `USER_EMAIL`, `TIMEZONE`, `ENABLE_VOICE_TRANSCRIPTION`.
+env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_WHATSAPP_JIDS`, `USER_EMAIL`, `TIMEZONE`, `ENABLE_VOICE_TRANSCRIPTION`, `PORT` (חלונית, ברירת מחדל 3001), `SESSION_SECRET` (חתימת עוגיית החלונית — חובה בשרת אמיתי).
 
 ---
 
@@ -143,4 +143,15 @@ env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_W
 **מצב 2026-09-02:** הקוד עבר למחשב של יוכי (`managerAgent`), `npm install` רץ, מסמך האפיון בריפו כ-`ops-agent-spec.md`, 6 קבצי הזיכרון הוזרקו למחשב הזה.
 מאגר פרטי: **https://github.com/YochiRozental/managerAgent** (main, Git Credential Manager). קומיט ראשון נדחף.
 
-**הבא:** (1) סמוק-טסט לחיבורים (`test:monday` / `test:google`). (2) שלב 0 — הקמת שרת ענן והעברת הסוכן הקיים — מחכה לאישור מוטי.
+**נעשה 2026-09-02:**
+- סמוק-טסט: `test:monday` + `test:google` ירוקים מהמחשב של יוכי. (נוצר פריט בדיקה 3200750777 בבורד משימות — למחוק ידנית.)
+- **שכבת זהות + תפקיד + הרשאות** נבנתה — `src/identity/` (`directory.ts` ספר 6 המשתמשים, `roles.ts` מטריצת הרשאות, `resolve.ts` זיהוי לפי JID/Monday-id/מייל/key). כל כלי ב-`tools.ts` קיבל `requiredPermission`. ה-orchestrator מקבל `IdentifiedUser`, מסנן כלים לפי הרשאות, מזריק זהות ל-system prompt, ואוכף הרשאה לפני כל הרצה + לפני ביצוע פעולה מאושרת. `messageHandler` מזהה לפי JID. בדיקות: `npm run test:identity`. משתמש לא מזוהה → 0 כלים, אין פעולות. דף לאישור: Artifact `f1e2260e-0877-4115-8726-c21a9ccc88c4`.
+- **המטריצה אושרה מול מוטי (2026-09-02):** 14 הרשאות. owner=הכל · admin (יוכי)=הכל למעט `approve:sensitive` — **אישור כסף/מחיקה/לקוח = מוטי בלבד** · project_manager=9 · finance=4 · planner=4. `task:create` הופרד מ-`task:manage`: **רוחמה כן יוצרת לעצמה משימות המשך**, אך לא מקצה לאחרים ולא מנהלת פרויקט. `create_monday_task` → `task:create`.
+- פתוח: **WhatsApp כרגע רק למוטי**; מספרי WhatsApp של דוב+איתן ומייל של גולדי עדיין חסרים (מייל יוכי `yochi66850@gmail.com` נוסף); ה-`whatsappJid` בספר אמור בהמשך להחליף את `ALLOWED_WHATSAPP_JIDS`; scope פר-פרויקט למנהלי פרויקט מחושב בשלב 4.
+- **שלב 1 — הבקאנד של שלוש התצוגות נבנה ונבדק מול הדאטה האמיתי** (קריאה בלבד). `src/integrations/monday/opsRead.ts` — `fetchUserOpsTasks(mondayUserId)` מושך משימות פתוחות פר-עובד משני מקורות: בורד "משימות 📝" `1550734526` + תת-פריטי "מאגר משימות פרויקטים" (בורד `1550734556`). `src/ops/dashboard.ts` — `getEmployeeDashboard(user)` בונה `myDay` / `needsAttention` / `waitingOnMe` (הגדרות v1, לכיוונון). `client.ts` קיבל `mondayRequest()` עם retry/backoff על rate-limit/complexity. בדיקה: `npm run test:ops -- <key>`. **תובנות מהרצה:** סינון person ב-items_page עובד רק עם `compare_value: ["person-<id>"]`; עמודות board_relation/mirror צריכות `display_value` (ה-`text` מגיע null); עמודות תאריך חוזרות עם שעה — חותכים ל-10 תווים. ספירות אמת: מוטי 292 פתוחות (owner — צריך תצוגת בקרה נפרדת, לא רשימת משימות), דוב 84, איתן 107, רוחמה 18, יוכי 0, גולדי 0.
+- **"מחכים ממני" שופר לזיהוי לפי תלות (אושר מוטי):** `getReverseDependencyMap()` ב-`opsRead.ts` סורק תת-פריטים עם `dependency__1` ובונה מפה הפוכה blocker→dependents (cache 5 דק'). משימה נכנסת ל"מחכים ממני" אם משהו תלוי בה, או שיש דדליין/תקועה. `flags.blocking` על כל משימה.
+- **חלונית העובד נבנתה** — `src/server/` (שרת `node:http` בלי framework). `npm run window` → `http://localhost:3001`. כניסה לפי בחירת שם/מייל → עוגייה חתומה HMAC (`session.ts`, בלי סיסמאות — כלי פנימי, שלב 2 יצטרך אימות אמיתי). API: `/api/users` `/api/login` `/api/logout` `/api/session` `/api/dashboard` `/api/oversight`. UI: `src/server/ui.html` (עמוד יחיד, vanilla JS, RTL, עברית, light+dark). 3 טאבים + חיפוש חי.
+- **שני המצבים של מוטי (אושר):** (א) "המשימות שלי" — בדיוק כמו כל עובד. (ב) "בקרה — כל המשרד" — `src/ops/oversight.ts` `getOversightReport()` (דורש `view:all_work` → מוטי + יוכי): עומס לכל אדם (פתוחות/באיחור/תקועות/חוסם/להיום + 3 הכי-באיחור) + פרויקטים עם דגלים (תקוע/מוקפא/איחור מסירה/משימות באיחור/בלי אחראי). כבד (~30ש' טעינה ראשונה, cache 3 דק'). ספירות אמת: 501 משימות צוות, 41 באיחור, 9 תקועות, 35 פרויקטים מסומנים.
+- **לכיוונון:** פרויקטים "מוקפא" אולי לא צריכים דגל אלא אם יש להם גם משימות באיחור; יש משימות באיחור של 400+ ימים (דאטה ישן ב-Monday) — הבקרה חושפת אותן; טעינת הבקרה איטית (5 עובדים בטור) — אפשר concurrency 2.
+
+**הבא:** (1) שלב 2 — כתיבה מהחלונית (סמן בוצע / הערה / חסם → Monday) + דיווח שעות. (2) שלב 0 — שרת ענן — מחכה לחשבון + אישור מוטי.

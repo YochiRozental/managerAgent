@@ -1,5 +1,6 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 import { createPendingAction, getOpenPendingAction, resolvePendingAction } from "../db/repositories/pendingActions.js";
+import { resolveUserByWhatsappJid, type IdentifiedUser } from "../identity/index.js";
 import { runOrchestrator, type ConversationMessage } from "../integrations/claude/orchestrator.js";
 import { getTool } from "../integrations/claude/tools.js";
 import { synthesizeHebrewVoiceNote } from "../integrations/tts/edgeTts.js";
@@ -31,6 +32,7 @@ async function handlePendingConfirmation(
   jid: string,
   text: string,
   history: ConversationMessage[],
+  user: IdentifiedUser | null,
 ): Promise<string | null> {
   const pending = getOpenPendingAction(jid);
   if (!pending) return null;
@@ -60,6 +62,10 @@ async function handlePendingConfirmation(
   let reply: string;
   try {
     if (!tool) throw new Error(`כלי לא ידוע: ${pending.toolName}`);
+    // בדיקת הרשאה חוזרת רגע לפני הביצוע — הטיוטה נוצרה קודם, והמצב יכול היה להשתנות.
+    if (tool.requiredPermission && !(user?.permissions.includes(tool.requiredPermission) ?? false)) {
+      throw new Error("אין לך הרשאה לבצע את הפעולה הזו");
+    }
     await tool.execute(JSON.parse(pending.toolInput));
     reply = `בוצע ✅ (${pending.draftText})`;
   } catch (err) {
@@ -76,7 +82,14 @@ async function processIncomingMessage(sock: WASocket, jid: string, text: string,
   try {
     const history = conversations.get(jid) ?? [];
 
-    const pendingReply = await handlePendingConfirmation(jid, text, history);
+    // זהות → תפקיד → הרשאות. אם ה-JID עבר את שער ALLOWED_WHATSAPP_JIDS אך אינו בספר הצוות,
+    // נזהה כ-null וה-orchestrator לא יבצע פעולות ולא יחשוף מידע.
+    const user = resolveUserByWhatsappJid(jid);
+    if (!user) {
+      logger.warn({ jid }, "JID מורשה אך לא מזוהה בספר הצוות — עונה בלי הרשאות");
+    }
+
+    const pendingReply = await handlePendingConfirmation(jid, text, history, user);
     if (pendingReply !== null) {
       conversations.set(jid, history.slice(-MAX_HISTORY));
       await sendReply(sock, jid, pendingReply, isVoiceOrigin);
@@ -86,8 +99,8 @@ async function processIncomingMessage(sock: WASocket, jid: string, text: string,
 
     history.push({ role: "user", content: text });
 
-    logger.info({ jid, text }, "מעבד הודעה נכנסת");
-    const result = await runOrchestrator(history);
+    logger.info({ jid, text, user: user?.key ?? "unidentified" }, "מעבד הודעה נכנסת");
+    const result = await runOrchestrator(history, user);
 
     if (result.type === "confirm") {
       const draft = describeAction(result.toolName, result.input);

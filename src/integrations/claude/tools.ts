@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import type { IdentifiedUser, Permission } from "../../identity/index.js";
 import {
   createCalendarEvent,
   deleteCalendarEvent,
@@ -28,6 +29,11 @@ export interface ToolDefinition {
   input_schema: Anthropic.Tool.InputSchema;
   /** Visible to others / hard to undo — must be confirmed by the user before executing (wired in M7). */
   requiresConfirmation: boolean;
+  /**
+   * ההרשאה שהמשתמש חייב להחזיק כדי להריץ את הכלי. אם לא מוגדר — מספיק להיות מזוהה.
+   * האכיפה ב-orchestrator לפני הרצת הכלי.
+   */
+  requiredPermission?: Permission;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute: (input: any) => Promise<unknown>;
 }
@@ -38,6 +44,7 @@ export const tools: ToolDefinition[] = [
     description: "מחזיר את כל הלוחות (boards) הקיימים ב-Monday.com עם השם וה-id של כל אחד.",
     input_schema: { type: "object", properties: {} },
     requiresConfirmation: false,
+    requiredPermission: "view:own_work",
     execute: async () => listBoards(),
   },
   {
@@ -49,6 +56,7 @@ export const tools: ToolDefinition[] = [
       required: ["query"],
     },
     requiresConfirmation: false,
+    requiredPermission: "view:own_work",
     execute: async (input: { query: string }) => findBoardsByName(input.query),
   },
   {
@@ -60,6 +68,7 @@ export const tools: ToolDefinition[] = [
       required: ["boardId"],
     },
     requiresConfirmation: false,
+    requiredPermission: "view:managed_projects",
     execute: async (input: { boardId: string }) => listTasks(input.boardId),
   },
   {
@@ -68,6 +77,7 @@ export const tools: ToolDefinition[] = [
       "מחזיר את כל המשימות הפתוחות (לא 'בוצע') שמוקצות למשתמש (בעל חשבון ה-API) בלוח המשימות הראשי ותתי-הפריטים שלו - מקביל לתצוגת 'המשימות שלי' (My Work) במאנדיי, אך ממוקד רק במשימות אמיתיות (לא בלוחות לקוחות/עסקאות/לידים, ששם 'אחראי' פירושו בעלים ולא משימה). כל משימה כוללת סטטוס ותאריך יעד אם קיימים, ממוין לפי תאריך יעד. להשתמש כשמבקשים 'מה יש לי לעשות', 'המשימות שלי', 'מה על הפרק' וכדומה.",
     input_schema: { type: "object", properties: {} },
     requiresConfirmation: false,
+    requiredPermission: "view:own_work",
     execute: async () => listMyWork(),
   },
   {
@@ -82,6 +92,7 @@ export const tools: ToolDefinition[] = [
       required: ["boardId", "itemName"],
     },
     requiresConfirmation: false,
+    requiredPermission: "task:create",
     execute: async (input: { boardId: string; itemName: string }) => createTask(input.itemName, input.boardId),
   },
   {
@@ -97,6 +108,7 @@ export const tools: ToolDefinition[] = [
       required: ["boardId", "itemId", "statusLabel"],
     },
     requiresConfirmation: false,
+    requiredPermission: "task:update_own",
     execute: async (input: { boardId: string; itemId: string; statusLabel: string }) =>
       updateTaskStatus(input.boardId, input.itemId, input.statusLabel),
   },
@@ -113,6 +125,7 @@ export const tools: ToolDefinition[] = [
       required: ["boardId", "itemId", "dateISO"],
     },
     requiresConfirmation: false,
+    requiredPermission: "task:manage",
     execute: async (input: { boardId: string; itemId: string; dateISO: string }) =>
       setTaskDueDate(input.boardId, input.itemId, input.dateISO),
   },
@@ -125,6 +138,7 @@ export const tools: ToolDefinition[] = [
       required: ["itemId"],
     },
     requiresConfirmation: true,
+    requiredPermission: "task:manage",
     execute: async (input: { itemId: string }) => deleteTask(input.itemId),
   },
   {
@@ -136,6 +150,7 @@ export const tools: ToolDefinition[] = [
       required: ["query"],
     },
     requiresConfirmation: false,
+    requiredPermission: "view:own_work",
     execute: async (input: { query: string }) => findUsersByName(input.query),
   },
   {
@@ -151,6 +166,7 @@ export const tools: ToolDefinition[] = [
       required: ["boardId", "itemId", "userId"],
     },
     requiresConfirmation: false,
+    requiredPermission: "task:manage",
     execute: async (input: { boardId: string; itemId: string; userId: string }) =>
       assignTask(input.boardId, input.itemId, input.userId),
   },
@@ -166,6 +182,7 @@ export const tools: ToolDefinition[] = [
       required: ["itemId", "body"],
     },
     requiresConfirmation: false,
+    requiredPermission: "task:update_own",
     execute: async (input: { itemId: string; body: string }) => addUpdate(input.itemId, input.body),
   },
   {
@@ -186,6 +203,7 @@ export const tools: ToolDefinition[] = [
       required: ["firstName"],
     },
     requiresConfirmation: false,
+    requiredPermission: "lead:manage",
     execute: async (input: CreateLeadInput) => createLead(input),
   },
   {
@@ -200,6 +218,7 @@ export const tools: ToolDefinition[] = [
       required: ["timeMinISO", "timeMaxISO"],
     },
     requiresConfirmation: false,
+    requiredPermission: "view:own_work",
     execute: async (input: { timeMinISO: string; timeMaxISO: string }) => listCalendarEvents(input),
   },
   {
@@ -222,6 +241,7 @@ export const tools: ToolDefinition[] = [
       required: ["summary", "startISO", "endISO"],
     },
     requiresConfirmation: true,
+    requiredPermission: "task:manage",
     execute: async (input: {
       summary: string;
       description?: string;
@@ -247,6 +267,7 @@ export const tools: ToolDefinition[] = [
       required: ["eventId"],
     },
     requiresConfirmation: true,
+    requiredPermission: "task:manage",
     execute: async (input: UpdateEventInput) => updateCalendarEvent(input),
   },
   {
@@ -258,6 +279,7 @@ export const tools: ToolDefinition[] = [
       required: ["eventId"],
     },
     requiresConfirmation: true,
+    requiredPermission: "task:manage",
     execute: async (input: { eventId: string }) => deleteCalendarEvent(input.eventId),
   },
   {
@@ -273,13 +295,29 @@ export const tools: ToolDefinition[] = [
       required: ["to", "subject", "text"],
     },
     requiresConfirmation: true,
+    requiredPermission: "client:communicate",
     execute: async (input: { to: string[]; subject: string; text: string }) =>
       sendEmail({ to: input.to, subject: input.subject, text: input.text }),
   },
 ];
 
-export function toAnthropicTools(): Anthropic.Tool[] {
-  return tools.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+/**
+ * מחזיר את הכלים שה-AI רשאי להשתמש בהם עבור המשתמש הנתון — כדי שלא יציע פעולה שתיחסם ממילא.
+ * - אובייקט משתמש → מסונן להרשאותיו.
+ * - null → משתמש לא מזוהה, אין כלים בכלל.
+ * - undefined (הושמט) → הקשר פנימי/רקע מהימן, כל הכלים.
+ * האכיפה הסופית ב-orchestrator לפני הרצה בפועל.
+ */
+export function toAnthropicTools(user?: IdentifiedUser | null): Anthropic.Tool[] {
+  let allowed: ToolDefinition[];
+  if (user === undefined) {
+    allowed = tools;
+  } else if (user === null) {
+    allowed = [];
+  } else {
+    allowed = tools.filter((t) => !t.requiredPermission || user.permissions.includes(t.requiredPermission));
+  }
+  return allowed.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
 }
 
 export function getTool(name: string): ToolDefinition | undefined {

@@ -72,6 +72,18 @@
   .chip.st{background:var(--overdue-soft);color:var(--stuck);font-weight:600}
   .blocking{margin-top:.5rem;padding-top:.45rem;border-top:1px dashed var(--line);font-size:.8rem;color:var(--ink-soft)}
   .blocking b{color:var(--ink)}
+  .actions{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem;padding-top:.5rem;border-top:1px solid var(--line)}
+  .act{font:inherit;font-size:.8rem;padding:.22rem .6rem;border:1.5px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);border-radius:999px;cursor:pointer}
+  .act:hover{border-color:var(--accent);color:var(--accent)}
+  .act.done:hover{border-color:var(--ok);color:var(--ok)}
+  .act.blocker:hover{border-color:var(--overdue);color:var(--overdue)}
+  .act:disabled{opacity:.5;cursor:default}
+  .composer{margin-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap}
+  .composer textarea{flex:1 1 12rem;min-height:2.4rem;font:inherit;font-size:.85rem;padding:.35rem .5rem;border:1.5px solid var(--line-strong);border-radius:4px;background:var(--surface);color:var(--ink);resize:vertical}
+  .composer .send{background:var(--accent);border-color:var(--accent);color:#fff}
+  #toast{position:fixed;inset-inline:0;bottom:1.2rem;margin:0 auto;width:max-content;max-width:90vw;background:var(--ink);color:var(--paper);padding:.55rem 1.1rem;border-radius:999px;font-size:.88rem;box-shadow:var(--shadow);opacity:0;transform:translateY(.5rem);transition:opacity .2s,transform .2s;pointer-events:none;z-index:20}
+  #toast.show{opacity:1;transform:none}
+  #toast.err{background:var(--overdue)}
 
   /* oversight */
   .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);margin:1rem 0}
@@ -107,6 +119,8 @@
   <div class="names" id="names"></div>
   <p class="err" id="loginErr"></p>
 </div>
+
+<div id="toast"></div>
 
 <div id="app" hidden>
   <header>
@@ -233,6 +247,58 @@ async function load(force) {
 
 function chip(txt, cls) { return el("span", "chip" + (cls ? " " + cls : ""), txt); }
 
+let toastTimer;
+function toast(msg, isErr) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ""; }, 3000);
+}
+
+async function doUpdate(card, payload) {
+  card.querySelectorAll(".act").forEach(b => b.disabled = true);
+  try {
+    const r = await api("/api/task/update", { method: "POST", body: JSON.stringify(payload) });
+    toast(r.message || "עודכן");
+    await load(true);
+  } catch (e) {
+    toast(e.message, true);
+    card.querySelectorAll(".act").forEach(b => b.disabled = false);
+  }
+}
+
+function actionBar(card, t) {
+  const bar = el("div", "actions");
+  const composer = el("div", "composer"); composer.hidden = true;
+  const ta = el("textarea");
+  const send = el("button", "act send", "שליחה");
+  composer.append(ta, send);
+
+  const mk = (label, cls, onClick) => { const b = el("button", "act " + cls, label); b.onclick = onClick; return b; };
+
+  bar.appendChild(mk("✓ סיימתי", "done", () => doUpdate(card, { action: "done", source: t.source, itemId: t.itemId })));
+  if (t.status !== "בעבודה")
+    bar.appendChild(mk("▶ בעבודה", "", () => doUpdate(card, { action: "state", source: t.source, itemId: t.itemId, label: "בעבודה" })));
+  bar.appendChild(mk("⚠ חסם", "blocker", () => openComposer("blocker", "מה חוסם?")));
+  bar.appendChild(mk("✎ הערה", "", () => openComposer("note", "הערה למשימה")));
+
+  function openComposer(action, placeholder) {
+    composer.dataset.action = action;
+    ta.placeholder = placeholder;
+    composer.hidden = !composer.hidden;
+    if (!composer.hidden) ta.focus();
+  }
+  send.onclick = () => {
+    const note = ta.value.trim();
+    const action = composer.dataset.action;
+    if (action === "note" && !note) { toast("כתוב/י הערה", true); return; }
+    doUpdate(card, { action, source: t.source, itemId: t.itemId, note });
+  };
+
+  card.append(bar, composer);
+}
+
 function taskCard(t) {
   const f = t.flags;
   const card = el("article", "task" + (f.stuck ? " st" : f.overdue ? " ov" : f.critical ? " cr" : ""));
@@ -260,6 +326,8 @@ function taskCard(t) {
     ));
     card.appendChild(b);
   }
+
+  if (state.user.canUpdate) actionBar(card, t);
   return card;
 }
 

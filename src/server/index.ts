@@ -1,9 +1,9 @@
 /**
- * שרת החלונית (שלב 1) — מגיש את מנוע שלוש התצוגות + תצוגת הבקרה של מוטי, ואת ה-UI עצמו.
+ * שרת החלונית — מגיש את מנוע שלוש התצוגות + תצוגת הבקרה של מוטי + עדכון משימות, ואת ה-UI עצמו.
  *
  * הרצה:  npm run window   →   http://localhost:3001
  *
- * קריאה בלבד מ-Monday. כל בקשת API עוברת דרך שכבת הזהות: readSession → resolveUserByKey → הרשאות.
+ * כל בקשת API עוברת דרך שכבת הזהות: readSession → resolveUserByKey → הרשאות.
  */
 
 import { readFile } from "node:fs/promises";
@@ -14,8 +14,10 @@ import {
   TEAM_DIRECTORY,
   type IdentifiedUser,
 } from "../identity/index.js";
+import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { getOversightReport } from "../ops/oversight.js";
+import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
 import { clearSessionCookie, createSessionCookie, readSession } from "./session.js";
 
@@ -101,6 +103,21 @@ const server = createServer(async (req, res) => {
       return send(res, 200, dash);
     }
 
+    if (req.method === "POST" && path === "/api/task/update") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const body = await readJsonBody(req);
+      const result = await updateTask(user, {
+        action: String(body.action ?? "") as TaskUpdateAction,
+        source: String(body.source ?? "") as OpsTaskSource,
+        itemId: String(body.itemId ?? ""),
+        label: body.label ? String(body.label) : undefined,
+        note: body.note ? String(body.note) : undefined,
+      });
+      logger.info({ user: user.key, itemId: body.itemId, action: body.action }, "עדכון משימה מהחלונית");
+      return send(res, 200, result);
+    }
+
     if (req.method === "GET" && path === "/api/oversight") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
@@ -125,6 +142,7 @@ function publicUser(user: IdentifiedUser) {
     role: user.role,
     roleDescription: user.roleDescription,
     canOversee: user.permissions.includes("view:all_work"),
+    canUpdate: user.permissions.includes("task:update_own") && !!user.mondayUserId,
     hasMondayTasks: !!user.mondayUserId,
   };
 }

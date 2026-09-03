@@ -17,6 +17,7 @@ import {
 } from "../identity/index.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
+import { getControlScan } from "../ops/controlScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { getOversightReport } from "../ops/oversight.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
@@ -165,6 +166,15 @@ const server = createServer(async (req, res) => {
       }
       const report = await getOversightReport(user);
       return send(res, 200, report);
+    }
+
+    if (req.method === "GET" && path === "/api/control") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (!user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "מנוע הבקרה למוטי בלבד" });
+      }
+      return send(res, 200, await getControlScan(user));
     }
 
     return send(res, 404, { error: "לא נמצא" });

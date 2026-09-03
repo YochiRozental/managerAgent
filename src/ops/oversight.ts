@@ -1,24 +1,17 @@
 /**
- * תצוגת הבקרה של מוטי (שלב 1) — "מה קורה בכל המשרד ואיפה כל אחד אוחז".
+ * תצוגת הבקרה של מוטי — "מה קורה בכל המשרד ואיפה כל אחד אוחז".
  *
  * מוטי מקבל שני מצבים בחלונית:
- *   1. "היום שלי" — בדיוק כמו כל עובד (התזכורות על המשימות שלו).       → getEmployeeDashboard
- *   2. "בקרה" — כל הצוות: עומס לכל אדם + פרויקטים שדורשים תשומת לב.     → getOversightReport (כאן)
+ *   1. הצ'אט — כמו כל עובד.
+ *   2. "בקרה" — כל הצוות: הממצאים היזומים (controlScan) + עומס לכל אדם + פרויקטים דורשי תשומת לב.
  *
- * דורש הרשאת view:all_work (מוטי, ובזמן פיתוח גם יוכי).
- * גרסה ראשונה — נטענת לפי דרישה ונשמרת ב-cache קצר כי היא כבדה (סורקת את המשימות של כל הצוות).
+ * דורש הרשאת view:all_work (מוטי, ובזמן פיתוח גם יוכי). מחושב מעל getOfficeState (cache 3 דק').
  */
 
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
-import { TEAM_DIRECTORY, userCan, type IdentifiedUser } from "../identity/index.js";
-import {
-  fetchActiveProjects,
-  fetchUserOpsTasks,
-  getReverseDependencyMap,
-  type DependentRef,
-} from "../integrations/monday/opsRead.js";
-import { enrichTasks, type DashboardTask } from "./dashboard.js";
+import { userCan, type IdentifiedUser } from "../identity/index.js";
+import { getOfficeState } from "./officeState.js";
 
 export interface PersonWorkload {
   key: string;
@@ -44,46 +37,26 @@ export interface OversightReport {
   projects: ProjectRow[];
 }
 
-let cache: { at: number; report: OversightReport } | null = null;
-const TTL_MS = 3 * 60_000;
-
-/** מריץ משימות בטור עם השהיה קטנה — עדיף איטי מאשר להתנגש בתקרת המורכבות של Monday. */
-async function mapSerial<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = [];
-  for (const item of items) out.push(await fn(item));
-  return out;
-}
-
 export async function getOversightReport(user: IdentifiedUser): Promise<OversightReport> {
   if (!userCan(user, "view:all_work")) {
     throw new Error("אין למשתמש הרשאה לתצוגת הבקרה של כל המשרד");
   }
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.report;
 
-  const now = DateTime.now().setZone(env.TIMEZONE);
-  const members = TEAM_DIRECTORY.filter((m) => m.mondayUserId);
+  const { now, generatedAt, perPerson, projects: activeProjects } = await getOfficeState();
+  const today = now.startOf("day");
 
-  const reverseDeps = await getReverseDependencyMap().catch(() => new Map<string, DependentRef[]>());
-
-  const perPerson = await mapSerial(members, async (m) => {
-    const tasks = await fetchUserOpsTasks(m.mondayUserId!);
-    const enriched = enrichTasks(tasks, now, reverseDeps);
-    return { member: m, enriched };
-  });
-
-  // עומס לכל אדם
-  const people: PersonWorkload[] = perPerson.map(({ member, enriched }) => {
-    const overdue = enriched.filter((t) => t.flags.overdue);
+  const people: PersonWorkload[] = perPerson.map(({ member, tasks }) => {
+    const overdue = tasks.filter((t) => t.flags.overdue);
     return {
       key: member.key,
       name: member.name,
       role: member.role,
       counts: {
-        open: enriched.length,
+        open: tasks.length,
         overdue: overdue.length,
-        stuck: enriched.filter((t) => t.flags.stuck).length,
-        blocking: enriched.filter((t) => t.flags.blocking.length > 0).length,
-        dueToday: enriched.filter((t) => t.flags.dueToday).length,
+        stuck: tasks.filter((t) => t.flags.stuck).length,
+        blocking: tasks.filter((t) => t.flags.blocking.length > 0).length,
+        dueToday: tasks.filter((t) => t.flags.dueToday).length,
       },
       worst: [...overdue]
         .sort((a, b) => b.flags.daysOverdue - a.flags.daysOverdue)
@@ -100,20 +73,16 @@ export async function getOversightReport(user: IdentifiedUser): Promise<Oversigh
 
   // צבירת מצב משימות פר-פרויקט (לפי שם הפרויקט שמופיע במשימה)
   const byProject = new Map<string, { open: number; overdue: number; stuck: number }>();
-  for (const { enriched } of perPerson) {
-    for (const t of enriched) {
+  for (const { tasks } of perPerson) {
+    for (const t of tasks) {
       if (t.source !== "project_stage") continue;
-      const key = t.context;
-      const agg = byProject.get(key) ?? { open: 0, overdue: 0, stuck: 0 };
+      const agg = byProject.get(t.context) ?? { open: 0, overdue: 0, stuck: 0 };
       agg.open++;
       if (t.flags.overdue) agg.overdue++;
       if (t.flags.stuck) agg.stuck++;
-      byProject.set(key, agg);
+      byProject.set(t.context, agg);
     }
   }
-
-  const today = now.startOf("day");
-  const activeProjects = await fetchActiveProjects();
 
   const projects: ProjectRow[] = [];
   for (const p of activeProjects) {
@@ -146,8 +115,8 @@ export async function getOversightReport(user: IdentifiedUser): Promise<Oversigh
     return sev(a) - sev(b);
   });
 
-  const report: OversightReport = {
-    generatedAt: now.toISO() ?? "",
+  return {
+    generatedAt,
     totals: {
       openTasks: people.reduce((s, p) => s + p.counts.open, 0),
       overdue: people.reduce((s, p) => s + p.counts.overdue, 0),
@@ -157,7 +126,4 @@ export async function getOversightReport(user: IdentifiedUser): Promise<Oversigh
     people,
     projects,
   };
-
-  cache = { at: Date.now(), report };
-  return report;
 }

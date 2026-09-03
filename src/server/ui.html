@@ -272,18 +272,50 @@ $("#input").addEventListener("input", (e) => {
 $("#oversightBtn").onclick = async () => {
   $("#oversight").hidden = false;
   const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען את מצב כל המשרד… (כמה שניות)</p>";
-  try { renderOversight(await api("/api/oversight")); }
-  catch (e) { body.innerHTML = ""; body.appendChild(el("p", "err", e.message)); }
+  try {
+    const [scan, over] = await Promise.all([api("/api/control"), api("/api/oversight")]);
+    body.innerHTML = "";
+    renderControl(scan);
+    renderOversight(over);
+  } catch (e) { body.innerHTML = ""; body.appendChild(el("p", "err", e.message)); }
 };
 $("#ovClose").onclick = () => { $("#oversight").hidden = true; };
 
-function renderOversight(r) {
-  const b = $("#ovBody"); b.innerHTML = "";
-  const t = r.totals;
+const SEV = { critical:"🔴", high:"🟠", normal:"⚪" };
+function renderControl(r) {
+  const b = $("#ovBody");
+  b.appendChild(el("div", "sec-title", "בקרה יזומה — מה דורש תשומת לב"));
   b.appendChild(el("p", "role",
-    `סה"כ ${t.openTasks} משימות פתוחות בצוות · ${t.overdue} באיחור · ${t.stuck} תקועות · ${t.projectsFlagged} פרויקטים דורשים תשומת לב`));
+    `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
+  if (r.forManager.length === 0) {
+    b.appendChild(el("p", "empty", "אין ממצאים קריטיים או דחופים 👌"));
+  }
+  for (const f of r.forManager) {
+    const box = el("div", "proj");
+    box.style.borderInlineStartColor = f.severity === "critical" ? "var(--overdue)" : "var(--warn)";
+    const top = el("div", "proj-top");
+    top.append(el("span", null, `${SEV[f.severity]} ${f.headline}`), el("span", "role", f.who));
+    box.appendChild(top);
+    box.appendChild(el("div", "proj-sub", f.detail));
+    if (f.url) { const a = el("a", null, "פתח ב-Monday ↗"); a.href = f.url; a.target = "_blank"; a.style.fontSize = ".82rem"; box.appendChild(a); }
+    b.appendChild(box);
+  }
+  const rest = r.findings.filter(f => f.severity === "normal");
+  if (rest.length) {
+    const d = el("details"); d.style.margin = ".6rem 0 1rem";
+    d.appendChild(el("summary", "role", `עוד ${rest.length} ממצאים (לא דחופים)`));
+    for (const f of rest) d.appendChild(el("div", "proj-sub", `${SEV[f.severity]} ${f.headline} — ${f.who}`));
+    b.appendChild(d);
+  }
+}
 
+function renderOversight(r) {
+  const b = $("#ovBody");
+  const t = r.totals;
   b.appendChild(el("div", "sec-title", "עומס לכל אדם"));
+  b.appendChild(el("p", "role",
+    `סה"כ ${t.openTasks} משימות פתוחות בצוות · ${t.overdue} באיחור · ${t.stuck} תקועות`));
+
   const sc = el("div", "scroll"); const tbl = el("table");
   tbl.innerHTML = "<thead><tr><th>שם</th><th>פתוחות</th><th>באיחור</th><th>תקועות</th><th>חוסם אחרים</th><th>להיום</th></tr></thead>";
   const tb = el("tbody");

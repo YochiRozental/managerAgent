@@ -13,7 +13,8 @@
     "test:ops": "tsx scripts/test-ops.ts",
     "test:monday": "tsx scripts/test-monday.ts",
     "test:google": "tsx scripts/test-google.ts",
-    "test:whatsapp": "tsx scripts/test-whatsapp-echo.ts"
+    "test:whatsapp": "tsx scripts/test-whatsapp-echo.ts",
+    "test:control": "tsx scripts/test-control.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

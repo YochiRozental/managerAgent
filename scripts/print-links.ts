@@ -6,7 +6,7 @@
  */
 import { allAccessLinks } from "../src/server/accessLink.js";
 
-const base = process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3001}`;
+const base = process.env.PUBLIC_URL || `http://localhost:${process.env.PORT || 3001}`;
 
 console.log(`\nקישורי כניסה אישיים — בסיס: ${base}\n`);
 for (const { name, link } of allAccessLinks(base)) {

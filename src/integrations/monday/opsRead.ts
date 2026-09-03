@@ -34,6 +34,8 @@ export interface OpsTask {
   url: string;
   /** שם הפרויקט, או "משימת משרד" למשימה כללית */
   context: string;
+  /** מזהה פריט הפרויקט ב-Monday (רק למשימת פרויקט מקושרת) — לחישוב "הפעולה הבאה" של הפרויקט */
+  projectId?: string;
   /** שם השלב (רק למשימת פרויקט) */
   stageName?: string;
   /** תווית סטטוס גולמית; "" אם לא הוגדר */
@@ -82,7 +84,11 @@ type RawItem = {
 };
 
 /** ל-board_relation/mirror צריך את display_value — text מגיע null גם כשיש פריטים מקושרים. */
-const REL_FRAGMENT = `... on BoardRelationValue { display_value } ... on MirrorValue { display_value }`;
+const REL_FRAGMENT = `... on BoardRelationValue { display_value linked_item_ids } ... on MirrorValue { display_value }`;
+
+function linkedIds(values: RawColumnValue[], id: string): string[] {
+  return values.find((c) => c.id === id)?.linked_item_ids ?? [];
+}
 
 /** משימות משרד כלליות של המשתמש (בורד 1550734526). */
 async function fetchGeneralTasks(mondayUserId: string): Promise<OpsTask[]> {
@@ -127,12 +133,14 @@ async function fetchGeneralTasks(mondayUserId: string): Promise<OpsTask[]> {
     const status = cv(item.column_values, "status");
     if (GENERAL_DONE.has(status)) continue;
     const project = cv(item.column_values, "board_relation_mkqzzfgt");
+    const projectId = linkedIds(item.column_values, "board_relation_mkqzzfgt")[0];
     out.push({
       source: "general",
       itemId: item.id,
       name: item.name,
       url: `${MONDAY_HOST}/boards/${BOARD_GENERAL_TASKS}/pulses/${item.id}`,
       context: project || "משימת משרד",
+      projectId,
       status,
       priority: cv(item.column_values, "priority") || undefined,
       dueDate: dateOnly(cv(item.column_values, "date4")),
@@ -189,12 +197,14 @@ async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsTask[]> 
     const status = cv(item.column_values, "color85__1");
     if (STAGE_TASK_DONE.has(status)) continue;
     const project = item.parent_item ? cv(item.parent_item.column_values, "connect_boards4__1") : "";
+    const projectId = item.parent_item ? linkedIds(item.parent_item.column_values, "connect_boards4__1")[0] : undefined;
     out.push({
       source: "project_stage",
       itemId: item.id,
       name: item.name,
       url: `${MONDAY_HOST}/boards/${BOARD_PROJECT_STAGE_TASKS}/pulses/${item.id}`,
       context: project || "פרויקט לא מקושר",
+      projectId,
       stageName: item.parent_item?.name,
       status,
       priority: cv(item.column_values, "color8__1") || undefined,
@@ -380,4 +390,112 @@ export async function fetchActiveProjects(): Promise<ProjectMeta[]> {
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// "הפעולה הבאה" של פרויקט — מחושבת, לא נשמרת (CLAUDE.md סעיף 6)
+//
+// המשימה הפתוחה הראשונה בסריקת השלבים לפי מספר ("שלב N") ובתוך כל שלב לפי הסדר,
+// מדלגים על מה שהושלם/לא רלוונטי ועל משימה שתלויה במשימה שעדיין לא הושלמה.
+//
+// הערה מהדאטה האמיתי: סטטוס השלב עצמו כמעט תמיד ריק — לכן לא מסתמכים עליו, רק על
+// סטטוס תת-המשימות. הסדר שמתקבל מ-items(ids:) אינו סדר השלבים — חובה למיין לפי המספר.
+// ---------------------------------------------------------------------------
+
+export interface ProjectNextAction {
+  projectId: string;
+  stageName: string;
+  taskId: string;
+  taskName: string;
+  status: string;
+  assignees: string;
+  dueDate?: string;
+}
+
+const stageNumber = (name: string): number => {
+  const m = name.match(/שלב\s*0*(\d+)/);
+  return m ? parseInt(m[1]!, 10) : 999;
+};
+
+const nextActionCache = new Map<string, { at: number; value: ProjectNextAction | null }>();
+const NEXT_ACTION_TTL_MS = 5 * 60_000;
+
+export async function getProjectNextAction(projectId: string): Promise<ProjectNextAction | null> {
+  if (!/^\d+$/.test(projectId)) return null;
+  const cached = nextActionCache.get(projectId);
+  if (cached && Date.now() - cached.at < NEXT_ACTION_TTL_MS) return cached.value;
+
+  const proj = await mondayRequest<{ items: { column_values: RawColumnValue[] }[] }>(
+    `query ($id: [ID!]) {
+      items(ids: $id) {
+        column_values(ids: ["link_to____________9__1"]) { id text ${REL_FRAGMENT} }
+      }
+    }`,
+    { id: [projectId] },
+  );
+  const stageIds = proj.items[0] ? linkedIds(proj.items[0].column_values, "link_to____________9__1") : [];
+  if (stageIds.length === 0) {
+    nextActionCache.set(projectId, { at: Date.now(), value: null });
+    return null;
+  }
+
+  type Sub = { id: string; name: string; column_values: RawColumnValue[] };
+  const res = await mondayRequest<{ items: { id: string; name: string; subitems: Sub[] }[] }>(
+    `query ($ids: [ID!]) {
+      items(ids: $ids) {
+        id
+        name
+        subitems {
+          id
+          name
+          column_values(ids: ["color85__1", "person", "date__1", "dependency__1"]) {
+            id text
+            ... on DependencyValue { linked_item_ids }
+          }
+        }
+      }
+    }`,
+    { ids: stageIds.slice(0, 100) },
+  );
+
+  const stages = [...res.items].sort((a, b) => stageNumber(a.name) - stageNumber(b.name));
+
+  const isDone = (sub: Sub) => STAGE_TASK_DONE.has(cv(sub.column_values, "color85__1"));
+  const doneIds = new Set<string>();
+  const allSubIds = new Set<string>();
+  for (const st of stages) {
+    for (const sub of st.subitems) {
+      allSubIds.add(sub.id);
+      if (isDone(sub)) doneIds.add(sub.id);
+    }
+  }
+  const isBlocked = (sub: Sub) =>
+    linkedIds(sub.column_values, "dependency__1").some((d) => allSubIds.has(d) && !doneIds.has(d));
+  const firstOpen = (st: (typeof stages)[number]) =>
+    st.subitems.find((sub) => !doneIds.has(sub.id) && !isBlocked(sub));
+
+  // הפרויקט "נמצא" בשלב הגבוה ביותר שיש בו משימה שהושלמה — שם מתחילים לחפש את הצעד הבא.
+  // ככה מדלגים על משימות יתומות פתוחות בשלבים מוקדמים. אם אין בכלל משימות שהושלמו — מהשלב הראשון.
+  const lastTouched = stages.reduce((acc, st, i) => (st.subitems.some(isDone) ? i : acc), -1);
+  const startIdx = lastTouched >= 0 ? lastTouched : 0;
+
+  let value: ProjectNextAction | null = null;
+  for (let i = startIdx; i < stages.length; i++) {
+    const st = stages[i]!;
+    const sub = firstOpen(st);
+    if (!sub) continue;
+    value = {
+      projectId,
+      stageName: st.name,
+      taskId: sub.id,
+      taskName: sub.name,
+      status: cv(sub.column_values, "color85__1"),
+      assignees: cv(sub.column_values, "person"),
+      dueDate: dateOnly(cv(sub.column_values, "date__1")),
+    };
+    break;
+  }
+
+  nextActionCache.set(projectId, { at: Date.now(), value });
+  return value;
 }

@@ -15,7 +15,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
 import type { IdentifiedUser } from "../identity/index.js";
-import { fetchUserOpsTasks, type OpsTask } from "../integrations/monday/opsRead.js";
+import {
+  fetchUserOpsTasks,
+  getProjectNextAction,
+  type OpsTask,
+} from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
 import { updateTask } from "./actions.js";
 import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
@@ -43,7 +47,7 @@ function systemPrompt(user: IdentifiedUser): string {
     "דבר עברית, קצר, חם ולעניין. אתה בצד של העובד — עוזר לו לנהל את היום, לא בודק אותו.",
     "",
     "איך לעבוד:",
-    "• כשהעובד אומר 'בוקר טוב' / 'מה יש לי' / 'מה על הפרק' — קרא get_today_tasks והצג בקצרה: כמה משימות, מה באיחור, מה דחוף. אל תשפוך רשימה ארוכה — הבלט את החשוב.",
+    "• כשהעובד אומר 'בוקר טוב' / 'מה יש לי' / 'מה על הפרק' — קרא get_today_tasks. הצג למשתמש את השדה 'briefing' שחוזר משם כמעט כמו שהוא — מותר להוסיף ברכה קצרה בהתאם לשעה ולסיים ב'על מה מתחילים?', אבל אל תשנה את רשימת הפרויקטים, את שורות 'עכשיו:' ואת סימוני האיחור/הקריטי. אל תוסיף 'דורש תשומת לב' / 'מחכים ממני' אלא אם ביקשו.",
     "• כשהעובד מדווח שביצע / התקדם / שינה משהו — זהה את המשימה עם find_task (לפי מה שהוא תיאר). אם יש כמה התאמות — הצג אותן ושאל איזו. אם אין — אמור זאת ובקש תיאור מדויק יותר.",
     "• אחרי שזיהית — עדכן ב-Monday: mark_done כשסיים, set_status ל'בעבודה' כשהתחיל, add_note לעדכון ביניים. אשר בקצרה מה עדכנת ואז שאל: 'מה הבא שאתה עובד עליו?'",
     "• 'תקוע' / 'חסום' / 'מחכה ל...' — קרא report_blocker עם תיאור החסם.",
@@ -63,6 +67,85 @@ function fmtTask(t: DashboardTask): string {
   if (t.priority?.includes("קריטי")) bits.push("קריטי");
   if (t.flags.blocking.length) bits.push(`חוסם ${t.flags.blocking.length}`);
   return `[${t.source}:${t.itemId}] ${t.name} — ${bits.join(" · ")}`;
+}
+
+/**
+ * תדריך "היום שלי" מקובץ לפי פרויקט, עם שורת "עכשיו:" לכל פרויקט (הפעולה הבאה המחושבת).
+ * נבנה בשרת כדי שהתצוגה תהיה עקבית — הצ'אט רק מגיש אותו.
+ */
+async function buildTodayBriefing(myDay: DashboardTask[], user: IdentifiedUser): Promise<string> {
+  if (myDay.length === 0) return "אין משימות לטיפול היום 👌";
+
+  // קיבוץ: פרויקט מקושר (projectId) → קבוצה; משימות משרד כלליות → דלי נפרד
+  const groups = new Map<string, { label: string; projectId?: string; tasks: DashboardTask[] }>();
+  const officeTasks: DashboardTask[] = [];
+  for (const t of myDay) {
+    const hasProject = t.context && t.context !== "משימת משרד" && t.context !== "פרויקט לא מקושר";
+    if (t.projectId) {
+      const g = groups.get(t.projectId) ?? { label: t.context, projectId: t.projectId, tasks: [] };
+      g.tasks.push(t);
+      groups.set(t.projectId, g);
+    } else if (hasProject) {
+      const key = "name:" + t.context;
+      const g = groups.get(key) ?? { label: t.context, tasks: [] };
+      g.tasks.push(t);
+      groups.set(key, g);
+    } else {
+      officeTasks.push(t);
+    }
+  }
+
+  const flagStr = (t: DashboardTask): string => {
+    const bits: string[] = [];
+    if (t.flags.critical) bits.push("🔴 קריטי");
+    if (t.flags.overdue) bits.push(`באיחור ${t.flags.daysOverdue} ימים`);
+    else if (t.flags.dueToday) bits.push("להיום");
+    return bits.join(" · ");
+  };
+
+  const myTaskIds = new Set(myDay.map((t) => t.itemId));
+  const lines: string[] = [`היום על הפרק — ${myDay.length} משימות:`];
+
+  // "הפעולה הבאה" לכל הפרויקטים במקביל — אחרת "בוקר טוב" של מנהל פרויקט עם כמה פרויקטים איטי מדי.
+  const groupList = [...groups.values()];
+  const nextActions = await Promise.all(
+    groupList.map((g) => (g.projectId ? getProjectNextAction(g.projectId).catch(() => null) : Promise.resolve(null))),
+  );
+
+  for (let i = 0; i < groupList.length; i++) {
+    const g = groupList[i]!;
+    // המשימה הבולטת בקבוצה קובעת את סימון הדגל של הפרויקט
+    const lead = [...g.tasks].sort(
+      (a, b) => Number(b.flags.critical) - Number(a.flags.critical) || b.flags.daysOverdue - a.flags.daysOverdue,
+    )[0]!;
+    const fl = flagStr(lead);
+    lines.push("", `📁 ${g.label}${fl ? ` — ${fl}` : ""}`);
+
+    const na = nextActions[i];
+    if (na) {
+      let suffix = "";
+      if (!na.assignees) suffix = " (עדיין לא משויך)";
+      else if (!na.assignees.includes(user.name)) suffix = ` (אצל ${na.assignees})`;
+      else if (myTaskIds.has(na.taskId)) suffix = " (זו המשימה שלך)";
+      lines.push(`   עכשיו: ${na.taskName} · ${na.stageName}${suffix}`);
+    } else {
+      // אין פרויקט מקושר / לא הצלחנו לחשב — נופלים למשימה של העובד עצמו
+      lines.push(`   עכשיו: ${g.tasks[0]!.name}${g.tasks[0]!.stageName ? ` · ${g.tasks[0]!.stageName}` : ""}`);
+    }
+    // אם לעובד יש עוד משימות באותו פרויקט מעבר לצעד הנוכחי — נזכיר בקצרה
+    const extra = g.tasks.filter((t) => t.name !== (na?.taskName ?? g.tasks[0]!.name));
+    if (extra.length) lines.push(`   גם שלך כאן: ${extra.map((t) => t.name).join(" · ")}`);
+  }
+
+  if (officeTasks.length) {
+    lines.push("", "🗂️ משימות משרד:");
+    for (const t of officeTasks) {
+      const fl = flagStr(t);
+      lines.push(`   • ${t.name}${fl ? ` — ${fl}` : ""}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 function matchScore(task: OpsTask, q: string): number {
@@ -89,6 +172,9 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
   const now = DateTime.now().setZone(env.TIMEZONE);
   let tasks = await fetchUserOpsTasks(user.mondayUserId);
   const actions: string[] = [];
+  // התדריך של "בוקר טוב" מוגש מילה במילה — מודלים נוטים לקצר/לנסח מחדש, וכאן חשוב שהמבנה
+  // (פרויקט → 'עכשיו:') יישאר בדיוק כמו שבנינו אותו.
+  let capturedBriefing: string | null = null;
 
   const refresh = async () => {
     tasks = await fetchUserOpsTasks(user.mondayUserId!);
@@ -99,13 +185,21 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
   const tools: ToolDef[] = [
     {
       name: "get_today_tasks",
-      description: "מחזיר את המשימות של המשתמש להיום: מה לטפל בו היום, מה דורש תשומת לב, ומה אחרים מחכים לו.",
+      description:
+        "מחזיר את המשימות של המשתמש להיום: מה לטפל בו היום, מה דורש תשומת לב, ומה אחרים מחכים לו. לכל פרויקט שמופיע במשימות של היום מצורף גם 'הצעד הנוכחי בפרויקט' — המשימה/תת-המשימה שצריך לעשות עכשיו באותו פרויקט לפי סדר השלבים.",
       input_schema: { type: "object", properties: {} },
       run: async () => {
         const v = buildDashboardViews(tasks, now);
+        const briefing = await buildTodayBriefing(v.myDay, user);
+        capturedBriefing = briefing;
         return {
-          counts: { today: v.myDay.length, needsAttention: v.needsAttention.length, waitingOnMe: v.waitingOnMe.length, totalOpen: tasks.length },
-          today: v.myDay.map(fmtTask),
+          counts: {
+            today: v.myDay.length,
+            needsAttention: v.needsAttention.length,
+            waitingOnMe: v.waitingOnMe.length,
+            totalOpen: tasks.length,
+          },
+          briefing,
           needsAttention: v.needsAttention.slice(0, 8).map(fmtTask),
           waitingOnMe: v.waitingOnMe.slice(0, 8).map(fmtTask),
         };
@@ -250,6 +344,13 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
     const toolUses = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
     if (toolUses.length === 0) {
       const text = res.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
+      // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא, עם ברכה קצרה,
+      // במקום הניסוח החופשי של המודל (שנוטה לאבד את מבנה 'עכשיו:' לכל פרויקט).
+      if (capturedBriefing && actions.length === 0) {
+        const hour = now.hour;
+        const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
+        return { reply: `${greet} ${user.name} ☀️\n\n${capturedBriefing}\n\nעל מה מתחילים?`, actions };
+      }
       return { reply: text, actions };
     }
 

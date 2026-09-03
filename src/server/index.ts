@@ -8,6 +8,7 @@
 
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { networkInterfaces } from "node:os";
 import {
   resolveUserByEmail,
   resolveUserByKey,
@@ -185,8 +186,20 @@ function publicUser(user: IdentifiedUser) {
   };
 }
 
+function lanAddresses(): string[] {
+  const out: string[] = [];
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family === "IPv4" && !a.internal) out.push(`http://${a.address}:${PORT}`);
+    }
+  }
+  return out;
+}
+
 server.listen(PORT, () => {
-  logger.info(`העוזר התפעולי עלה על http://localhost:${PORT}`);
+  logger.info(`העוזר התפעולי עלה. מקומי: http://localhost:${PORT}`);
+  const lan = lanAddresses();
+  if (lan.length) logger.info(`ברשת המשרד: ${lan.join(" · ")}`);
   logger.info(
     REQUIRE_ACCESS_LINK
       ? "כניסה: קישור אישי בלבד (npm run links). מסך בחירת השם מכובה."

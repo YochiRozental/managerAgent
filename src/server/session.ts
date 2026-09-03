@@ -7,6 +7,7 @@
  * העוגייה חתומה ב-HMAC כדי שלא ניתן לזייף זהות ע"י עריכת הערך בדפדפן.
  */
 
+import "dotenv/config";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { logger } from "../utils/logger.js";
 

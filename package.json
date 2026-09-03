@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts",
     "window": "tsx src/server/index.ts",
     "window:watch": "tsx watch src/server/index.ts",
+    "links": "tsx scripts/print-links.ts",
     "test:identity": "tsx scripts/test-identity.ts",
     "test:ops": "tsx scripts/test-ops.ts",
     "test:monday": "tsx scripts/test-monday.ts",

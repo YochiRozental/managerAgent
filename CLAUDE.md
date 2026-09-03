@@ -134,7 +134,7 @@
 
 `.env` · `google-credentials.json` · `data/google-token.json` · `auth/whatsapp/` (session Baileys) · `data/*.db`.
 כולם ב-`.gitignore`. בשרת החדש — להעביר בנפרד ובבטחה, לא בקוד.
-env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_WHATSAPP_JIDS`, `USER_EMAIL`, `TIMEZONE`, `ENABLE_VOICE_TRANSCRIPTION`, `PORT` (חלונית, ברירת מחדל 3001), `SESSION_SECRET` (חתימת עוגיית החלונית — חובה בשרת אמיתי).
+env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_WHATSAPP_JIDS`, `USER_EMAIL`, `TIMEZONE`, `ENABLE_VOICE_TRANSCRIPTION`, `PORT` (חלונית, 3001), `SESSION_SECRET` (עוגיית הפעלה), `ACCESS_SECRET` (חתימת קישורי כניסה אישיים), `PUBLIC_URL` (כתובת חיצונית לבניית הקישורים), `REQUIRE_ACCESS_LINK` (true = כניסה רק דרך קישור). כל הסודות כבר ב-`.env` המקומי (ערכים אקראיים נוצרו 2026-09-03).
 
 ---
 
@@ -160,4 +160,7 @@ env keys: `ANTHROPIC_API_KEY`, `MONDAY_API_TOKEN`, `MONDAY_BOARD_ID`, `ALLOWED_W
 
 - **"הפעולה הבאה" של פרויקט — נבנתה ומחוברת לצ'אט (מוטי ביקש).** `getProjectNextAction(projectId)` ב-`opsRead.ts`: project → `link_to____________9__1` (שלבים) → subitems; ממיין שלבים לפי מספר ("שלב N") כי סדר `items(ids:)` לא אמין; **סטטוס השלב עצמו כמעט תמיד ריק** — קובעים "השלב הנוכחי" = השלב הגבוה ביותר שיש בו משימה שהושלמה, ומשם המשימה הפתוחה הראשונה שאינה חסומה ע"י תלות. `OpsTask.projectId` נוסף (משני הבורדים). `src/ops/chat.ts` `buildTodayBriefing()` — תדריך "בוקר טוב" מקובץ לפי פרויקט, שורת "עכשיו: <משימה> · <שלב>" לכל פרויקט (+"זו המשימה שלך" / "אצל X" / "עדיין לא משויך"), משימות משרד בנפרד. **המודל נטה לנסח מחדש ולאבד את המבנה — לכן `runOpsChat` מגיש את התדריך מילה במילה** (עם ברכה לפי השעה) כשלא בוצעו עדכונים. cache 5 דק' פר-פרויקט. נבדק בדפדפן: רוחמה ודוב מקבלים תדריך מקובץ עם "עכשיו:" לכל פרויקט. איטי בטעינה קרה (~17ש' למנהל פרויקט — סריקת reverse-deps + כמה next-actions; מהיר עם cache).
 
-**הבא:** (1) שלב 4 — מנוע הבקרה (סריקות יזומות, הסלמה, תדריך בוקר אוטומטי ל-WhatsApp). (2) הרחבת הצ'אט — "מה הבא?" אחרי סיום שלב, יצירת משימות המשך. (3) שלב 0 — שרת ענן — מחכה לחשבון + אישור מוטי. **אופטימיזציה:** `getReverseDependencyMap` סורק את כל בורד תת-המשימות — אפשר לצמצם.
+- **הרצה רציפה + קישורים אישיים (מוטי ביקש, 2026-09-03).** `src/server/accessLink.ts` — קישור magic-link לכל עובד: `/?t=<token>` כאשר `token = base64url(key).hmac(key, ACCESS_SECRET)` (דטרמיניסטי, קבוע, מתבטל ע"י החלפת הסוד). `GET /` בודק `?t=`, מזהה, שם עוגייה, מגיש (ה-token נשאר ב-URL לסימנייה; ה-UI מנקה אותו מסרגל הכתובת אחרי כניסה). `npm run links` מדפיס קישור לכל אחד. `REQUIRE_ACCESS_LINK=true` → מכבה את מסך בחירת השם ו-`/api/login`. `accessLink.ts` + `session.ts` קוראים `dotenv/config` בעצמם (print-links לא עובר דרך env.ts). **PM2:** `ecosystem.config.cjs` קיבל אפליקציית `ops-window`; רץ עכשיו תחת PM2 על המחשב של יוכי (`pm2 save` בוצע). שרידות ריבוט ב-Windows דורשת `pm2-installer` (הרצה כשירות) — עדיין לא נעשה.
+- **פתוח — נגישות מבחוץ:** כרגע `localhost:3001` בלבד. כדי שהעובדים ייכנסו מהטלפון צריך כתובת חיצונית: שרת ענן (שלב 0), או Cloudflare Tunnel מהמחשב של יוכי כביניים.
+
+**הבא:** (1) נגישות חיצונית — שרת ענן או tunnel. (2) שלב 4 — מנוע הבקרה (סריקות יזומות, הסלמה, תדריך בוקר אוטומטי ל-WhatsApp). (3) הרחבת הצ'אט — "מה הבא?" אחרי סיום שלב, יצירת משימות המשך. **אופטימיזציה:** `getReverseDependencyMap` סורק את כל בורד תת-המשימות.

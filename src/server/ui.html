@@ -145,8 +145,16 @@ const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", pl
 /* ---------- login ---------- */
 async function showLogin() {
   $("#app").hidden = true; $("#login").hidden = false;
-  const { users } = await api("/api/users");
   const box = $("#names"); box.innerHTML = "";
+  let users;
+  try {
+    ({ users } = await api("/api/users"));
+  } catch (e) {
+    // כניסה רק דרך קישור אישי
+    $("#login").querySelector("p:not(.brand)").textContent = "הכניסה למערכת היא דרך קישור אישי.";
+    $("#loginErr").textContent = "פנה/י ליוכי לקבלת הקישור שלך.";
+    return;
+  }
   for (const u of users) {
     const b = el("button", "name-btn");
     b.append(document.createTextNode(u.name), el("small", null, roleHe[u.role] || u.role));
@@ -311,8 +319,13 @@ function renderOversight(r) {
 
 /* ---------- boot ---------- */
 (async () => {
-  try { const { user } = await api("/api/session"); state.user = user; startApp(); }
-  catch { showLogin(); }
+  try {
+    const { user } = await api("/api/session");
+    state.user = user;
+    // מנקים את ה-token מסרגל הכתובת אחרי כניסה מוצלחת (הקישור המקורי עדיין יעבוד בפתיחה מחדש)
+    if (location.search.includes("t=")) history.replaceState(null, "", location.pathname);
+    startApp();
+  } catch { showLogin(); }
 })();
 </script>
 </body>

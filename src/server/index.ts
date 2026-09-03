@@ -20,6 +20,7 @@ import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { getOversightReport } from "../ops/oversight.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
+import { REQUIRE_ACCESS_LINK, verifyAccessToken } from "./accessLink.js";
 import { clearSessionCookie, createSessionCookie, readSession } from "./session.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -69,10 +70,24 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
-      return send(res, 200, UI_HTML);
+      // קישור כניסה אישי: /?t=<token> → מזהה ומכניס ישירות. ה-token נשאר ב-URL כדי שהסימנייה
+      // תמשיך לעבוד גם אחרי שהעוגייה פגה.
+      const token = url.searchParams.get("t");
+      const headers: Record<string, string> = {};
+      if (token) {
+        const userKey = verifyAccessToken(token);
+        if (userKey) {
+          headers["Set-Cookie"] = createSessionCookie(userKey);
+          logger.info({ user: userKey }, "כניסה דרך קישור אישי");
+        }
+      }
+      return send(res, 200, UI_HTML, headers);
     }
 
     if (req.method === "GET" && path === "/api/users") {
+      if (REQUIRE_ACCESS_LINK) {
+        return send(res, 403, { error: "כניסה למערכת היא דרך קישור אישי בלבד", requireLink: true });
+      }
       // רשימת השמות למסך הכניסה. כלי פנימי — הרשימה לא סודית.
       return send(res, 200, {
         users: TEAM_DIRECTORY.map((m) => ({ key: m.key, name: m.name, role: m.role })),
@@ -80,6 +95,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && path === "/api/login") {
+      if (REQUIRE_ACCESS_LINK) {
+        return send(res, 403, { error: "כניסה למערכת היא דרך קישור אישי בלבד", requireLink: true });
+      }
       const body = await readJsonBody(req);
       const user = resolveByIdentifier(String(body.identifier ?? ""));
       if (!user) return send(res, 401, { error: "לא זוהה משתמש בשם או במייל הזה" });
@@ -168,6 +186,10 @@ function publicUser(user: IdentifiedUser) {
 }
 
 server.listen(PORT, () => {
-  logger.info(`חלונית העובד עלתה על http://localhost:${PORT}`);
-  logger.info(`משתמשים לכניסה: ${TEAM_DIRECTORY.map((m) => m.name).join(" · ")}`);
+  logger.info(`העוזר התפעולי עלה על http://localhost:${PORT}`);
+  logger.info(
+    REQUIRE_ACCESS_LINK
+      ? "כניסה: קישור אישי בלבד (npm run links). מסך בחירת השם מכובה."
+      : "כניסה: בחירת שם או קישור אישי. להפעלת קישור-בלבד — REQUIRE_ACCESS_LINK=true.",
+  );
 });

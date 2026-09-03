@@ -15,6 +15,7 @@ import {
   type IdentifiedUser,
 } from "../identity/index.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
+import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { getOversightReport } from "../ops/oversight.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
@@ -101,6 +102,25 @@ const server = createServer(async (req, res) => {
       if (!user) return send(res, 401, { error: "לא מחובר" });
       const dash = await getEmployeeDashboard(user);
       return send(res, 200, dash);
+    }
+
+    if (req.method === "POST" && path === "/api/chat") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const body = await readJsonBody(req);
+      const raw = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
+      // מגבילים היסטוריה כדי לשמור על עלות/מהירות; שומרים את הזוגות האחרונים.
+      const messages = raw
+        .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
+        .slice(-20);
+      if (messages.length === 0 || messages[messages.length - 1]!.role !== "user") {
+        return send(res, 400, { error: "אין הודעה" });
+      }
+      const result = await runOpsChat(user, messages);
+      if (result.actions.length) {
+        logger.info({ user: user.key, actions: result.actions }, "עדכוני משימה מהצ'אט");
+      }
+      return send(res, 200, result);
     }
 
     if (req.method === "POST" && path === "/api/task/update") {

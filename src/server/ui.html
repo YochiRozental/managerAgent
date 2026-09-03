@@ -3,20 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>חלונית הצוות — גוטליב אדריכלים</title>
+<title>העוזר התפעולי — גוטליב אדריכלים</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Heebo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-  :root {
+  :root{
     --paper:#F5F7F9; --surface:#FFFFFF; --surface-alt:#EEF2F5;
     --ink:#18242F; --ink-soft:#566673; --ink-faint:#8A98A3;
     --line:#D5DCE3; --line-strong:#A9B4BF;
-    --accent:#2E6AAF; --accent-soft:#e7eef7;
+    --accent:#2E6AAF; --accent-ink:#fff;
+    --bubble-me:#2E6AAF; --bubble-bot:#FFFFFF;
     --overdue:#B23A3A; --overdue-soft:#f6e5e5;
-    --stuck:#A12B2B;
-    --warn:#A96A11; --warn-soft:#f5ecdd;
-    --ok:#2C7A68;
+    --warn:#A96A11; --ok:#2C7A68;
     --shadow:0 1px 2px rgba(24,36,47,.05),0 8px 24px rgba(24,36,47,.06);
   }
   @media (prefers-color-scheme:dark){
@@ -24,135 +23,111 @@
       --paper:#0D141C; --surface:#151F29; --surface-alt:#1B2833;
       --ink:#E3E9EE; --ink-soft:#94A3AF; --ink-faint:#6C7B87;
       --line:#29373F; --line-strong:#3C4C55;
-      --accent:#6FA8DD; --accent-soft:#1c2c3c;
-      --overdue:#E4736B; --overdue-soft:#3a2422; --stuck:#E4736B;
-      --warn:#DBA654; --warn-soft:#332a1b; --ok:#5DB6A0;
+      --accent:#6FA8DD; --accent-ink:#0D141C;
+      --bubble-me:#2E6AAF; --bubble-bot:#1B2833;
+      --overdue:#E4736B; --overdue-soft:#3a2422;
+      --warn:#DBA654; --ok:#5DB6A0;
       --shadow:0 1px 2px rgba(0,0,0,.25),0 10px 30px rgba(0,0,0,.3);
     }
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--paper);color:var(--ink);font-family:"Heebo","Assistant",system-ui,sans-serif;line-height:1.6}
+  html,body{height:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:"Heebo","Assistant",system-ui,sans-serif;line-height:1.6;display:flex;flex-direction:column}
   a{color:var(--accent)}
-  .wrap{max-width:860px;margin:0 auto;padding:0 clamp(.8rem,3vw,1.5rem) 4rem}
   [hidden]{display:none!important}
-
-  /* header */
-  header{position:sticky;top:0;z-index:5;background:var(--paper);border-bottom:1.5px solid var(--line-strong);padding-top:1rem}
-  .brand{font-family:"IBM Plex Mono",monospace;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0}
-  .whoami{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap;margin:.2rem 0 .1rem}
-  h1{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:clamp(1.4rem,4vw,2rem);margin:0}
-  .role{color:var(--ink-soft);font-size:.9rem}
-  .meta-row{display:flex;justify-content:space-between;align-items:center;gap:1rem;font-size:.82rem;color:var(--ink-faint);padding:.4rem 0 .7rem}
   button.link{background:none;border:none;color:var(--accent);cursor:pointer;font:inherit;font-size:.82rem;padding:0}
 
-  /* mode + tabs */
-  .modes{display:flex;gap:.4rem;margin:.6rem 0}
-  .mode-btn{flex:0 0 auto;padding:.3rem .9rem;border:1.5px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);border-radius:999px;cursor:pointer;font:inherit;font-size:.85rem}
-  .mode-btn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
-  .tabs{display:flex;gap:.3rem;border-bottom:1.5px solid var(--line-strong);margin-top:.4rem;overflow-x:auto}
-  .tab{flex:0 0 auto;padding:.55rem .8rem;background:none;border:none;border-bottom:2.5px solid transparent;color:var(--ink-soft);cursor:pointer;font:inherit;font-size:.95rem;white-space:nowrap}
-  .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
-  .tab .count{display:inline-block;min-width:1.4em;padding:0 .35em;margin-inline-start:.3em;border-radius:999px;background:var(--surface-alt);font-size:.75rem;font-weight:600}
-  .tab[data-k="needsAttention"] .count.hot{background:var(--overdue-soft);color:var(--overdue)}
-
-  /* task list */
-  .list{padding:1rem 0;display:flex;flex-direction:column;gap:.6rem}
-  .empty{color:var(--ink-faint);padding:2rem 0;text-align:center}
-  .task{background:var(--surface);border:1px solid var(--line);border-inline-start:3px solid var(--line-strong);border-radius:3px;padding:.7rem .9rem;box-shadow:var(--shadow)}
-  .task.ov{border-inline-start-color:var(--overdue)}
-  .task.st{border-inline-start-color:var(--stuck)}
-  .task.cr{border-inline-start-color:var(--warn)}
-  .task-title{font-weight:600;display:flex;gap:.4rem;align-items:baseline}
-  .task-title a{margin-inline-start:auto;text-decoration:none;font-size:.9rem;flex:0 0 auto}
-  .task-ctx{font-size:.83rem;color:var(--ink-soft);margin-top:.1rem}
-  .chips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.45rem}
-  .chip{font-size:.75rem;padding:.1rem .5rem;border-radius:999px;background:var(--surface-alt);color:var(--ink-soft);white-space:nowrap}
-  .chip.ov{background:var(--overdue-soft);color:var(--overdue);font-weight:600}
-  .chip.cr{background:var(--warn-soft);color:var(--warn);font-weight:600}
-  .chip.st{background:var(--overdue-soft);color:var(--stuck);font-weight:600}
-  .blocking{margin-top:.5rem;padding-top:.45rem;border-top:1px dashed var(--line);font-size:.8rem;color:var(--ink-soft)}
-  .blocking b{color:var(--ink)}
-  .actions{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem;padding-top:.5rem;border-top:1px solid var(--line)}
-  .act{font:inherit;font-size:.8rem;padding:.22rem .6rem;border:1.5px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);border-radius:999px;cursor:pointer}
-  .act:hover{border-color:var(--accent);color:var(--accent)}
-  .act.done:hover{border-color:var(--ok);color:var(--ok)}
-  .act.blocker:hover{border-color:var(--overdue);color:var(--overdue)}
-  .act:disabled{opacity:.5;cursor:default}
-  .composer{margin-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap}
-  .composer textarea{flex:1 1 12rem;min-height:2.4rem;font:inherit;font-size:.85rem;padding:.35rem .5rem;border:1.5px solid var(--line-strong);border-radius:4px;background:var(--surface);color:var(--ink);resize:vertical}
-  .composer .send{background:var(--accent);border-color:var(--accent);color:#fff}
-  #toast{position:fixed;inset-inline:0;bottom:1.2rem;margin:0 auto;width:max-content;max-width:90vw;background:var(--ink);color:var(--paper);padding:.55rem 1.1rem;border-radius:999px;font-size:.88rem;box-shadow:var(--shadow);opacity:0;transform:translateY(.5rem);transition:opacity .2s,transform .2s;pointer-events:none;z-index:20}
-  #toast.show{opacity:1;transform:none}
-  #toast.err{background:var(--overdue)}
-
-  /* oversight */
-  .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);margin:1rem 0}
-  table{border-collapse:collapse;width:100%;font-size:.88rem}
-  th,td{text-align:right;padding:.5rem .7rem;border-bottom:1px solid var(--line);white-space:nowrap}
-  thead th{background:var(--surface-alt);font-size:.78rem;color:var(--ink-soft);border-bottom:1.5px solid var(--line-strong)}
-  tbody tr:last-child td{border-bottom:0}
-  td.num{font-variant-numeric:tabular-nums;text-align:center}
-  td.num.hot{color:var(--overdue);font-weight:700}
-  .sec-title{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.15rem;margin:1.6rem 0 .3rem}
-  .proj{background:var(--surface);border:1px solid var(--line);border-inline-start:3px solid var(--warn);border-radius:3px;padding:.6rem .9rem;margin-bottom:.5rem;box-shadow:var(--shadow)}
-  .proj-top{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
-  .proj-sub{font-size:.82rem;color:var(--ink-soft);margin-top:.15rem}
-
-  /* login */
+  /* ---------- login ---------- */
   .login{max-width:420px;margin:12vh auto 0;padding:0 1.2rem;text-align:center}
-  .login h1{margin-bottom:.2rem}
+  .brand{font-family:"IBM Plex Mono",monospace;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0}
+  .login h1{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:2rem;margin:.2rem 0 .1rem}
   .login p{color:var(--ink-soft);margin-top:0}
   .names{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:1.6rem 0}
   .name-btn{padding:.8rem;border:1.5px solid var(--line-strong);background:var(--surface);border-radius:4px;cursor:pointer;font:inherit;font-size:1rem;box-shadow:var(--shadow)}
   .name-btn:hover{border-color:var(--accent);color:var(--accent)}
   .name-btn small{display:block;color:var(--ink-faint);font-size:.72rem;margin-top:.15rem}
   .err{color:var(--overdue);font-size:.85rem;min-height:1.2em}
-  .spin{color:var(--ink-faint);padding:2rem;text-align:center}
+
+  /* ---------- app shell ---------- */
+  #app{flex:1;display:flex;flex-direction:column;min-height:0;max-width:780px;width:100%;margin:0 auto}
+  header{border-bottom:1.5px solid var(--line-strong);padding:.7rem clamp(.8rem,3vw,1.4rem) .6rem;background:var(--paper)}
+  .h-row{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap}
+  h1{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.25rem;margin:0}
+  .role{color:var(--ink-soft);font-size:.82rem;flex:1 1 100%}
+  .h-actions{display:flex;gap:.9rem;margin-inline-start:auto}
+
+  /* ---------- chat ---------- */
+  #chat{flex:1;overflow-y:auto;padding:1rem clamp(.8rem,3vw,1.4rem);display:flex;flex-direction:column;gap:.7rem}
+  .msg{max-width:80%;padding:.55rem .85rem;border-radius:14px;white-space:pre-wrap;word-break:break-word;box-shadow:var(--shadow);font-size:.95rem}
+  .msg.me{align-self:flex-start;background:var(--bubble-me);color:#fff;border-bottom-right-radius:4px}
+  .msg.bot{align-self:flex-end;background:var(--bubble-bot);border:1px solid var(--line);border-bottom-left-radius:4px}
+  .msg.bot.intro{border-style:dashed}
+  .acts{align-self:flex-end;max-width:80%;display:flex;flex-direction:column;gap:.25rem}
+  .act-note{font-size:.78rem;color:var(--ok);background:var(--surface-alt);border-radius:8px;padding:.2rem .6rem}
+  .typing{align-self:flex-end;color:var(--ink-faint);font-size:.85rem;padding:.3rem .5rem}
+  .chips{display:flex;gap:.4rem;flex-wrap:wrap;align-self:flex-end;margin-top:.2rem}
+  .chip{font:inherit;font-size:.82rem;padding:.25rem .7rem;border:1.5px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);border-radius:999px;cursor:pointer}
+  .chip:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* ---------- composer ---------- */
+  form{display:flex;gap:.5rem;padding:.7rem clamp(.8rem,3vw,1.4rem);border-top:1.5px solid var(--line-strong);background:var(--paper)}
+  #input{flex:1;font:inherit;font-size:.95rem;padding:.55rem .8rem;border:1.5px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--ink);resize:none;max-height:6rem}
+  #send{flex:0 0 auto;font:inherit;padding:0 1.1rem;border:none;border-radius:999px;background:var(--accent);color:var(--accent-ink);cursor:pointer;font-weight:600}
+  #send:disabled{opacity:.5;cursor:default}
+
+  /* ---------- oversight overlay ---------- */
+  #oversight{position:fixed;inset:0;background:var(--paper);overflow-y:auto;padding:1.2rem clamp(.8rem,4vw,2rem) 3rem;z-index:10}
+  #oversight .close{position:sticky;top:0;margin-inline-start:auto;display:block}
+  .ov-wrap{max-width:860px;margin:0 auto}
+  .sec-title{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.15rem;margin:1.6rem 0 .4rem}
+  .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow)}
+  table{border-collapse:collapse;width:100%;font-size:.88rem}
+  th,td{text-align:right;padding:.5rem .7rem;border-bottom:1px solid var(--line);white-space:nowrap}
+  thead th{background:var(--surface-alt);font-size:.78rem;color:var(--ink-soft);border-bottom:1.5px solid var(--line-strong)}
+  td.num{font-variant-numeric:tabular-nums;text-align:center}
+  td.num.hot{color:var(--overdue);font-weight:700}
+  .proj{background:var(--surface);border:1px solid var(--line);border-inline-start:3px solid var(--warn);border-radius:3px;padding:.6rem .9rem;margin-bottom:.5rem;box-shadow:var(--shadow)}
+  .proj-top{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
+  .proj-sub{font-size:.82rem;color:var(--ink-soft);margin-top:.15rem}
+  .pchips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}
+  .pchip{font-size:.75rem;padding:.1rem .5rem;border-radius:999px;background:var(--surface-alt);color:var(--ink-soft)}
+  .pchip.hot{background:var(--overdue-soft);color:var(--overdue);font-weight:600}
 </style>
 </head>
 <body>
 
 <div id="login" class="login" hidden>
   <p class="brand">גוטליב אדריכלים · סוכן תפעול</p>
-  <h1>חלונית הצוות</h1>
+  <h1>העוזר התפעולי</h1>
   <p>מי את/ה?</p>
   <div class="names" id="names"></div>
   <p class="err" id="loginErr"></p>
 </div>
 
-<div id="toast"></div>
-
 <div id="app" hidden>
   <header>
-    <div class="wrap">
-      <p class="brand">גוטליב אדריכלים · סוכן תפעול</p>
-      <div class="whoami">
-        <h1 id="userName">—</h1>
-        <span class="role" id="userRole"></span>
-      </div>
-      <div class="meta-row">
-        <span id="updated"></span>
-        <span>
-          <button class="link" id="refreshBtn">רענון</button>
-          &nbsp;·&nbsp;
-          <button class="link" id="logoutBtn">יציאה</button>
-        </span>
-      </div>
-      <div class="modes" id="modes" hidden>
-        <button class="mode-btn" data-mode="mine" aria-pressed="true">המשימות שלי</button>
-        <button class="mode-btn" data-mode="oversight" aria-pressed="false">בקרה — כל המשרד</button>
-      </div>
-      <div class="tabs" id="tabs" hidden>
-        <button class="tab" data-k="myDay" aria-selected="true">היום שלי <span class="count">0</span></button>
-        <button class="tab" data-k="needsAttention" aria-selected="false">דורש תשומת לב <span class="count">0</span></button>
-        <button class="tab" data-k="waitingOnMe" aria-selected="false">מחכים ממני <span class="count">0</span></button>
-      </div>
+    <div class="h-row">
+      <h1 id="userName">—</h1>
+      <span class="h-actions">
+        <button class="link" id="oversightBtn" hidden>בקרה</button>
+        <button class="link" id="resetBtn">שיחה חדשה</button>
+        <button class="link" id="logoutBtn">יציאה</button>
+      </span>
+      <span class="role" id="userRole"></span>
     </div>
   </header>
 
-  <div class="wrap">
-    <div id="content" class="spin">טוען…</div>
-  </div>
+  <div id="chat"></div>
+
+  <form id="composer">
+    <textarea id="input" rows="1" placeholder="כתוב/י הודעה…" autocomplete="off"></textarea>
+    <button id="send" type="submit">שליחה</button>
+  </form>
+</div>
+
+<div id="oversight" hidden>
+  <button class="link close" id="ovClose">✕ סגירה</button>
+  <div class="ov-wrap" id="ovBody"></div>
 </div>
 
 <script>
@@ -160,24 +135,21 @@ const $ = (s, r=document) => r.querySelector(s);
 const el = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 async function api(path, opts) {
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || ("שגיאה " + r.status));
-  return data;
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ("שגיאה " + r.status));
+  return d;
 }
-
-const state = { user: null, mode: "mine", tab: "myDay", dash: null };
+const state = { user: null, history: [], busy: false };
+const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
 
 /* ---------- login ---------- */
 async function showLogin() {
-  $("#app").hidden = true;
-  $("#login").hidden = false;
+  $("#app").hidden = true; $("#login").hidden = false;
   const { users } = await api("/api/users");
-  const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
   const box = $("#names"); box.innerHTML = "";
   for (const u of users) {
     const b = el("button", "name-btn");
-    b.appendChild(document.createTextNode(u.name));
-    b.appendChild(el("small", null, roleHe[u.role] || u.role));
+    b.append(document.createTextNode(u.name), el("small", null, roleHe[u.role] || u.role));
     b.onclick = () => login(u.key);
     box.appendChild(b);
   }
@@ -186,221 +158,161 @@ async function login(identifier) {
   $("#loginErr").textContent = "";
   try {
     const { user } = await api("/api/login", { method:"POST", body: JSON.stringify({ identifier }) });
-    state.user = user;
-    startApp();
+    state.user = user; startApp();
   } catch (e) { $("#loginErr").textContent = e.message; }
 }
 
-/* ---------- app shell ---------- */
+/* ---------- history persistence ---------- */
+const histKey = () => "opschat:" + state.user.key;
+function loadHistory() {
+  try { state.history = JSON.parse(localStorage.getItem(histKey()) || "[]"); }
+  catch { state.history = []; }
+}
+function saveHistory() {
+  try { localStorage.setItem(histKey(), JSON.stringify(state.history.slice(-40))); } catch {}
+}
+
+/* ---------- app ---------- */
 function startApp() {
-  $("#login").hidden = true;
-  $("#app").hidden = false;
+  $("#login").hidden = true; $("#app").hidden = false;
   $("#userName").textContent = state.user.name;
   $("#userRole").textContent = state.user.roleDescription || "";
-  $("#modes").hidden = !state.user.canOversee;
-  $("#tabs").hidden = false;
-  load();
+  $("#oversightBtn").hidden = !state.user.canOversee;
+  loadHistory();
+  renderChat();
 }
 $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST" }); location.reload(); };
-$("#refreshBtn").onclick = () => load(true);
+$("#resetBtn").onclick = () => { state.history = []; saveHistory(); renderChat(); };
 
-$("#modes").addEventListener("click", (e) => {
-  const btn = e.target.closest(".mode-btn"); if (!btn) return;
-  state.mode = btn.dataset.mode;
-  for (const b of $("#modes").children) b.setAttribute("aria-pressed", String(b === btn));
-  $("#tabs").hidden = state.mode === "oversight";
-  load();
-});
-$("#tabs").addEventListener("click", (e) => {
-  const btn = e.target.closest(".tab"); if (!btn) return;
-  state.tab = btn.dataset.k;
-  for (const b of $("#tabs").children) b.setAttribute("aria-selected", String(b === btn));
-  renderDash();
-});
+function bubble(role, text) {
+  const b = el("div", "msg " + (role === "user" ? "me" : "bot"));
+  if (role === "user") { b.textContent = text; }
+  else {
+    // רינדור מינימלי: **מודגש** בלבד, שאר הטקסט כפשוטו
+    const esc = s => s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+    b.innerHTML = esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  }
+  $("#chat").appendChild(b);
+  return b;
+}
+function scrollDown() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
 
-/* ---------- data ---------- */
-async function load(force) {
-  const c = $("#content");
-  c.className = "spin";
-  c.textContent = state.mode === "oversight" ? "טוען את מצב כל המשרד… (כמה שניות)" : "טוען…";
-  try {
-    if (state.mode === "oversight") {
-      state.report = await api("/api/oversight");
-      renderOversight();
-    } else {
-      state.dash = await api("/api/dashboard");
-      for (const k of ["myDay","needsAttention","waitingOnMe"]) {
-        const tab = $(`.tab[data-k="${k}"]`);
-        const cnt = tab.querySelector(".count");
-        cnt.textContent = state.dash.counts[k];
-        cnt.classList.toggle("hot", k === "needsAttention" && state.dash.counts[k] > 0);
-      }
-      renderDash();
+function renderChat() {
+  const c = $("#chat"); c.innerHTML = "";
+  const intro = el("div", "msg bot intro",
+    "בוקר טוב 🌤️ אני העוזר התפעולי שלך. תגיד/י לי 'בוקר טוב' ואראה לך מה על הפרק היום, ועדכן/י אותי במהלך היום מה ביצעת — אני אדאג לרשום ב-Monday.");
+  c.appendChild(intro);
+  for (const m of state.history) bubble(m.role, m.content);
+  if (state.history.length === 0) {
+    const chips = el("div", "chips");
+    for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
+      const ch = el("button", "chip", q);
+      ch.onclick = () => sendMessage(q);
+      chips.appendChild(ch);
     }
-    $("#updated").textContent = "עודכן " + new Date().toLocaleTimeString("he-IL", { hour:"2-digit", minute:"2-digit" });
-  } catch (e) {
-    c.className = "";
-    c.innerHTML = "";
-    c.appendChild(el("p", "err", "לא הצלחתי לטעון: " + e.message));
+    c.appendChild(chips);
   }
+  scrollDown();
 }
 
-function chip(txt, cls) { return el("span", "chip" + (cls ? " " + cls : ""), txt); }
+async function sendMessage(text) {
+  text = (text ?? $("#input").value).trim();
+  if (!text || state.busy) return;
+  state.busy = true;
+  $("#send").disabled = true;
+  $("#input").value = "";
+  $("#chat").querySelector(".chips")?.remove();
 
-let toastTimer;
-function toast(msg, isErr) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.className = "show" + (isErr ? " err" : "");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = ""; }, 3000);
-}
+  state.history.push({ role: "user", content: text });
+  bubble("user", text);
+  const typing = el("div", "typing", "מקליד…");
+  $("#chat").appendChild(typing);
+  scrollDown();
 
-async function doUpdate(card, payload) {
-  card.querySelectorAll(".act").forEach(b => b.disabled = true);
   try {
-    const r = await api("/api/task/update", { method: "POST", body: JSON.stringify(payload) });
-    toast(r.message || "עודכן");
-    await load(true);
+    const { reply, actions } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: state.history }) });
+    typing.remove();
+    if (actions && actions.length) {
+      const box = el("div", "acts");
+      for (const a of actions) box.appendChild(el("div", "act-note", a));
+      $("#chat").appendChild(box);
+    }
+    bubble("assistant", reply);
+    state.history.push({ role: "assistant", content: reply });
+    saveHistory();
   } catch (e) {
-    toast(e.message, true);
-    card.querySelectorAll(".act").forEach(b => b.disabled = false);
+    typing.remove();
+    bubble("assistant", "משהו השתבש: " + e.message);
+  } finally {
+    state.busy = false;
+    $("#send").disabled = false;
+    $("#input").focus();
+    scrollDown();
   }
 }
 
-function actionBar(card, t) {
-  const bar = el("div", "actions");
-  const composer = el("div", "composer"); composer.hidden = true;
-  const ta = el("textarea");
-  const send = el("button", "act send", "שליחה");
-  composer.append(ta, send);
-
-  const mk = (label, cls, onClick) => { const b = el("button", "act " + cls, label); b.onclick = onClick; return b; };
-
-  bar.appendChild(mk("✓ סיימתי", "done", () => doUpdate(card, { action: "done", source: t.source, itemId: t.itemId })));
-  if (t.status !== "בעבודה")
-    bar.appendChild(mk("▶ בעבודה", "", () => doUpdate(card, { action: "state", source: t.source, itemId: t.itemId, label: "בעבודה" })));
-  bar.appendChild(mk("⚠ חסם", "blocker", () => openComposer("blocker", "מה חוסם?")));
-  bar.appendChild(mk("✎ הערה", "", () => openComposer("note", "הערה למשימה")));
-
-  function openComposer(action, placeholder) {
-    composer.dataset.action = action;
-    ta.placeholder = placeholder;
-    composer.hidden = !composer.hidden;
-    if (!composer.hidden) ta.focus();
-  }
-  send.onclick = () => {
-    const note = ta.value.trim();
-    const action = composer.dataset.action;
-    if (action === "note" && !note) { toast("כתוב/י הערה", true); return; }
-    doUpdate(card, { action, source: t.source, itemId: t.itemId, note });
-  };
-
-  card.append(bar, composer);
-}
-
-function taskCard(t) {
-  const f = t.flags;
-  const card = el("article", "task" + (f.stuck ? " st" : f.overdue ? " ov" : f.critical ? " cr" : ""));
-  const title = el("div", "task-title");
-  title.appendChild(el("span", null, t.name));
-  const link = el("a", null, "↗"); link.href = t.url; link.target = "_blank"; link.rel = "noopener";
-  title.appendChild(link);
-  card.appendChild(title);
-  card.appendChild(el("div", "task-ctx", t.stageName ? `${t.context} › ${t.stageName}` : t.context));
-
-  const chips = el("div", "chips");
-  if (t.dueDate) chips.appendChild(chip(f.overdue ? `באיחור ${f.daysOverdue} ימים` : (f.dueToday ? "להיום" : t.dueDate), f.overdue ? "ov" : ""));
-  else chips.appendChild(chip("בלי תאריך"));
-  if (f.stuck) chips.appendChild(chip("תקוע", "st"));
-  else if (t.status) chips.appendChild(chip(t.status));
-  if (f.critical) chips.appendChild(chip("קריטי", "cr"));
-  if (t.responsibleParty) chips.appendChild(chip("באחריות: " + t.responsibleParty));
-  card.appendChild(chips);
-
-  if (f.blocking && f.blocking.length) {
-    const b = el("div", "blocking");
-    b.appendChild(el("b", null, `מחכים לזה (${f.blocking.length}): `));
-    b.appendChild(document.createTextNode(
-      f.blocking.slice(0, 4).map(d => d.name + (d.project ? ` — ${d.project}` : "")).join(" · ")
-    ));
-    card.appendChild(b);
-  }
-
-  if (state.user.canUpdate) actionBar(card, t);
-  return card;
-}
-
-function renderDash() {
-  const c = $("#content"); c.className = ""; c.innerHTML = "";
-  const list = state.dash[state.tab] || [];
-  const wrap = el("div", "list");
-  if (!list.length) {
-    const hints = { myDay:"אין משימות לטיפול היום 👌", needsAttention:"שום דבר לא דורש תשומת לב מיוחדת", waitingOnMe:"אף אחד לא ממתין לך כרגע" };
-    wrap.appendChild(el("p", "empty", hints[state.tab]));
-  } else {
-    for (const t of list) wrap.appendChild(taskCard(t));
-  }
-  c.appendChild(wrap);
-}
+$("#composer").addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+$("#input").addEventListener("input", (e) => {
+  e.target.style.height = "auto";
+  e.target.style.height = Math.min(e.target.scrollHeight, 96) + "px";
+});
 
 /* ---------- oversight ---------- */
-function renderOversight() {
-  const r = state.report;
-  const c = $("#content"); c.className = ""; c.innerHTML = "";
+$("#oversightBtn").onclick = async () => {
+  $("#oversight").hidden = false;
+  const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען את מצב כל המשרד… (כמה שניות)</p>";
+  try { renderOversight(await api("/api/oversight")); }
+  catch (e) { body.innerHTML = ""; body.appendChild(el("p", "err", e.message)); }
+};
+$("#ovClose").onclick = () => { $("#oversight").hidden = true; };
 
+function renderOversight(r) {
+  const b = $("#ovBody"); b.innerHTML = "";
   const t = r.totals;
-  c.appendChild(el("p", "role", `סה"כ ${t.openTasks} משימות פתוחות בצוות · ${t.overdue} באיחור · ${t.stuck} תקועות · ${t.projectsFlagged} פרויקטים דורשים תשומת לב`));
+  b.appendChild(el("p", "role",
+    `סה"כ ${t.openTasks} משימות פתוחות בצוות · ${t.overdue} באיחור · ${t.stuck} תקועות · ${t.projectsFlagged} פרויקטים דורשים תשומת לב`));
 
-  c.appendChild(el("div", "sec-title", "עומס לכל אדם"));
-  const sc = el("div", "scroll");
-  const tbl = el("table");
+  b.appendChild(el("div", "sec-title", "עומס לכל אדם"));
+  const sc = el("div", "scroll"); const tbl = el("table");
   tbl.innerHTML = "<thead><tr><th>שם</th><th>פתוחות</th><th>באיחור</th><th>תקועות</th><th>חוסם אחרים</th><th>להיום</th></tr></thead>";
   const tb = el("tbody");
   for (const p of r.people) {
     const tr = el("tr");
     tr.appendChild(el("td", null, p.name));
-    const cells = [["open"],["overdue","hot"],["stuck","hot"],["blocking"],["dueToday"]];
-    for (const [k, hot] of cells) {
-      const td = el("td", "num" + (hot && p.counts[k] > 0 ? " hot" : ""), String(p.counts[k]));
-      tr.appendChild(td);
+    for (const [k, hot] of [["open"],["overdue","h"],["stuck","h"],["blocking"],["dueToday"]]) {
+      tr.appendChild(el("td", "num" + (hot && p.counts[k] > 0 ? " hot" : ""), String(p.counts[k])));
     }
     tb.appendChild(tr);
     if (p.worst.length) {
-      const wr = el("tr");
-      const td = el("td"); td.colSpan = 6; td.style.whiteSpace = "normal";
-      td.style.fontSize = ".8rem"; td.style.color = "var(--ink-soft)";
+      const wr = el("tr"); const td = el("td"); td.colSpan = 6;
+      td.style.cssText = "white-space:normal;font-size:.8rem;color:var(--ink-soft)";
       td.textContent = "הכי באיחור: " + p.worst.map(w => `${w.name} (${w.daysOverdue} י')`).join(" · ");
       wr.appendChild(td); tb.appendChild(wr);
     }
   }
-  tbl.appendChild(tb); sc.appendChild(tbl); c.appendChild(sc);
+  tbl.appendChild(tb); sc.appendChild(tbl); b.appendChild(sc);
 
-  c.appendChild(el("div", "sec-title", `פרויקטים שדורשים תשומת לב (${r.projects.length})`));
-  if (!r.projects.length) c.appendChild(el("p", "empty", "אין פרויקטים עם דגלים 👌"));
+  b.appendChild(el("div", "sec-title", `פרויקטים שדורשים תשומת לב (${r.projects.length})`));
   for (const p of r.projects) {
     const box = el("div", "proj");
     const top = el("div", "proj-top");
-    top.appendChild(el("span", null, p.name));
-    top.appendChild(el("span", "role", p.status));
+    top.append(el("span", null, p.name), el("span", "role", p.status));
     box.appendChild(top);
-    box.appendChild(el("div", "proj-sub", `אחראי: ${p.owner}${p.deliveryDate ? " · מסירה משוער: " + p.deliveryDate : ""}`));
-    const chips = el("div", "chips");
-    for (const f of p.flags) chips.appendChild(chip(f, /תקוע|איחור/.test(f) ? "ov" : ""));
-    box.appendChild(chips);
-    c.appendChild(box);
+    box.appendChild(el("div", "proj-sub", `אחראי: ${p.owner}${p.deliveryDate ? " · מסירה: " + p.deliveryDate : ""}`));
+    const ch = el("div", "pchips");
+    for (const f of p.flags) ch.appendChild(el("span", "pchip" + (/תקוע|איחור/.test(f) ? " hot" : ""), f));
+    box.appendChild(ch);
+    b.appendChild(box);
   }
 }
 
 /* ---------- boot ---------- */
 (async () => {
-  try {
-    const { user } = await api("/api/session");
-    state.user = user;
-    startApp();
-  } catch {
-    showLogin();
-  }
+  try { const { user } = await api("/api/session"); state.user = user; startApp(); }
+  catch { showLogin(); }
 })();
 </script>
 </body>

@@ -129,6 +129,58 @@ export async function fetchOpenDeals(): Promise<Deal[]> {
   return out;
 }
 
+/** לידים שנוצרו מאז תאריך נתון (ISO) — לדוח השבועי. */
+export function leadsCreatedSince(leads: Lead[], sinceIso: string): Lead[] {
+  const since = sinceIso.slice(0, 10);
+  return leads.filter((l) => l.createdDate && l.createdDate >= since);
+}
+
+export interface Signing {
+  name: string;
+  date: string;
+  amount: string;
+  owner: string;
+}
+
+/** עסקאות שנחתמו מאז תאריך נתון (לפי "תאריך סגירה בפועל" date4__1). */
+export async function fetchSigningsSince(sinceIso: string): Promise<Signing[]> {
+  const since = sinceIso.slice(0, 10);
+  const items = await pageAllSel(
+    BOARD_DEALS,
+    `["color__1", "date4__1", "numeric__1", "multiple_person__1"]`,
+  );
+  const out: Signing[] = [];
+  for (const it of items) {
+    if (cv(it.column_values, "color__1") !== "נחתם") continue;
+    const d = dateOnly(cv(it.column_values, "date4__1"));
+    if (!d || d < since) continue;
+    out.push({
+      name: it.name,
+      date: d,
+      amount: cv(it.column_values, "numeric__1"),
+      owner: cv(it.column_values, "multiple_person__1"),
+    });
+  }
+  return out;
+}
+
+async function pageAllSel(boardId: string, cvIds: string): Promise<RawItem[]> {
+  const q = (c: string | null) =>
+    c
+      ? `query { next_items_page(cursor: "${c}", limit: 200) { cursor items { id name column_values(ids: ${cvIds}) { id text ${REL} } } } }`
+      : `query { boards(ids: [${boardId}]) { items_page(limit: 200) { cursor items { id name column_values(ids: ${cvIds}) { id text ${REL} } } } } }`;
+  const first = await mondayRequest<{ boards: { items_page: { cursor: string | null; items: RawItem[] } }[] }>(q(null));
+  const page = first.boards[0]?.items_page;
+  const items: RawItem[] = page ? [...page.items] : [];
+  let cursor = page?.cursor ?? null;
+  while (cursor) {
+    const next = await mondayRequest<{ next_items_page: { cursor: string | null; items: RawItem[] } }>(q(cursor));
+    items.push(...next.next_items_page.items);
+    cursor = next.next_items_page.cursor;
+  }
+  return items;
+}
+
 export interface Payment {
   itemId: string;
   name: string;

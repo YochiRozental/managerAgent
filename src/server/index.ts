@@ -27,6 +27,7 @@ import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { runDailyControlCycle } from "../ops/escalation.js";
 import { getOversightReport } from "../ops/oversight.js";
 import { startScheduler } from "../ops/scheduler.js";
+import { buildWeeklyReport } from "../ops/weeklyReport.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
 import { REQUIRE_ACCESS_LINK, verifyAccessToken } from "./accessLink.js";
@@ -199,6 +200,14 @@ const server = createServer(async (req, res) => {
         return send(res, 403, { error: "למוטי בלבד" });
       }
       return send(res, 200, await runDailyControlCycle());
+    }
+
+    if (req.method === "POST" && path === "/api/weekly/run") {
+      const user = currentUser(req);
+      if (!user || !user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "למוטי בלבד" });
+      }
+      return send(res, 200, await buildWeeklyReport());
     }
 
     if (req.method === "GET" && path === "/api/notifications") {

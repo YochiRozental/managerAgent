@@ -113,3 +113,20 @@ export function listActiveFindings(): StoredFinding[] {
 export function setEscalation(findingKey: string, level: number, atIso: string): void {
   setEscalationStmt.run(level, atIso, findingKey);
 }
+
+// ---- לדוח השבועי ----
+const openedSinceStmt = db.prepare(`SELECT * FROM control_findings WHERE first_seen >= ?`);
+const resolvedSinceStmt = db.prepare(`SELECT * FROM control_findings WHERE resolved_at IS NOT NULL AND resolved_at >= ?`);
+const chronicStmt = db.prepare(
+  `SELECT * FROM control_findings WHERE resolved_at IS NULL AND first_seen < ? ORDER BY first_seen ASC`,
+);
+
+export function findingsOpenedSince(iso: string): StoredFinding[] {
+  return (openedSinceStmt.all(iso) as unknown as Row[]).map(fromRow);
+}
+export function findingsResolvedSince(iso: string): StoredFinding[] {
+  return (resolvedSinceStmt.all(iso) as unknown as Row[]).map(fromRow);
+}
+export function chronicFindings(iso: string): StoredFinding[] {
+  return (chronicStmt.all(iso) as unknown as Row[]).map(fromRow);
+}

@@ -26,6 +26,17 @@ export interface CrmScanReport {
   decisions: { name: string; detail: string; url: string }[];
   /** תשלומים שאמורים להיכנס היום */
   paymentsDueToday: { label: string; amount: string; url: string }[];
+  /** נתוני פייפליין — לדוח השבועי */
+  pipeline: {
+    openLeads: number;
+    leadsByStatus: Record<string, number>;
+    openDeals: number;
+    dealsByStage: Record<string, number>;
+    leadsCreatedRecent: { name: string; date: string }[];
+  };
+  /** תשלומים / תזכורות שאמורים ב-10 הימים הקרובים — לצפי השבוע הבא */
+  paymentsDueSoon: { label: string; amount: string; date: string }[];
+  remindersDueSoon: { name: string; kind: string; date: string }[];
 }
 
 let cache: { at: number; report: CrmScanReport } | null = null;
@@ -61,10 +72,26 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
   const findings: Finding[] = [];
   const decisions: CrmScanReport["decisions"] = [];
   const paymentsDueToday: CrmScanReport["paymentsDueToday"] = [];
+  const paymentsDueSoon: CrmScanReport["paymentsDueSoon"] = [];
+  const remindersDueSoon: CrmScanReport["remindersDueSoon"] = [];
+  const soonEnd = today.plus({ days: 10 });
+  const inSoon = (d?: string) => {
+    if (!d) return false;
+    const dt = DateTime.fromISO(d, { zone: env.TIMEZONE }).startOf("day");
+    return dt >= today && dt <= soonEnd;
+  };
+  const recentStart = today.minus({ days: 14 }).toISODate()!;
+
+  const leadsByStatus: Record<string, number> = {};
+  const dealsByStage: Record<string, number> = {};
+  const leadsCreatedRecent: { name: string; date: string }[] = [];
 
   // ---- לידים ----
   for (const l of leads) {
+    leadsByStatus[l.status] = (leadsByStatus[l.status] ?? 0) + 1;
+    if (l.createdDate && l.createdDate >= recentStart) leadsCreatedRecent.push({ name: l.name, date: l.createdDate });
     if (LEAD_MOVED_ON.has(l.status)) continue;
+    if (inSoon(l.reminderDate)) remindersDueSoon.push({ name: l.name, kind: "ליד", date: l.reminderDate! });
     const who = l.owner || "מוטי";
     const over = daysPast(l.reminderDate);
     if (over > 0) {
@@ -118,6 +145,8 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
 
   // ---- עסקאות / הצעות מחיר ----
   for (const d of deals) {
+    dealsByStage[d.stage] = (dealsByStage[d.stage] ?? 0) + 1;
+    if (inSoon(d.reminderDate)) remindersDueSoon.push({ name: d.name, kind: "עסקה", date: d.reminderDate! });
     const who = d.owner || "מוטי";
     const over = daysPast(d.reminderDate);
     const hot = d.closeChance === "ליד חם" || d.closeChance === "פושר";
@@ -191,6 +220,9 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
       if (over === 0) {
         paymentsDueToday.push({ label, amount: ils(p.amount) || p.amount, url: c.url });
       }
+      if (p.dueDate && over < 0 && inSoon(p.dueDate)) {
+        paymentsDueSoon.push({ label, amount: ils(p.amount) || p.amount, date: p.dueDate });
+      }
       if (over > 0) {
         findings.push({
           key: `pay_over:${p.itemId}`,
@@ -228,6 +260,15 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
     forManager: findings.filter((f) => f.severity !== "normal"),
     decisions,
     paymentsDueToday,
+    pipeline: {
+      openLeads: leads.filter((l) => !LEAD_MOVED_ON.has(l.status)).length,
+      leadsByStatus,
+      openDeals: deals.length,
+      dealsByStage,
+      leadsCreatedRecent,
+    },
+    paymentsDueSoon,
+    remindersDueSoon,
   };
   cache = { at: Date.now(), report };
   return report;

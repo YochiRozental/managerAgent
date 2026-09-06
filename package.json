@@ -16,7 +16,8 @@
     "test:whatsapp": "tsx scripts/test-whatsapp-echo.ts",
     "test:control": "tsx scripts/test-control.ts",
     "test:cycle": "tsx scripts/test-cycle.ts",
-    "test:crm": "tsx scripts/test-crm.ts"
+    "test:crm": "tsx scripts/test-crm.ts",
+    "test:weekly": "tsx scripts/test-weekly.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

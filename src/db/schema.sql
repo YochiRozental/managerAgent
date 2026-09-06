@@ -41,12 +41,13 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_key, se
 CREATE TABLE IF NOT EXISTS chat_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_key TEXT NOT NULL,
-  role TEXT NOT NULL,              -- user | assistant | break (מפריד "שיחה חדשה")
+  session_id TEXT,                 -- מזהה שיחה; כל "שיחה חדשה" = session_id חדש
+  role TEXT NOT NULL,              -- user | assistant
   content TEXT NOT NULL,
   actions TEXT,                    -- JSON של פעולות שבוצעו בסבב הזה
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages (user_key, id);
+CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages (user_key, session_id, id);
 
 -- התחייבויות (מטרה 7): מה הובטח, למי, מתי צריך לקיים. נרשם דרך הצ'אט.
 CREATE TABLE IF NOT EXISTS commitments (

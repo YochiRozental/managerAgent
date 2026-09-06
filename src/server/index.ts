@@ -16,10 +16,12 @@ import {
   type IdentifiedUser,
 } from "../identity/index.js";
 import {
-  addChatBreak,
   appendChatTurn,
   clearChatHistory,
-  getChatHistory,
+  getSessionMessages,
+  latestSessionId,
+  listSessions,
+  newSessionId,
 } from "../db/repositories/chatHistory.js";
 import { listOpenCommitments, listUserCommitments } from "../db/repositories/commitments.js";
 import {
@@ -151,25 +153,34 @@ const server = createServer(async (req, res) => {
       if (messages.length === 0 || messages[messages.length - 1]!.role !== "user") {
         return send(res, 400, { error: "אין הודעה" });
       }
+      const session = typeof body.session === "string" && body.session ? body.session : newSessionId();
       const result = await runOpsChat(user, messages);
       if (result.actions.length) {
         logger.info({ user: user.key, actions: result.actions }, "עדכוני משימה מהצ'אט");
       }
-      appendChatTurn(user.key, messages[messages.length - 1]!.content, result.reply, result.actions);
-      return send(res, 200, result);
+      appendChatTurn(user.key, session, messages[messages.length - 1]!.content, result.reply, result.actions);
+      return send(res, 200, { ...result, session });
     }
 
-    if (req.method === "GET" && path === "/api/chat/history") {
+    if (req.method === "GET" && path === "/api/chat/sessions") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
-      return send(res, 200, { history: getChatHistory(user.key) });
+      return send(res, 200, { sessions: listSessions(user.key), latest: latestSessionId(user.key) });
+    }
+
+    if (req.method === "GET" && path === "/api/chat/session") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const id = url.searchParams.get("id");
+      return send(res, 200, {
+        messages: getSessionMessages(user.key, !id || id === "legacy" ? null : id),
+      });
     }
 
     if (req.method === "POST" && path === "/api/chat/new") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
-      addChatBreak(user.key);
-      return send(res, 200, { ok: true });
+      return send(res, 200, { session: newSessionId() });
     }
 
     if (req.method === "POST" && path === "/api/chat/clear") {

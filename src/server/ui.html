@@ -77,9 +77,15 @@
   #send:disabled{opacity:.5;cursor:default}
 
   /* ---------- oversight overlay ---------- */
-  #oversight{position:fixed;inset:0;background:var(--paper);overflow-y:auto;padding:1.2rem clamp(.8rem,4vw,2rem) 3rem;z-index:10}
-  #oversight .close{position:sticky;top:0;margin-inline-start:auto;display:block}
+  #oversight,#history{position:fixed;inset:0;background:var(--paper);overflow-y:auto;padding:1.2rem clamp(.8rem,4vw,2rem) 3rem;z-index:10}
+  #oversight .close,#history .close{position:sticky;top:0;margin-inline-start:auto;display:block}
   .ov-wrap{max-width:860px;margin:0 auto}
+  #histList{display:flex;flex-direction:column;gap:.5rem;margin-top:.8rem}
+  .hist-row{text-align:right;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;cursor:pointer;font:inherit;box-shadow:var(--shadow)}
+  .hist-row:hover{border-color:var(--accent)}
+  .hist-row.current{border-inline-start:3px solid var(--accent)}
+  .hist-title{font-weight:600;font-size:.95rem;color:var(--ink)}
+  .hist-meta{font-size:.78rem;color:var(--ink-faint);margin-top:.15rem}
   .sec-title{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.15rem;margin:1.6rem 0 .4rem}
   .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow)}
   table{border-collapse:collapse;width:100%;font-size:.88rem}
@@ -117,6 +123,7 @@
       <h1 id="userName">—</h1>
       <span class="h-actions">
         <button class="link" id="oversightBtn" hidden>בקרה</button>
+        <button class="link" id="historyBtn">היסטוריית שיחות</button>
         <button class="link" id="resetBtn">שיחה חדשה</button>
         <button class="link" id="logoutBtn">יציאה</button>
       </span>
@@ -133,6 +140,14 @@
   </form>
 </div>
 
+<div id="history" hidden>
+  <button class="link close" id="histClose">✕ סגירה</button>
+  <div class="ov-wrap">
+    <h2 class="sec-title" style="margin-top:.5rem">היסטוריית שיחות</h2>
+    <div id="histList"></div>
+  </div>
+</div>
+
 <div id="oversight" hidden>
   <button class="link close" id="ovClose">✕ סגירה</button>
   <div class="ov-wrap" id="ovBody"></div>
@@ -147,7 +162,7 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(d.error || ("שגיאה " + r.status));
   return d;
 }
-const state = { user: null, thread: [], busy: false };
+const state = { user: null, session: null, thread: [], busy: false };
 const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
 
 /* ---------- login ---------- */
@@ -178,18 +193,17 @@ async function login(identifier) {
   } catch (e) { $("#loginErr").textContent = e.message; }
 }
 
-/* ---------- history (server-side) ---------- */
-// state.thread = כל ההודעות + מפרידי "שיחה חדשה". ההקשר שנשלח למודל = ההודעות שאחרי המפריד האחרון.
-async function loadHistory() {
+/* ---------- sessions (server-side) ---------- */
+// state.session = מזהה השיחה הנוכחית · state.thread = ההודעות שלה
+async function loadSession(id) {
   try {
-    const { history } = await api("/api/chat/history");
-    state.thread = history.map(h => ({ role: h.role, content: h.content, actions: h.actions || [] }));
+    const { messages } = await api("/api/chat/session?id=" + encodeURIComponent(id));
+    state.session = id;
+    state.thread = messages.map(m => ({ role: m.role, content: m.content, actions: m.actions || [] }));
   } catch { state.thread = []; }
 }
 function activeContext() {
-  let start = 0;
-  for (let i = state.thread.length - 1; i >= 0; i--) if (state.thread[i].role === "break") { start = i + 1; break; }
-  return state.thread.slice(start).filter(m => m.role === "user" || m.role === "assistant").slice(-20);
+  return state.thread.filter(m => m.role === "user" || m.role === "assistant").slice(-20);
 }
 
 /* ---------- app ---------- */
@@ -198,10 +212,37 @@ async function startApp() {
   $("#userName").textContent = state.user.name;
   $("#userRole").textContent = state.user.roleDescription || "";
   $("#oversightBtn").hidden = !(state.user.canOversee || state.user.canFinance);
-  await loadHistory();
+  try {
+    const { latest } = await api("/api/chat/sessions");
+    if (latest) await loadSession(latest);
+  } catch {}
   renderChat();
   loadNotifications();
 }
+
+$("#historyBtn").onclick = async () => {
+  $("#history").hidden = false;
+  const box = $("#histList"); box.innerHTML = "<p class='role'>טוען…</p>";
+  try {
+    const { sessions } = await api("/api/chat/sessions");
+    box.innerHTML = "";
+    if (!sessions.length) { box.appendChild(el("p", "empty", "אין שיחות שמורות עדיין")); return; }
+    for (const s of sessions) {
+      const row = el("button", "hist-row");
+      row.appendChild(el("div", "hist-title", s.title));
+      const d = new Date(s.lastAt.replace(" ", "T") + "Z");
+      row.appendChild(el("div", "hist-meta", d.toLocaleString("he-IL", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" }) + ` · ${s.count} הודעות`));
+      row.onclick = async () => {
+        await loadSession(s.id);
+        $("#history").hidden = true;
+        renderChat();
+      };
+      if (s.id === state.session) row.classList.add("current");
+      box.appendChild(row);
+    }
+  } catch (e) { box.innerHTML = ""; box.appendChild(el("p", "err", e.message)); }
+};
+$("#histClose").onclick = () => { $("#history").hidden = true; };
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי" };
 async function loadNotifications() {
@@ -221,10 +262,11 @@ async function loadNotifications() {
   box.appendChild(btn);
 }
 $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST" }); location.reload(); };
-$("#resetBtn").onclick = async () => {
-  try { await api("/api/chat/new", { method:"POST" }); } catch {}
-  state.thread.push({ role: "break", content: "" });
+$("#resetBtn").onclick = () => {
+  state.session = null;
+  state.thread = [];
   renderChat();
+  $("#input").focus();
 };
 
 function bubble(role, text) {
@@ -246,7 +288,6 @@ function renderChat() {
     "בוקר טוב 🌤️ אני העוזר התפעולי שלך. תגיד/י לי 'בוקר טוב' ואראה לך מה על הפרק היום, ועדכן/י אותי במהלך היום מה ביצעת — אני אדאג לרשום ב-Monday.");
   c.appendChild(intro);
   for (const m of state.thread) {
-    if (m.role === "break") { c.appendChild(el("div", "brk", "שיחה חדשה")); continue; }
     if (m.actions && m.actions.length && m.role === "assistant") {
       const box = el("div", "acts");
       for (const a of m.actions) box.appendChild(el("div", "act-note", a));
@@ -254,7 +295,7 @@ function renderChat() {
     }
     bubble(m.role, m.content);
   }
-  if (activeContext().length === 0) {
+  if (state.thread.length === 0) {
     const chips = el("div", "chips");
     for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
       const ch = el("button", "chip", q);
@@ -282,7 +323,8 @@ async function sendMessage(text) {
 
   try {
     const ctx = [...activeContext()];
-    const { reply, actions } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx }) });
+    const { reply, actions, session } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx, session: state.session }) });
+    state.session = session;
     typing.remove();
     if (actions && actions.length) {
       const box = el("div", "acts");

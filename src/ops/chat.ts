@@ -14,7 +14,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
-import type { IdentifiedUser } from "../identity/index.js";
+import { userCan, type IdentifiedUser } from "../identity/index.js";
 import {
   fetchUserOpsTasks,
   getProjectNextAction,
@@ -22,7 +22,11 @@ import {
 } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
 import { updateTask } from "./actions.js";
+import { runControlScan } from "./controlScan.js";
+import { runCrmScan } from "./crmScan.js";
 import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
+import { getOfficeState } from "./officeState.js";
+import { getOversightReport } from "./oversight.js";
 
 const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 const MODEL = "claude-sonnet-5";
@@ -54,8 +58,14 @@ function systemPrompt(user: IdentifiedUser): string {
     "",
     "כללים:",
     "• לעולם אל תעדכן ב-Monday בלי שהעובד אמר מפורשות שהוא ביצע או שינה משהו. שאלה או בקשת מידע אינה דיווח.",
-    "• אל תמציא משימות או שמות. השתמש רק במה ש-get_today_tasks ו-find_task מחזירים.",
+    "• אל תמציא משימות או שמות. השתמש רק במה שהכלים מחזירים.",
     "• אם פעולה נכשלה — אמור מה קרה, אל תעמיד פנים שהצליחה.",
+    ...(userCan(user, "view:all_work")
+      ? [
+          "",
+          "יש לך גם ראייה על כל המשרד. כשמוטי שואל שאלות כמו 'מה תקוע?', 'מה דורש אותי?', 'מה קורה אצל דוב?', 'מה מצב פרויקט X?', 'מה מצב המכירות/הגבייה?', 'איזה פרויקטים בסיכון?', 'על מה אנחנו מחכים?' — השתמש בכלי הבקרה (office_overview / person_status / project_status / list_findings / sales_and_collection). ענה תמציתי, עם המספרים והשמות הרלוונטיים, והצע את הצעד הבא כשברור.",
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -323,6 +333,120 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
       },
     },
   ];
+
+  // ---- כלי בקרה על כל המשרד — רק למי שיש view:all_work (מוטי, יוכי) ----
+  if (userCan(user, "view:all_work")) {
+    const fmtFinding = (f: { severity: string; headline: string; who: string; detail: string }) =>
+      `[${f.severity}] ${f.headline} — ${f.who}${f.detail ? ` · ${f.detail}` : ""}`;
+
+    tools.push(
+      {
+        name: "office_overview",
+        description: "תמונת מצב כללית של כל המשרד: מספרי משימות פתוחות/באיחור/תקועות, פרויקטים בסיכון, וממצאי מכירות וגבייה. לשאלות כמו 'מה המצב הכללי' / 'מה דורש אותי'.",
+        input_schema: { type: "object", properties: {} },
+        run: async () => {
+          const [ctrl, crm, over] = await Promise.all([runControlScan(), runCrmScan(), getOversightReport(user)]);
+          return {
+            tasks: { open: over.totals.openTasks, overdue: over.totals.overdue, stuck: over.totals.stuck },
+            projectsFlagged: over.totals.projectsFlagged,
+            controlFindings: { critical: ctrl.counts.critical, high: ctrl.counts.high, normal: ctrl.counts.normal },
+            crmFindings: { high: crm.counts.high, normal: crm.counts.normal },
+            topUrgent: [...ctrl.forManager, ...crm.forManager].slice(0, 10).map(fmtFinding),
+            decisionsWaiting: crm.decisions.map((d) => `${d.name} — ${d.detail}`),
+          };
+        },
+      },
+      {
+        name: "person_status",
+        description: "מצב העבודה של איש צוות מסוים: כמה משימות פתוחות/באיחור/תקועות יש לו, מה הכי באיחור, ואיזה פרויקטים בסיכון קשורים אליו. לשאלות כמו 'מה קורה אצל דוב'.",
+        input_schema: {
+          type: "object",
+          properties: { name: { type: "string", description: "שם איש הצוות" } },
+          required: ["name"],
+        },
+        run: async (input) => {
+          const q = String(input.name ?? "").trim();
+          const [over, ctrl] = await Promise.all([getOversightReport(user), runControlScan()]);
+          const p = over.people.find((x) => x.name.includes(q) || q.includes(x.name.split(" ")[0]!));
+          if (!p) return { error: `לא מצאתי איש צוות בשם "${q}". אפשרויות: ${over.people.map((x) => x.name).join(", ")}` };
+          return {
+            name: p.name,
+            counts: p.counts,
+            worst: p.worst,
+            findings: ctrl.findings.filter((f) => f.who.includes(p.name)).map(fmtFinding),
+          };
+        },
+      },
+      {
+        name: "project_status",
+        description: "מצב פרויקט מסוים: סטטוס, אחראי, תאריך מסירה, הפעולה הנוכחית, וכל דגל בקרה שקשור אליו. לשאלות כמו 'מה מצב פרויקט בלומינג'.",
+        input_schema: {
+          type: "object",
+          properties: { query: { type: "string", description: "שם הפרויקט או חלק ממנו" } },
+          required: ["query"],
+        },
+        run: async (input) => {
+          const q = String(input.query ?? "").trim().toLowerCase();
+          const [office, ctrl] = await Promise.all([getOfficeState(), runControlScan()]);
+          const matches = office.projects.filter((p) => p.name.toLowerCase().includes(q));
+          if (matches.length === 0) return { error: `לא מצאתי פרויקט שמתאים ל"${q}".` };
+          if (matches.length > 3) return { hint: "יותר מדי התאמות", names: matches.map((p) => p.name).slice(0, 10) };
+          const out = [];
+          for (const p of matches) {
+            const na = await getProjectNextAction(p.itemId).catch(() => null);
+            out.push({
+              name: p.name,
+              status: p.status || "לא הוגדר",
+              owner: p.owner || "בלי אחראי",
+              deliveryDate: p.deliveryDate ?? null,
+              nextAction: na ? `${na.taskName} · ${na.stageName}${na.assignees ? ` (${na.assignees})` : " (לא משויך)"}` : "אין משימה פתוחה",
+              findings: ctrl.findings.filter((f) => f.project === p.name).map(fmtFinding),
+            });
+          }
+          return { projects: out };
+        },
+      },
+      {
+        name: "list_findings",
+        description: "רשימת ממצאי הבקרה, אפשר לסנן. area: tasks (משימות) / projects (פרויקטים) / sales (מכירות ולידים) / collection (גבייה). severity: critical / high / normal. לשאלות כמו 'מה תקוע', 'מה דחוף', 'איזה פרויקטים בסיכון'.",
+        input_schema: {
+          type: "object",
+          properties: {
+            area: { type: "string", enum: ["tasks", "projects", "sales", "collection"] },
+            severity: { type: "string", enum: ["critical", "high", "normal"] },
+          },
+        },
+        run: async (input) => {
+          const [ctrl, crm] = await Promise.all([runControlScan(), runCrmScan()]);
+          let list = [...ctrl.findings, ...crm.findings];
+          const area = input.area as string | undefined;
+          if (area === "projects") list = list.filter((f) => f.kind === "project_stuck" || f.kind === "delivery_overdue");
+          else if (area === "sales") list = list.filter((f) => f.project === "מכירות" || f.project === "לידים");
+          else if (area === "collection") list = list.filter((f) => f.project === "גבייה");
+          else if (area === "tasks")
+            list = list.filter(
+              (f) => !["מכירות", "לידים", "גבייה"].includes(f.project ?? "") && f.kind !== "project_stuck" && f.kind !== "delivery_overdue",
+            );
+          if (input.severity) list = list.filter((f) => f.severity === input.severity);
+          return { count: list.length, findings: list.slice(0, 25).map(fmtFinding) };
+        },
+      },
+      {
+        name: "sales_and_collection",
+        description: "מצב מלא של המכירות והגבייה: עסקאות בלי פולו-אפ, הצעות מחיר תלויות, החלטות שמחכות, ותשלומים באיחור עם סכומים. לשאלות כמו 'מה מצב המכירות', 'מה מצב הגבייה'.",
+        input_schema: { type: "object", properties: {} },
+        run: async () => {
+          const crm = await runCrmScan();
+          return {
+            decisionsWaiting: crm.decisions.map((d) => `${d.name} — ${d.detail}`),
+            sales: crm.findings.filter((f) => f.project === "מכירות" || f.project === "לידים").map(fmtFinding),
+            collection: crm.findings.filter((f) => f.project === "גבייה").map(fmtFinding),
+            paymentsDueToday: crm.paymentsDueToday.map((p) => `${p.label} ${p.amount}`),
+          };
+        },
+      },
+    );
+  }
 
   const anthropicTools: Anthropic.Tool[] = tools.map((t) => ({
     name: t.name,

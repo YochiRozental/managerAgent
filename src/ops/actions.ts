@@ -5,7 +5,7 @@
  * לבד. מחיקה / לקוח / כסף — לא כאן.
  */
 
-import { userCan, type IdentifiedUser } from "../identity/index.js";
+import { resolveUsersByAssigneeText, userCan, type IdentifiedUser } from "../identity/index.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 import {
   addTaskNote,
@@ -13,6 +13,8 @@ import {
   DONE_LABEL,
   setTaskStatus,
 } from "../integrations/monday/opsWrite.js";
+import { detectPeopleColumn, setItemPeople } from "../integrations/monday/itemWrite.js";
+import { findUsersByName } from "../integrations/monday/users.js";
 
 async function authorize(user: IdentifiedUser, itemId: string): Promise<void> {
   if (!userCan(user, "task:update_own")) throw new Error("אין לך הרשאה לעדכן משימות");
@@ -55,6 +57,57 @@ export async function addUpdateToItem(
   // כל כתיבה ל-Monday רשומה על חשבון ה-API (מוטי). השורה הראשונה היא מי באמת רשם.
   await addTaskNote(itemId, `✍️ נרשם ע"י ${user.name} (דרך העוזר התפעולי)\n\n${body.trim()}`);
   return { ok: true, message: "ההערה נוספה ל-Monday" };
+}
+
+/**
+ * החלפת האחראי/ת של פריט Monday (ליד / עסקה / משימה / פרויקט / שלב).
+ * שינוי תפעולי פנימי — מותר למי שמנהל משימות/לידים/פרויקטים (owner, admin, מנהל פרויקט).
+ * לא כספים ולא שרטוט. כל החלפה מתועדת ב-Update עם שם המבצע.
+ */
+export async function reassignItem(
+  user: IdentifiedUser,
+  itemId: string,
+  person: string,
+): Promise<{ ok: true; message: string }> {
+  const canReassign =
+    userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage");
+  if (!canReassign) throw new Error("אין לך הרשאה לשנות אחראי/ת על פריטים");
+  if (!/^\d+$/.test(itemId)) throw new Error("מזהה פריט לא תקין");
+  const wanted = person.trim();
+  if (!wanted) throw new Error("לא צוין למי להעביר");
+
+  // קודם ספר הצוות שלנו (מכיר "יוכי" בעברית), אחר כך חיפוש משתמשי Monday.
+  let targetId: string | undefined;
+  let targetName = wanted;
+  const fromDirectory = resolveUsersByAssigneeText(wanted);
+  if (fromDirectory.length === 1) {
+    if (!fromDirectory[0]!.mondayUserId) {
+      throw new Error(`ל${fromDirectory[0]!.name} אין חשבון Monday פעיל — אי אפשר להקצות אליו/ה`);
+    }
+    targetId = fromDirectory[0]!.mondayUserId;
+    targetName = fromDirectory[0]!.name;
+  } else if (fromDirectory.length > 1) {
+    throw new Error(`"${wanted}" מתאים לכמה אנשים: ${fromDirectory.map((u) => u.name).join(", ")}. מי בדיוק?`);
+  } else {
+    const mondayMatches = await findUsersByName(wanted);
+    if (mondayMatches.length === 0) throw new Error(`לא מצאתי משתמש/ת בשם "${wanted}" ב-Monday`);
+    if (mondayMatches.length > 1) {
+      throw new Error(`"${wanted}" מתאים לכמה: ${mondayMatches.map((u) => u.name).join(", ")}. מי בדיוק?`);
+    }
+    targetId = mondayMatches[0]!.id;
+    targetName = mondayMatches[0]!.name;
+  }
+
+  const col = await detectPeopleColumn(itemId);
+  if (col.currentIds.length === 1 && col.currentIds[0] === targetId) {
+    return { ok: true, message: `"${col.itemName}" כבר משויך/ת ל${targetName}` };
+  }
+  await setItemPeople(col.boardId, itemId, col.columnId, [targetId]);
+  await addTaskNote(
+    itemId,
+    `👤 ${col.columnTitle} שונה/תה ל${targetName} — ע"י ${user.name} דרך העוזר התפעולי`,
+  );
+  return { ok: true, message: `${col.columnTitle} של "${col.itemName}" עודכן/ה ל${targetName}` };
 }
 
 export async function updateTask(user: IdentifiedUser, input: TaskUpdateInput): Promise<{ ok: true; message: string }> {

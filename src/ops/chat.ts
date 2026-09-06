@@ -26,7 +26,7 @@ import {
   listUserCommitments,
 } from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
-import { addUpdateToItem, updateTask } from "./actions.js";
+import { addUpdateToItem, reassignItem, updateTask } from "./actions.js";
 import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
@@ -63,6 +63,11 @@ function systemPrompt(user: IdentifiedUser): string {
     "• 'תקוע' / 'חסום' / 'מחכה ל...' — קרא report_blocker עם תיאור החסם.",
     "• 'תכתוב בעדכונים של הליד/המשימה/הפרויקט/העסקה X ש…' / 'תוסיף הערה ל…' — זהה את הפריט (find_task / find_lead_or_deal / project_status), קח את ה-itemId, וקרא add_update. עובד על כל סוג פריט ב-Monday, לא רק משימות.",
     "• 'הבטחתי ללקוח...' / 'אמרתי ש...' / 'התחייבתי ל...' — קרא record_commitment. 'שלחתי ללקוח' / 'קיימתי' על התחייבות קיימת — close_commitment. 'מה הבטחתי?' — list_my_commitments.",
+    ...(userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")
+      ? [
+          "• 'תעביר את האחריות על X ל...' / 'תשייך את הליד/הפרויקט/המשימה ל...' — זהה את הפריט, קח itemId, וקרא reassign_item. אשר בקצרה למי הועבר. אם השם לא חד-משמעי — שאל לפני.",
+        ]
+      : []),
     "",
     "כללים:",
     "• לעולם אל תעדכן ב-Monday בלי שהעובד אמר מפורשות שהוא ביצע או שינה משהו. שאלה או בקשת מידע אינה דיווח.",
@@ -416,6 +421,29 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
       },
     },
   ];
+
+  // ---- שינוי אחראי/ת — למי שמנהל משימות/לידים/פרויקטים ----
+  if (userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")) {
+    tools.push({
+      name: "reassign_item",
+      description:
+        "מחליף את האחראי/ת של פריט ב-Monday — ליד / עסקה / משימה / פרויקט / שלב. קבל את itemId מ-find_task / find_lead_or_deal / project_status. לבקשות כמו 'תעביר את האחריות על הליד X ליוכי', 'תשייך את הפרויקט לדוב'. משנה בפועל את שדה האחראי ומתעד ב-Updates.",
+      input_schema: {
+        type: "object",
+        properties: {
+          itemId: { type: "string", description: "מזהה הפריט ב-Monday" },
+          person: { type: "string", description: "שם מלא או פרטי של מי שיהיה האחראי/ת החדש/ה" },
+          label: { type: "string", description: "שם הפריט, לאישור בלבד" },
+        },
+        required: ["itemId", "person"],
+      },
+      run: async (input) => {
+        const r = await reassignItem(user, String(input.itemId), String(input.person));
+        actions.push(`👤 ${r.message}`);
+        return r;
+      },
+    });
+  }
 
   // ---- כלי בקרה על כל המשרד — רק למי שיש view:all_work (מוטי, יוכי) ----
   if (userCan(user, "view:all_work")) {

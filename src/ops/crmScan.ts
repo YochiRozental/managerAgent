@@ -22,6 +22,10 @@ export interface CrmScanReport {
   counts: { critical: number; high: number; normal: number; total: number };
   findings: Finding[];
   forManager: Finding[];
+  /** עסקאות/הצעות בשלב שדורש החלטה או תגובה של מוטי — לתדריך הבוקר */
+  decisions: { name: string; detail: string; url: string }[];
+  /** תשלומים שאמורים להיכנס היום */
+  paymentsDueToday: { label: string; amount: string; url: string }[];
 }
 
 let cache: { at: number; report: CrmScanReport } | null = null;
@@ -32,6 +36,7 @@ const LEAD_ACTIVE = new Set(["ליד חדש", "פוטנציאלי", "ניסיו�
 // לידים שכבר "עברו הלאה" — מטופלים בבורד העסקאות / מוקפאים במכוון, אין טעם ברדיפה על בורד הלידים
 const LEAD_MOVED_ON = new Set(["עבר לעסקה", "הוקפא"]);
 const PROPOSAL_STAGES = new Set(["נשלחה הצעת מחיר", "ממתין להצעת מחיר"]);
+const DECISION_STAGES = new Set(["משא ומתן", "בדרך לסגירה", "נשלחה הצעת מחיר", "ממתין להצעת מחיר"]);
 const PAYMENT_TODO = new Set(["לגבייה", "תשלום חדש", "נשלחה דרישת תשלום"]);
 
 function ils(amount: string): string {
@@ -54,6 +59,8 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
   ]);
 
   const findings: Finding[] = [];
+  const decisions: CrmScanReport["decisions"] = [];
+  const paymentsDueToday: CrmScanReport["paymentsDueToday"] = [];
 
   // ---- לידים ----
   for (const l of leads) {
@@ -115,6 +122,16 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
     const over = daysPast(d.reminderDate);
     const hot = d.closeChance === "ליד חם" || d.closeChance === "פושר";
 
+    if (DECISION_STAGES.has(d.stage)) {
+      decisions.push({
+        name: d.name,
+        detail: `שלב "${d.stage}"${d.closeChance ? ` · סיכוי: ${d.closeChance}` : ""}${
+          d.expectedClose ? ` · סגירה צפויה ${d.expectedClose}` : ""
+        }`,
+        url: d.url,
+      });
+    }
+
     if (PROPOSAL_STAGES.has(d.stage) && (over > 0 || !d.reminderDate)) {
       findings.push({
         key: `deal_prop:${d.itemId}`,
@@ -171,6 +188,9 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
     }
     for (const p of c.payments) {
       const over = daysPast(p.dueDate);
+      if (over === 0) {
+        paymentsDueToday.push({ label, amount: ils(p.amount) || p.amount, url: c.url });
+      }
       if (over > 0) {
         findings.push({
           key: `pay_over:${p.itemId}`,
@@ -206,6 +226,8 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
     counts,
     findings,
     forManager: findings.filter((f) => f.severity !== "normal"),
+    decisions,
+    paymentsDueToday,
   };
   cache = { at: Date.now(), report };
   return report;

@@ -65,6 +65,7 @@
   .acts{align-self:flex-end;max-width:80%;display:flex;flex-direction:column;gap:.25rem}
   .act-note{font-size:.78rem;color:var(--ok);background:var(--surface-alt);border-radius:8px;padding:.2rem .6rem}
   .typing{align-self:flex-end;color:var(--ink-faint);font-size:.85rem;padding:.3rem .5rem}
+  .brk{align-self:center;font-size:.72rem;color:var(--ink-faint);letter-spacing:.06em;margin:.6rem 0;padding:.1rem .8rem;border-top:1px solid var(--line);border-bottom:1px solid var(--line);width:100%;text-align:center}
   .chips{display:flex;gap:.4rem;flex-wrap:wrap;align-self:flex-end;margin-top:.2rem}
   .chip{font:inherit;font-size:.82rem;padding:.25rem .7rem;border:1.5px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);border-radius:999px;cursor:pointer}
   .chip:hover{border-color:var(--accent);color:var(--accent)}
@@ -146,7 +147,7 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(d.error || ("שגיאה " + r.status));
   return d;
 }
-const state = { user: null, history: [], busy: false };
+const state = { user: null, thread: [], busy: false };
 const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
 
 /* ---------- login ---------- */
@@ -177,23 +178,27 @@ async function login(identifier) {
   } catch (e) { $("#loginErr").textContent = e.message; }
 }
 
-/* ---------- history persistence ---------- */
-const histKey = () => "opschat:" + state.user.key;
-function loadHistory() {
-  try { state.history = JSON.parse(localStorage.getItem(histKey()) || "[]"); }
-  catch { state.history = []; }
+/* ---------- history (server-side) ---------- */
+// state.thread = כל ההודעות + מפרידי "שיחה חדשה". ההקשר שנשלח למודל = ההודעות שאחרי המפריד האחרון.
+async function loadHistory() {
+  try {
+    const { history } = await api("/api/chat/history");
+    state.thread = history.map(h => ({ role: h.role, content: h.content, actions: h.actions || [] }));
+  } catch { state.thread = []; }
 }
-function saveHistory() {
-  try { localStorage.setItem(histKey(), JSON.stringify(state.history.slice(-40))); } catch {}
+function activeContext() {
+  let start = 0;
+  for (let i = state.thread.length - 1; i >= 0; i--) if (state.thread[i].role === "break") { start = i + 1; break; }
+  return state.thread.slice(start).filter(m => m.role === "user" || m.role === "assistant").slice(-20);
 }
 
 /* ---------- app ---------- */
-function startApp() {
+async function startApp() {
   $("#login").hidden = true; $("#app").hidden = false;
   $("#userName").textContent = state.user.name;
   $("#userRole").textContent = state.user.roleDescription || "";
   $("#oversightBtn").hidden = !(state.user.canOversee || state.user.canFinance);
-  loadHistory();
+  await loadHistory();
   renderChat();
   loadNotifications();
 }
@@ -216,7 +221,11 @@ async function loadNotifications() {
   box.appendChild(btn);
 }
 $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST" }); location.reload(); };
-$("#resetBtn").onclick = () => { state.history = []; saveHistory(); renderChat(); };
+$("#resetBtn").onclick = async () => {
+  try { await api("/api/chat/new", { method:"POST" }); } catch {}
+  state.thread.push({ role: "break", content: "" });
+  renderChat();
+};
 
 function bubble(role, text) {
   const b = el("div", "msg " + (role === "user" ? "me" : "bot"));
@@ -236,8 +245,16 @@ function renderChat() {
   const intro = el("div", "msg bot intro",
     "בוקר טוב 🌤️ אני העוזר התפעולי שלך. תגיד/י לי 'בוקר טוב' ואראה לך מה על הפרק היום, ועדכן/י אותי במהלך היום מה ביצעת — אני אדאג לרשום ב-Monday.");
   c.appendChild(intro);
-  for (const m of state.history) bubble(m.role, m.content);
-  if (state.history.length === 0) {
+  for (const m of state.thread) {
+    if (m.role === "break") { c.appendChild(el("div", "brk", "שיחה חדשה")); continue; }
+    if (m.actions && m.actions.length && m.role === "assistant") {
+      const box = el("div", "acts");
+      for (const a of m.actions) box.appendChild(el("div", "act-note", a));
+      c.appendChild(box);
+    }
+    bubble(m.role, m.content);
+  }
+  if (activeContext().length === 0) {
     const chips = el("div", "chips");
     for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
       const ch = el("button", "chip", q);
@@ -257,14 +274,15 @@ async function sendMessage(text) {
   $("#input").value = "";
   $("#chat").querySelector(".chips")?.remove();
 
-  state.history.push({ role: "user", content: text });
+  state.thread.push({ role: "user", content: text });
   bubble("user", text);
   const typing = el("div", "typing", "מקליד…");
   $("#chat").appendChild(typing);
   scrollDown();
 
   try {
-    const { reply, actions } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: state.history }) });
+    const ctx = [...activeContext()];
+    const { reply, actions } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx }) });
     typing.remove();
     if (actions && actions.length) {
       const box = el("div", "acts");
@@ -272,8 +290,7 @@ async function sendMessage(text) {
       $("#chat").appendChild(box);
     }
     bubble("assistant", reply);
-    state.history.push({ role: "assistant", content: reply });
-    saveHistory();
+    state.thread.push({ role: "assistant", content: reply, actions: actions || [] });
   } catch (e) {
     typing.remove();
     bubble("assistant", "משהו השתבש: " + e.message);

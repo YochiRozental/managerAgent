@@ -15,6 +15,12 @@ import {
   TEAM_DIRECTORY,
   type IdentifiedUser,
 } from "../identity/index.js";
+import {
+  addChatBreak,
+  appendChatTurn,
+  clearChatHistory,
+  getChatHistory,
+} from "../db/repositories/chatHistory.js";
 import { listOpenCommitments, listUserCommitments } from "../db/repositories/commitments.js";
 import {
   listUnseenNotifications,
@@ -149,7 +155,28 @@ const server = createServer(async (req, res) => {
       if (result.actions.length) {
         logger.info({ user: user.key, actions: result.actions }, "עדכוני משימה מהצ'אט");
       }
+      appendChatTurn(user.key, messages[messages.length - 1]!.content, result.reply, result.actions);
       return send(res, 200, result);
+    }
+
+    if (req.method === "GET" && path === "/api/chat/history") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      return send(res, 200, { history: getChatHistory(user.key) });
+    }
+
+    if (req.method === "POST" && path === "/api/chat/new") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      addChatBreak(user.key);
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && path === "/api/chat/clear") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      clearChatHistory(user.key);
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === "POST" && path === "/api/task/update") {

@@ -37,6 +37,17 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_key, seen_at);
 
+-- היסטוריית שיחות — כל הודעה נשמרת בשרת (לא רק ב-localStorage של הדפדפן).
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_key TEXT NOT NULL,
+  role TEXT NOT NULL,              -- user | assistant | break (מפריד "שיחה חדשה")
+  content TEXT NOT NULL,
+  actions TEXT,                    -- JSON של פעולות שבוצעו בסבב הזה
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages (user_key, id);
+
 -- התחייבויות (מטרה 7): מה הובטח, למי, מתי צריך לקיים. נרשם דרך הצ'אט.
 CREATE TABLE IF NOT EXISTS commitments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

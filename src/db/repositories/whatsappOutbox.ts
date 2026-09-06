@@ -24,7 +24,16 @@ const dropOldStmt = db.prepare(
   `UPDATE whatsapp_outbox SET sent_at = datetime('now') WHERE sent_at IS NULL AND created_at < datetime('now', '-12 hours')`,
 );
 
-export function enqueueWhatsapp(jid: string, body: string): void {
+const supersedeStmt = db.prepare(
+  `UPDATE whatsapp_outbox SET sent_at = datetime('now') WHERE jid = ? AND sent_at IS NULL`,
+);
+
+/**
+ * enqueue שמחליף הודעות קודמות שטרם נשלחו לאותו נמען — לתדריך/דוח שיוצא פעם ביום,
+ * כדי שאם הסוכן היה כבוי כמה סבבים, הנמען יקבל רק את הגרסה האחרונה.
+ */
+export function enqueueWhatsapp(jid: string, body: string, supersede = false): void {
+  if (supersede) supersedeStmt.run(jid);
   insertStmt.run(jid, body);
 }
 

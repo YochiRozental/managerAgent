@@ -37,6 +37,20 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_key, seen_at);
 
+-- התחייבויות (מטרה 7): מה הובטח, למי, מתי צריך לקיים. נרשם דרך הצ'אט.
+CREATE TABLE IF NOT EXISTS commitments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_by TEXT NOT NULL,        -- user_key של מי שרשם
+  to_whom TEXT NOT NULL,           -- הלקוח / הגורם
+  what TEXT NOT NULL,
+  due_date TEXT,                   -- YYYY-MM-DD
+  project TEXT,
+  status TEXT NOT NULL DEFAULT 'open',  -- open | done | cancelled
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_commitments_status ON commitments (status, due_date);
+
 -- הודעות WhatsApp יוצאות. סוכן ה-WhatsApp מרוקן את התור; אם הוא לא רץ — ההודעה מחכה.
 CREATE TABLE IF NOT EXISTS whatsapp_outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

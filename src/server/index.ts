@@ -15,6 +15,7 @@ import {
   TEAM_DIRECTORY,
   type IdentifiedUser,
 } from "../identity/index.js";
+import { listOpenCommitments, listUserCommitments } from "../db/repositories/commitments.js";
 import {
   listUnseenNotifications,
   markNotificationsSeen,
@@ -208,6 +209,22 @@ const server = createServer(async (req, res) => {
         return send(res, 403, { error: "למוטי בלבד" });
       }
       return send(res, 200, await buildWeeklyReport());
+    }
+
+    if (req.method === "GET" && path === "/api/commitments") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const all = user.permissions.includes("view:all_work");
+      return send(res, 200, {
+        commitments: (all ? listOpenCommitments() : listUserCommitments(user.key)).map((c) => ({
+          id: c.id,
+          toWhom: c.toWhom,
+          what: c.what,
+          dueDate: c.dueDate,
+          project: c.project,
+          by: resolveUserByKey(c.createdBy)?.name ?? c.createdBy,
+        })),
+      });
     }
 
     if (req.method === "GET" && path === "/api/notifications") {

@@ -20,6 +20,11 @@ import {
   getProjectNextAction,
   type OpsTask,
 } from "../integrations/monday/opsRead.js";
+import {
+  addCommitment,
+  closeCommitment,
+  listUserCommitments,
+} from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
 import { updateTask } from "./actions.js";
 import { runControlScan } from "./controlScan.js";
@@ -55,6 +60,7 @@ function systemPrompt(user: IdentifiedUser): string {
     "• כשהעובד מדווח שביצע / התקדם / שינה משהו — זהה את המשימה עם find_task (לפי מה שהוא תיאר). אם יש כמה התאמות — הצג אותן ושאל איזו. אם אין — אמור זאת ובקש תיאור מדויק יותר.",
     "• אחרי שזיהית — עדכן ב-Monday: mark_done כשסיים, set_status ל'בעבודה' כשהתחיל, add_note לעדכון ביניים. אשר בקצרה מה עדכנת ואז שאל: 'מה הבא שאתה עובד עליו?'",
     "• 'תקוע' / 'חסום' / 'מחכה ל...' — קרא report_blocker עם תיאור החסם.",
+    "• 'הבטחתי ללקוח...' / 'אמרתי ש...' / 'התחייבתי ל...' — קרא record_commitment. 'שלחתי ללקוח' / 'קיימתי' על התחייבות קיימת — close_commitment. 'מה הבטחתי?' — list_my_commitments.",
     "",
     "כללים:",
     "• לעולם אל תעדכן ב-Monday בלי שהעובד אמר מפורשות שהוא ביצע או שינה משהו. שאלה או בקשת מידע אינה דיווח.",
@@ -330,6 +336,62 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
         actions.push(`🚧 ${t?.name ?? input.itemId} — תקוע`);
         await refresh();
         return r;
+      },
+    },
+    {
+      name: "record_commitment",
+      description:
+        "רושם התחייבות שהעובד נתן — משהו שהובטח ללקוח / ליועץ / לגורם אחר. קרא לזה כשהעובד אומר 'הבטחתי ל...', 'אמרתי ללקוח ש...', 'התחייבתי לשלוח עד...'. נסה למלא תאריך יעד אם נאמר.",
+      input_schema: {
+        type: "object",
+        properties: {
+          toWhom: { type: "string", description: "למי הובטח (שם הלקוח/הגורם)" },
+          what: { type: "string", description: "מה הובטח" },
+          dueDate: { type: "string", description: "תאריך יעד YYYY-MM-DD, אם נאמר" },
+          project: { type: "string", description: "שם הפרויקט אם רלוונטי" },
+        },
+        required: ["toWhom", "what"],
+      },
+      run: async (input) => {
+        const c = addCommitment({
+          createdBy: user.key,
+          toWhom: String(input.toWhom),
+          what: String(input.what),
+          dueDate: input.dueDate ? String(input.dueDate) : undefined,
+          project: input.project ? String(input.project) : undefined,
+        });
+        actions.push(`🤝 התחייבות נרשמה: ${c.toWhom} — ${c.what}`);
+        return { ok: true, id: c.id, dueDate: c.dueDate };
+      },
+    },
+    {
+      name: "list_my_commitments",
+      description: "מחזיר את ההתחייבויות הפתוחות של העובד. לשאלות כמו 'מה הבטחתי?', 'מה אני חייב ללקוחות?'.",
+      input_schema: { type: "object", properties: {} },
+      run: async () => ({
+        commitments: listUserCommitments(user.key).map((c) => ({
+          id: c.id,
+          toWhom: c.toWhom,
+          what: c.what,
+          dueDate: c.dueDate,
+        })),
+      }),
+    },
+    {
+      name: "close_commitment",
+      description: "סוגר התחייבות — כשהעובד אומר שקיים אותה ('שלחתי ללקוח', 'קיימתי') או שהיא כבר לא רלוונטית. קבל id מ-list_my_commitments.",
+      input_schema: {
+        type: "object",
+        properties: {
+          id: { type: "number" },
+          outcome: { type: "string", enum: ["done", "cancelled"] },
+        },
+        required: ["id", "outcome"],
+      },
+      run: async (input) => {
+        const ok = closeCommitment(Number(input.id), input.outcome === "cancelled" ? "cancelled" : "done");
+        if (ok) actions.push(`🤝 התחייבות ${input.outcome === "cancelled" ? "בוטלה" : "קוימה"}`);
+        return { ok };
       },
     },
   ];

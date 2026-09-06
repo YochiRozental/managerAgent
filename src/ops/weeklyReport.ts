@@ -9,6 +9,7 @@
 
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
+import { listOpenCommitments } from "../db/repositories/commitments.js";
 import {
   chronicFindings,
   findingsOpenedSince,
@@ -118,6 +119,23 @@ export async function buildWeeklyReport(): Promise<WeeklyReport> {
   s.push(`  דורש טיפול: ${salesFindings.length} (פולו-אפים, הצעות תלויות)`);
   s.push("");
 
+  // ---- התחייבויות ----
+  const commitments = listOpenCommitments();
+  if (commitments.length) {
+    const overdue = commitments.filter((c) => c.dueDate && c.dueDate < now.toISODate()!);
+    const soon = commitments.filter((c) => {
+      if (!c.dueDate) return false;
+      const d = DateTime.fromISO(c.dueDate, { zone: env.TIMEZONE }).startOf("day");
+      return d >= now.startOf("day") && d <= nextWeekEnd;
+    });
+    s.push("━━ התחייבויות ללקוחות ━━");
+    s.push(`  ${commitments.length} פתוחות · ${overdue.length} באיחור · ${soon.length} לשבוע הקרוב`);
+    for (const c of [...overdue, ...soon].slice(0, 6)) {
+      s.push(`    • ${c.toWhom}: ${c.what}${c.dueDate ? ` (${c.dueDate})` : ""}`);
+    }
+    s.push("");
+  }
+
   // ---- גבייה ----
   const payFindings = crm.findings.filter((f) => f.project === "גבייה");
   s.push("━━ גבייה ━━");
@@ -147,7 +165,7 @@ export async function buildWeeklyReport(): Promise<WeeklyReport> {
   if (moti) {
     supersedeKind(moti.key, "weekly");
     addNotification(moti.key, "weekly", text);
-    if (moti.whatsappJid) enqueueWhatsapp(moti.whatsappJid, text);
+    if (moti.whatsappJid) enqueueWhatsapp(moti.whatsappJid, text, true);
   }
 
   logger.info(

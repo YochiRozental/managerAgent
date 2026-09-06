@@ -54,6 +54,7 @@ interface BriefingInput {
   now: DateTime;
   decisions: { name: string; detail: string }[];
   projectRisk: StoredFinding[];
+  commitmentsAndClients: StoredFinding[];
   criticalTasks: StoredFinding[];
   sales: StoredFinding[];
   collection: StoredFinding[];
@@ -78,6 +79,10 @@ function briefingText(b: BriefingInput): string {
   sec(
     "פרויקטים בסיכון",
     b.projectRisk.map((f) => `  • ${f.headline}${f.who ? ` (${f.who})` : ""}`),
+  );
+  sec(
+    "התחייבויות ולקוחות שמחכים",
+    b.commitmentsAndClients.map((f) => `  ${SEV_ICON[f.severity]} ${f.headline} — ${f.who}`),
   );
   sec(
     "משימות דחופות ותקיעות",
@@ -196,6 +201,8 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
 
   const CRM_AREAS = new Set(["מכירות", "לידים", "גבייה"]);
   const isProjectRisk = (f: StoredFinding) => f.kind === "project_stuck" || f.kind === "delivery_overdue";
+  const isCommitmentOrClient = (f: StoredFinding) =>
+    f.kind === "commitment_overdue" || f.kind === "client_waiting";
 
   const dayStart = now.startOf("day");
   const dayEnd = now.endOf("day");
@@ -215,7 +222,10 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
     now,
     decisions: crm.decisions,
     projectRisk: managerFindings.filter(isProjectRisk),
-    criticalTasks: managerFindings.filter((f) => !CRM_AREAS.has(f.project ?? "") && !isProjectRisk(f)),
+    commitmentsAndClients: managerFindings.filter(isCommitmentOrClient),
+    criticalTasks: managerFindings.filter(
+      (f) => !CRM_AREAS.has(f.project ?? "") && !isProjectRisk(f) && !isCommitmentOrClient(f),
+    ),
     sales: managerFindings.filter((f) => f.project === "מכירות" || f.project === "לידים"),
     collection: managerFindings.filter((f) => f.project === "גבייה"),
     dueToday: {
@@ -231,7 +241,7 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
     supersedeKind(moti.key, "briefing"); // תדריך היום מחליף את של אתמול
     addNotification(moti.key, "briefing", text);
     if (moti.whatsappJid) {
-      enqueueWhatsapp(moti.whatsappJid, text);
+      enqueueWhatsapp(moti.whatsappJid, text, true);
       briefingQueued = true;
     }
   }

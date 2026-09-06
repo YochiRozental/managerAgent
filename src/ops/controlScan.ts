@@ -7,7 +7,8 @@
  * ההגדרות והספים כאן v1 — לכיוונון מול מוטי אחרי הרצה (CLAUDE.md סעיף 7).
  */
 
-import { userCan, type IdentifiedUser } from "../identity/index.js";
+import { listOpenCommitments } from "../db/repositories/commitments.js";
+import { resolveUserByKey, userCan, type IdentifiedUser } from "../identity/index.js";
 import type { DashboardTask } from "./dashboard.js";
 import { getOfficeState } from "./officeState.js";
 import { DateTime } from "luxon";
@@ -27,7 +28,9 @@ export interface Finding {
     | "no_owner"
     | "delivery_overdue"
     | "project_stuck"
-    | "stage_gap";
+    | "stage_gap"
+    | "commitment_overdue"
+    | "client_waiting";
   headline: string;
   detail: string;
   /** מי אמור לטפל — לצורך ההסלמה */
@@ -173,6 +176,56 @@ export async function runControlScan(): Promise<ControlScanReport> {
     // *משויכות* (person ריק), אז openHere=0 לא אומר שאין עבודה. דורש שאילתה שסופרת גם משימות
     // פתוחות בלי אחראי לפני שזה סיגנל אמין.
     void openHere;
+  }
+
+  // ---- התחייבויות (מטרה 7) — נרשמות דרך הצ'אט, נבדקות כאן ----
+  for (const c of listOpenCommitments()) {
+    if (!c.dueDate) continue;
+    const due = DateTime.fromISO(c.dueDate, { zone: env.TIMEZONE }).startOf("day");
+    const daysPast = Math.floor(today.diff(due, "days").days);
+    if (daysPast < 0) continue;
+    const owner = resolveUserByKey(c.createdBy)?.name ?? c.createdBy;
+    add({
+      key: `commitment:${c.id}`,
+      severity: daysPast >= 2 ? "high" : "normal",
+      kind: "commitment_overdue",
+      headline: `התחייבות ${daysPast === 0 ? "להיום" : `באיחור ${daysPast} ימים`}: ${c.what}`,
+      detail: `הובטח ל${c.toWhom}${c.project ? ` · פרויקט ${c.project}` : ""} · נרשם ע"י ${owner}`,
+      who: owner,
+      project: c.project ?? undefined,
+    });
+  }
+
+  // ---- לקוח מחכה לנו (מטרה 8) ----
+  // שני סיגנלים: (א) שלב תקוע ב"ממתין ללקוח" מעל שבועיים — כנראה הלקוח כבר ענה ולא זזנו;
+  // (ב) משימה מול-לקוח באיחור שהכדור אצל המשרד.
+  const CLIENT_FACING = /פגיש|לקוח|אישור|עדכון לקוח|שליח|החתמ|מייל ללקוח|חזר|תיאום|מצג/;
+  for (const t of allTasks) {
+    const longWait =
+      (t.status === "ממתין ללקוח" || t.status === "ממתין להתייחסות") &&
+      t.flags.overdue &&
+      t.flags.daysOverdue >= 14;
+    const clientFacingOverdue =
+      t.flags.overdue &&
+      !t.flags.waitingExternal &&
+      (!t.responsibleParty || t.responsibleParty === "המשרד") &&
+      CLIENT_FACING.test(t.name) &&
+      t.flags.daysOverdue >= 3;
+    if (!longWait && !clientFacingOverdue) continue;
+    add({
+      key: `clientwait:${t.itemId}`,
+      severity: t.flags.daysOverdue >= 10 ? "high" : "normal",
+      kind: "client_waiting",
+      headline: longWait
+        ? `"ממתין ללקוח" כבר ${t.flags.daysOverdue} ימים: ${t.name}`
+        : `לקוח מחכה — באיחור ${t.flags.daysOverdue} ימים: ${t.name}`,
+      detail: `${t.stageName ? `${t.context} › ${t.stageName}` : t.context}${
+        longWait ? " — כדאי לבדוק אם הלקוח כבר ענה" : ""
+      }`,
+      who: ownerOf(t, projectOwnerByName.get(t.context)),
+      project: t.context,
+      url: t.url,
+    });
   }
 
   findings.sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]);

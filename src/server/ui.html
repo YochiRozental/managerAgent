@@ -300,11 +300,12 @@ $("#oversightBtn").onclick = async () => {
   const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען… (כמה שניות)</p>";
   try {
     const jobs = state.user.canOversee
-      ? [api("/api/control"), api("/api/oversight"), api("/api/crm")]
-      : [Promise.resolve(null), Promise.resolve(null), api("/api/crm")];
-    const [scan, over, crm] = await Promise.all(jobs);
+      ? [api("/api/control"), api("/api/oversight"), api("/api/crm"), api("/api/commitments")]
+      : [Promise.resolve(null), Promise.resolve(null), api("/api/crm"), api("/api/commitments")];
+    const [scan, over, crm, comm] = await Promise.all(jobs);
     body.innerHTML = "";
     if (scan) renderControl(scan);
+    if (comm && comm.commitments.length) renderCommitments(comm.commitments);
     if (crm) renderCrm(crm);
     if (over) renderOversight(over);
   } catch (e) { body.innerHTML = ""; body.appendChild(el("p", "err", e.message)); }
@@ -322,6 +323,22 @@ function findingCard(f) {
   box.appendChild(el("div", "proj-sub", f.detail));
   if (f.url) { const a = el("a", null, "פתח ב-Monday ↗"); a.href = f.url; a.target = "_blank"; a.style.fontSize = ".82rem"; box.appendChild(a); }
   return box;
+}
+
+function renderCommitments(list) {
+  const b = $("#ovBody");
+  b.appendChild(el("div", "sec-title", `התחייבויות ללקוחות (${list.length})`));
+  const today = new Date().toISOString().slice(0, 10);
+  for (const c of list) {
+    const box = el("div", "proj");
+    const late = c.dueDate && c.dueDate < today;
+    box.style.borderInlineStartColor = late ? "var(--overdue)" : "var(--warn)";
+    const top = el("div", "proj-top");
+    top.append(el("span", null, `${c.toWhom} — ${c.what}`), el("span", "role", c.by));
+    box.appendChild(top);
+    box.appendChild(el("div", "proj-sub", (c.dueDate ? (late ? "באיחור · יעד " : "יעד ") + c.dueDate : "בלי תאריך") + (c.project ? ` · ${c.project}` : "")));
+    b.appendChild(box);
+  }
 }
 
 function renderCrm(r) {

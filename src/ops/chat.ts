@@ -27,6 +27,7 @@ import {
 } from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
 import { updateTask } from "./actions.js";
+import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
 import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
@@ -69,7 +70,7 @@ function systemPrompt(user: IdentifiedUser): string {
     ...(userCan(user, "view:all_work")
       ? [
           "",
-          "יש לך גם ראייה על כל המשרד. כשמוטי שואל שאלות כמו 'מה תקוע?', 'מה דורש אותי?', 'מה קורה אצל דוב?', 'מה מצב פרויקט X?', 'מה מצב המכירות/הגבייה?', 'איזה פרויקטים בסיכון?', 'על מה אנחנו מחכים?' — השתמש בכלי הבקרה (office_overview / person_status / project_status / list_findings / sales_and_collection). ענה תמציתי, עם המספרים והשמות הרלוונטיים, והצע את הצעד הבא כשברור.",
+          "יש לך גם ראייה על כל המשרד. כשמוטי שואל 'מה תקוע?', 'מה דורש אותי?', 'מה קורה אצל דוב?', 'מה מצב פרויקט X?', 'מה מצב המכירות/הגבייה?', 'איזה פרויקטים בסיכון?' — השתמש בכלי הבקרה (office_overview / person_status / project_status / list_findings / sales_and_collection). כשמוטי מבקש למצוא ליד או עסקה ספציפית ('גש לליד X', 'מה מצב העסקה של Y') — קרא find_lead_or_deal (מחפש בכל הסטטוסים). ענה תמציתי עם המספרים והשמות, והצע צעד הבא כשברור.",
         ]
       : []),
   ].join("\n");
@@ -504,6 +505,35 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
             sales: crm.findings.filter((f) => f.project === "מכירות" || f.project === "לידים").map(fmtFinding),
             collection: crm.findings.filter((f) => f.project === "גבייה").map(fmtFinding),
             paymentsDueToday: crm.paymentsDueToday.map((p) => `${p.label} ${p.amount}`),
+          };
+        },
+      },
+      {
+        name: "find_lead_or_deal",
+        description:
+          "מחפש ליד או עסקה ספציפית לפי שם, בכל הסטטוסים (כולל סגורים ומוקפאים) — חיפוש ישיר בבורדי הלידים והעסקאות. השתמש בזה כשמוטי מבקש 'גש לליד X', 'מה מצב העסקה של Y', 'תמצא את הליד של Z'. מחזיר סטטוס, אחראי, תאריך תזכורת ותאריך יצירה.",
+        input_schema: {
+          type: "object",
+          properties: { query: { type: "string", description: "שם הליד/העסקה או חלק ממנו" } },
+          required: ["query"],
+        },
+        run: async (input) => {
+          const matches = await searchLeadsAndDeals(String(input.query ?? ""));
+          if (matches.length === 0) {
+            return { found: false, note: "לא נמצא ליד/עסקה עם השם הזה בשני הבורדים." };
+          }
+          return {
+            found: true,
+            matches: matches.map((m) => ({
+              board: m.board,
+              name: m.name,
+              status: m.status || "לא הוגדר",
+              owner: m.owner || "בלי אחראי",
+              reminderDate: m.reminderDate ?? null,
+              createdDate: m.createdDate ?? null,
+              extra: m.extra ?? null,
+              url: m.url,
+            })),
           };
         },
       },

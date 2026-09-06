@@ -194,6 +194,64 @@ async function pageAllSel(boardId: string, cvIds: string): Promise<RawItem[]> {
   return items;
 }
 
+export interface CrmMatch {
+  board: "לידים" | "עסקאות";
+  itemId: string;
+  name: string;
+  status: string;
+  owner: string;
+  reminderDate?: string;
+  createdDate?: string;
+  extra?: string;
+  url: string;
+}
+
+/** מחפש ליד או עסקה לפי שם — בכל הסטטוסים (כולל סגורים/מוקפאים), לחיפוש ישיר מהצ'אט. */
+export async function searchLeadsAndDeals(query: string): Promise<CrmMatch[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const rule = `{ column_id: "name", compare_value: "${q.replace(/"/g, "")}", operator: contains_text }`;
+  const sel = `id name column_values(ids: ${CV_IDS}) { id text ${REL} }`;
+
+  const [leadRes, dealRes] = await Promise.all([
+    mondayRequest<{ boards: { items_page: { items: RawItem[] } }[] }>(
+      `query { boards(ids: [${BOARD_LEADS}]) { items_page(limit: 25, query_params: { rules: [${rule}] }) { items { ${sel} } } } }`,
+    ).catch(() => ({ boards: [{ items_page: { items: [] } }] })),
+    mondayRequest<{ boards: { items_page: { items: RawItem[] } }[] }>(
+      `query { boards(ids: [${BOARD_DEALS}]) { items_page(limit: 25, query_params: { rules: [${rule}] }) { items { ${sel} } } } }`,
+    ).catch(() => ({ boards: [{ items_page: { items: [] } }] })),
+  ]);
+
+  const out: CrmMatch[] = [];
+  for (const it of leadRes.boards[0]?.items_page.items ?? []) {
+    out.push({
+      board: "לידים",
+      itemId: it.id,
+      name: it.name,
+      status: cv(it.column_values, "color__1"),
+      owner: cv(it.column_values, "multiple_person__1"),
+      reminderDate: dateOnly(cv(it.column_values, "date__1")),
+      createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
+      extra: cv(it.column_values, "color5__1") || undefined,
+      url: `${HOST}/boards/${BOARD_LEADS}/pulses/${it.id}`,
+    });
+  }
+  for (const it of dealRes.boards[0]?.items_page.items ?? []) {
+    out.push({
+      board: "עסקאות",
+      itemId: it.id,
+      name: it.name,
+      status: cv(it.column_values, "color__1"),
+      owner: cv(it.column_values, "multiple_person__1"),
+      reminderDate: dateOnly(cv(it.column_values, "date__1")),
+      createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
+      extra: cv(it.column_values, "color04__1") || undefined,
+      url: `${HOST}/boards/${BOARD_DEALS}/pulses/${it.id}`,
+    });
+  }
+  return out;
+}
+
 export interface Payment {
   itemId: string;
   name: string;

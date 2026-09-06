@@ -26,7 +26,7 @@ import {
   listUserCommitments,
 } from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
-import { updateTask } from "./actions.js";
+import { addUpdateToItem, updateTask } from "./actions.js";
 import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
@@ -61,6 +61,7 @@ function systemPrompt(user: IdentifiedUser): string {
     "• כשהעובד מדווח שביצע / התקדם / שינה משהו — זהה את המשימה עם find_task (לפי מה שהוא תיאר). אם יש כמה התאמות — הצג אותן ושאל איזו. אם אין — אמור זאת ובקש תיאור מדויק יותר.",
     "• אחרי שזיהית — עדכן ב-Monday: mark_done כשסיים, set_status ל'בעבודה' כשהתחיל, add_note לעדכון ביניים. אשר בקצרה מה עדכנת ואז שאל: 'מה הבא שאתה עובד עליו?'",
     "• 'תקוע' / 'חסום' / 'מחכה ל...' — קרא report_blocker עם תיאור החסם.",
+    "• 'תכתוב בעדכונים של הליד/המשימה/הפרויקט/העסקה X ש…' / 'תוסיף הערה ל…' — זהה את הפריט (find_task / find_lead_or_deal / project_status), קח את ה-itemId, וקרא add_update. עובד על כל סוג פריט ב-Monday, לא רק משימות.",
     "• 'הבטחתי ללקוח...' / 'אמרתי ש...' / 'התחייבתי ל...' — קרא record_commitment. 'שלחתי ללקוח' / 'קיימתי' על התחייבות קיימת — close_commitment. 'מה הבטחתי?' — list_my_commitments.",
     "",
     "כללים:",
@@ -340,6 +341,25 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
       },
     },
     {
+      name: "add_update",
+      description:
+        "מוסיף הערת עדכון (Update) לכל פריט ב-Monday — ליד / משימה / פרויקט / עסקה / גבייה. קבל את itemId מ-find_task / find_lead_or_deal / project_status. לבקשות כמו 'תכתוב בעדכונים של הליד X ש…', 'תוסיף הערה לפרויקט Y'.",
+      input_schema: {
+        type: "object",
+        properties: {
+          itemId: { type: "string", description: "מזהה הפריט ב-Monday" },
+          body: { type: "string", description: "תוכן ההערה" },
+          label: { type: "string", description: "שם הפריט, לאישור בלבד" },
+        },
+        required: ["itemId", "body"],
+      },
+      run: async (input) => {
+        const r = await addUpdateToItem(user, String(input.itemId), String(input.body));
+        actions.push(`✎ הערה נוספה${input.label ? `: ${input.label}` : ""}`);
+        return r;
+      },
+    },
+    {
       name: "record_commitment",
       description:
         "רושם התחייבות שהעובד נתן — משהו שהובטח ללקוח / ליועץ / לגורם אחר. קרא לזה כשהעובד אומר 'הבטחתי ל...', 'אמרתי ללקוח ש...', 'התחייבתי לשלוח עד...'. נסה למלא תאריך יעד אם נאמר.",
@@ -458,6 +478,7 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
           for (const p of matches) {
             const na = await getProjectNextAction(p.itemId).catch(() => null);
             out.push({
+              itemId: p.itemId,
               name: p.name,
               status: p.status || "לא הוגדר",
               owner: p.owner || "בלי אחראי",
@@ -526,6 +547,7 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
             found: true,
             matches: matches.map((m) => ({
               board: m.board,
+              itemId: m.itemId,
               name: m.name,
               status: m.status || "לא הוגדר",
               owner: m.owner || "בלי אחראי",

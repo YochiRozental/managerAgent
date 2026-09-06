@@ -33,6 +33,29 @@ export interface TaskUpdateInput {
   note?: string;
 }
 
+/**
+ * הוספת הערת עדכון (Update) לכל פריט ב-Monday — ליד / משימה / פרויקט / עסקה / גבייה.
+ * הערה היא פעולה תפעולית פנימית ובלתי-הרסנית, לכן מותרת לכל מי שיש לו הרשאת "נגיעה" כלשהי,
+ * ובלי בדיקת בעלות (בניגוד לשינוי סטטוס). לא כותב ללקוח — רק ל-Updates הפנימיים.
+ */
+export async function addUpdateToItem(
+  user: IdentifiedUser,
+  itemId: string,
+  body: string,
+): Promise<{ ok: true; message: string }> {
+  const canNote =
+    userCan(user, "task:update_own") ||
+    userCan(user, "task:create") ||
+    userCan(user, "lead:manage") ||
+    userCan(user, "finance:manage") ||
+    userCan(user, "project:manage");
+  if (!canNote) throw new Error("אין לך הרשאה להוסיף הערות");
+  if (!body.trim()) throw new Error("הערה ריקה");
+  if (!/^\d+$/.test(itemId)) throw new Error("מזהה פריט לא תקין");
+  await addTaskNote(itemId, `${body.trim()}\n\n— ${user.name} · דרך העוזר התפעולי`);
+  return { ok: true, message: "ההערה נוספה ל-Monday" };
+}
+
 export async function updateTask(user: IdentifiedUser, input: TaskUpdateInput): Promise<{ ok: true; message: string }> {
   await authorize(user, input.itemId);
 

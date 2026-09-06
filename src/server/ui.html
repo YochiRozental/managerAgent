@@ -81,9 +81,12 @@
   #oversight .close,#history .close,#notifOverlay .close{position:sticky;top:0;margin-inline-start:auto;display:block}
   .ov-wrap{max-width:860px;margin:0 auto}
   #histList{display:flex;flex-direction:column;gap:.5rem;margin-top:.8rem}
-  .hist-row{text-align:right;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;cursor:pointer;font:inherit;box-shadow:var(--shadow)}
+  .hist-row{display:flex;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);overflow:hidden}
   .hist-row:hover{border-color:var(--accent)}
   .hist-row.current{border-inline-start:3px solid var(--accent)}
+  .hist-main{flex:1;text-align:right;background:none;border:none;font:inherit;cursor:pointer;padding:.7rem .9rem;color:var(--ink)}
+  .hist-del{flex:0 0 auto;background:none;border:none;border-inline-start:1px solid var(--line);color:var(--ink-faint);font:inherit;font-size:.8rem;cursor:pointer;padding:0 .85rem}
+  .hist-del:hover{background:var(--overdue-soft);color:var(--overdue)}
   .hist-title{font-weight:600;font-size:.95rem;color:var(--ink)}
   .hist-meta{font-size:.78rem;color:var(--ink-faint);margin-top:.15rem}
   .sec-title{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.15rem;margin:1.6rem 0 .4rem}
@@ -229,28 +232,40 @@ async function startApp() {
   loadNotifications();
 }
 
-$("#historyBtn").onclick = async () => {
-  $("#history").hidden = false;
+async function renderHistory() {
   const box = $("#histList"); box.innerHTML = "<p class='role'>טוען…</p>";
   try {
     const { sessions } = await api("/api/chat/sessions");
     box.innerHTML = "";
     if (!sessions.length) { box.appendChild(el("p", "empty", "אין שיחות שמורות עדיין")); return; }
     for (const s of sessions) {
-      const row = el("button", "hist-row");
-      row.appendChild(el("div", "hist-title", s.title));
+      const row = el("div", "hist-row");
+      if (s.id === state.session) row.classList.add("current");
+      const main = el("button", "hist-main");
+      main.appendChild(el("div", "hist-title", s.title));
       const d = new Date(s.lastAt.replace(" ", "T") + "Z");
-      row.appendChild(el("div", "hist-meta", d.toLocaleString("he-IL", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" }) + ` · ${s.count} הודעות`));
-      row.onclick = async () => {
+      main.appendChild(el("div", "hist-meta", d.toLocaleString("he-IL", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" }) + ` · ${s.count} הודעות`));
+      main.onclick = async () => {
         await loadSession(s.id);
         $("#history").hidden = true;
         renderChat();
       };
-      if (s.id === state.session) row.classList.add("current");
+      const del = el("button", "hist-del", "מחק");
+      del.title = "מחיקת השיחה";
+      del.onclick = async () => {
+        if (!confirm(`למחוק את השיחה "${s.title}"? אי אפשר לשחזר.`)) return;
+        try {
+          await api("/api/chat/session/delete", { method: "POST", body: JSON.stringify({ id: s.id }) });
+          if (s.id === state.session) { state.session = null; state.thread = []; renderChat(); }
+          renderHistory();
+        } catch (e) { alert(e.message); }
+      };
+      row.append(main, del);
       box.appendChild(row);
     }
   } catch (e) { box.innerHTML = ""; box.appendChild(el("p", "err", e.message)); }
-};
+}
+$("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory(); };
 $("#histClose").onclick = () => { $("#history").hidden = true; };
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי" };

@@ -49,6 +49,7 @@ const latestSessionStmt = db.prepare(
   `SELECT session_id FROM chat_messages WHERE user_key = ? ORDER BY id DESC LIMIT 1`,
 );
 const clearStmt = db.prepare(`DELETE FROM chat_messages WHERE user_key = ?`);
+const deleteSessionStmt = db.prepare(`DELETE FROM chat_messages WHERE user_key = ? AND session_id IS ?`);
 
 export function newSessionId(): string {
   return `s${Date.now().toString(36)}`;
@@ -91,4 +92,8 @@ export function latestSessionId(userKey: string): string | null {
 
 export function clearChatHistory(userKey: string): void {
   clearStmt.run(userKey);
+}
+
+export function deleteSession(userKey: string, sessionId: string | null): void {
+  deleteSessionStmt.run(userKey, sessionId);
 }

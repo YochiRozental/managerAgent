@@ -18,6 +18,7 @@ import {
 import {
   appendChatTurn,
   clearChatHistory,
+  deleteSession,
   getSessionMessages,
   latestSessionId,
   listSessions,
@@ -181,6 +182,15 @@ const server = createServer(async (req, res) => {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
       return send(res, 200, { session: newSessionId() });
+    }
+
+    if (req.method === "POST" && path === "/api/chat/session/delete") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const body = await readJsonBody(req);
+      const id = typeof body.id === "string" ? body.id : "";
+      deleteSession(user.key, !id || id === "legacy" ? null : id);
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === "POST" && path === "/api/chat/clear") {

@@ -206,51 +206,75 @@ export interface CrmMatch {
   url: string;
 }
 
-/** מחפש ליד או עסקה לפי שם — בכל הסטטוסים (כולל סגורים/מוקפאים), לחיפוש ישיר מהצ'אט. */
-export async function searchLeadsAndDeals(query: string): Promise<CrmMatch[]> {
-  const q = query.trim();
-  if (q.length < 2) return [];
-  const rule = `{ column_id: "name", compare_value: "${q.replace(/"/g, "")}", operator: contains_text }`;
-  const sel = `id name column_values(ids: ${CV_IDS}) { id text ${REL} }`;
+function norm(s: string): string {
+  return s
+    .replace(/["'`״׳,.\-–—()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
 
-  const [leadRes, dealRes] = await Promise.all([
-    mondayRequest<{ boards: { items_page: { items: RawItem[] } }[] }>(
-      `query { boards(ids: [${BOARD_LEADS}]) { items_page(limit: 25, query_params: { rules: [${rule}] }) { items { ${sel} } } } }`,
-    ).catch(() => ({ boards: [{ items_page: { items: [] } }] })),
-    mondayRequest<{ boards: { items_page: { items: RawItem[] } }[] }>(
-      `query { boards(ids: [${BOARD_DEALS}]) { items_page(limit: 25, query_params: { rules: [${rule}] }) { items { ${sel} } } } }`,
-    ).catch(() => ({ boards: [{ items_page: { items: [] } }] })),
+/**
+ * מחפש ליד או עסקה לפי שם — בכל הסטטוסים (כולל סגורים/מוקפאים). מושך את שני הבורדים ומדרג
+ * לפי חפיפת מילים, כי שמות ב-Monday מלאים בקיצורים ("בק״ס"), מקפים ומירכאות שחיפוש טקסט מדויק מפספס.
+ */
+export async function searchLeadsAndDeals(query: string): Promise<CrmMatch[]> {
+  const q = norm(query);
+  if (q.length < 2) return [];
+  const words = q.split(" ").filter((w) => w.length >= 2);
+
+  const [leadItems, dealItems] = await Promise.all([
+    pageAllSel(BOARD_LEADS, CV_IDS).catch(() => [] as RawItem[]),
+    pageAllSel(BOARD_DEALS, CV_IDS).catch(() => [] as RawItem[]),
   ]);
 
+  const score = (name: string): number => {
+    const n = norm(name);
+    if (n.includes(q)) return 100;
+    return words.reduce((s, w) => s + (n.includes(w) ? 1 : 0), 0);
+  };
+
+  const scored: { it: RawItem; board: "לידים" | "עסקאות"; s: number }[] = [];
+  for (const it of leadItems) scored.push({ it, board: "לידים", s: score(it.name) });
+  for (const it of dealItems) scored.push({ it, board: "עסקאות", s: score(it.name) });
+
+  const exact = scored.filter((x) => x.s >= 100);
+  // התאמת-על (כל מילות השאילתה נמצאות) עדיפה על התאמה חלקית
+  const strong = scored.filter((x) => x.s > 0 && x.s >= words.length && x.s < 100);
+  const pool = exact.length ? exact : strong.length ? strong : scored.filter((x) => x.s > 0);
+  const top = pool.sort((a, b) => b.s - a.s).slice(0, 6);
+
   const out: CrmMatch[] = [];
-  for (const it of leadRes.boards[0]?.items_page.items ?? []) {
-    out.push({
-      board: "לידים",
-      itemId: it.id,
-      name: it.name,
-      status: cv(it.column_values, "color__1"),
-      owner: cv(it.column_values, "multiple_person__1"),
-      reminderDate: dateOnly(cv(it.column_values, "date__1")),
-      createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
-      extra: cv(it.column_values, "color5__1") || undefined,
-      url: `${HOST}/boards/${BOARD_LEADS}/pulses/${it.id}`,
-    });
-  }
-  for (const it of dealRes.boards[0]?.items_page.items ?? []) {
-    out.push({
-      board: "עסקאות",
-      itemId: it.id,
-      name: it.name,
-      status: cv(it.column_values, "color__1"),
-      owner: cv(it.column_values, "multiple_person__1"),
-      reminderDate: dateOnly(cv(it.column_values, "date__1")),
-      createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
-      extra: cv(it.column_values, "color04__1") || undefined,
-      url: `${HOST}/boards/${BOARD_DEALS}/pulses/${it.id}`,
-    });
+  for (const { it, board } of top) {
+    if (board === "לידים") {
+      out.push({
+        board: "לידים",
+        itemId: it.id,
+        name: it.name,
+        status: cv(it.column_values, "color__1"),
+        owner: cv(it.column_values, "multiple_person__1"),
+        reminderDate: dateOnly(cv(it.column_values, "date__1")),
+        createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
+        extra: cv(it.column_values, "color5__1") || undefined,
+        url: `${HOST}/boards/${BOARD_LEADS}/pulses/${it.id}`,
+      });
+    } else {
+      out.push({
+        board: "עסקאות",
+        itemId: it.id,
+        name: it.name,
+        status: cv(it.column_values, "color__1"),
+        owner: cv(it.column_values, "multiple_person__1"),
+        reminderDate: dateOnly(cv(it.column_values, "date__1")),
+        createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
+        extra: cv(it.column_values, "color04__1") || undefined,
+        url: `${HOST}/boards/${BOARD_DEALS}/pulses/${it.id}`,
+      });
+    }
   }
   return out;
 }
+
 
 export interface Payment {
   itemId: string;

@@ -192,7 +192,7 @@ function startApp() {
   $("#login").hidden = true; $("#app").hidden = false;
   $("#userName").textContent = state.user.name;
   $("#userRole").textContent = state.user.roleDescription || "";
-  $("#oversightBtn").hidden = !state.user.canOversee;
+  $("#oversightBtn").hidden = !(state.user.canOversee || state.user.canFinance);
   loadHistory();
   renderChat();
   loadNotifications();
@@ -297,35 +297,62 @@ $("#input").addEventListener("input", (e) => {
 /* ---------- oversight ---------- */
 $("#oversightBtn").onclick = async () => {
   $("#oversight").hidden = false;
-  const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען את מצב כל המשרד… (כמה שניות)</p>";
+  const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען… (כמה שניות)</p>";
   try {
-    const [scan, over] = await Promise.all([api("/api/control"), api("/api/oversight")]);
+    const jobs = state.user.canOversee
+      ? [api("/api/control"), api("/api/oversight"), api("/api/crm")]
+      : [Promise.resolve(null), Promise.resolve(null), api("/api/crm")];
+    const [scan, over, crm] = await Promise.all(jobs);
     body.innerHTML = "";
-    renderControl(scan);
-    renderOversight(over);
+    if (scan) renderControl(scan);
+    if (crm) renderCrm(crm);
+    if (over) renderOversight(over);
   } catch (e) { body.innerHTML = ""; body.appendChild(el("p", "err", e.message)); }
 };
 $("#ovClose").onclick = () => { $("#oversight").hidden = true; };
 
 const SEV = { critical:"🔴", high:"🟠", normal:"⚪" };
+
+function findingCard(f) {
+  const box = el("div", "proj");
+  box.style.borderInlineStartColor = f.severity === "critical" ? "var(--overdue)" : "var(--warn)";
+  const top = el("div", "proj-top");
+  top.append(el("span", null, `${SEV[f.severity]} ${f.headline}`), el("span", "role", f.who));
+  box.appendChild(top);
+  box.appendChild(el("div", "proj-sub", f.detail));
+  if (f.url) { const a = el("a", null, "פתח ב-Monday ↗"); a.href = f.url; a.target = "_blank"; a.style.fontSize = ".82rem"; box.appendChild(a); }
+  return box;
+}
+
+function renderCrm(r) {
+  const b = $("#ovBody");
+  b.appendChild(el("div", "sec-title", "מכירות וכספים"));
+  b.appendChild(el("p", "role", `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
+  const groups = { "גבייה": [], "מכירות": [], "לידים": [] };
+  for (const f of r.findings) (groups[f.project] || (groups[f.project] = [])).push(f);
+  for (const [area, list] of Object.entries(groups)) {
+    if (!list.length) continue;
+    b.appendChild(el("div", "proj-sub", `${area} — ${list.length}`)).style.fontWeight = "700";
+    for (const f of list.filter(x => x.severity !== "normal")) b.appendChild(findingCard(f));
+    const rest = list.filter(x => x.severity === "normal");
+    if (rest.length) {
+      const d = el("details"); d.style.margin = ".3rem 0 1rem";
+      d.appendChild(el("summary", "role", `עוד ${rest.length} ב${area} (לא דחוף)`));
+      for (const f of rest) d.appendChild(el("div", "proj-sub", `⚪ ${f.headline} — ${f.who}`));
+      b.appendChild(d);
+    }
+  }
+}
+
 function renderControl(r) {
   const b = $("#ovBody");
-  b.appendChild(el("div", "sec-title", "בקרה יזומה — מה דורש תשומת לב"));
+  b.appendChild(el("div", "sec-title", "בקרה יזומה — פרויקטים ומשימות"));
   b.appendChild(el("p", "role",
     `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
   if (r.forManager.length === 0) {
     b.appendChild(el("p", "empty", "אין ממצאים קריטיים או דחופים 👌"));
   }
-  for (const f of r.forManager) {
-    const box = el("div", "proj");
-    box.style.borderInlineStartColor = f.severity === "critical" ? "var(--overdue)" : "var(--warn)";
-    const top = el("div", "proj-top");
-    top.append(el("span", null, `${SEV[f.severity]} ${f.headline}`), el("span", "role", f.who));
-    box.appendChild(top);
-    box.appendChild(el("div", "proj-sub", f.detail));
-    if (f.url) { const a = el("a", null, "פתח ב-Monday ↗"); a.href = f.url; a.target = "_blank"; a.style.fontSize = ".82rem"; box.appendChild(a); }
-    b.appendChild(box);
-  }
+  for (const f of r.forManager) b.appendChild(findingCard(f));
   const rest = r.findings.filter(f => f.severity === "normal");
   if (rest.length) {
     const d = el("details"); d.style.margin = ".6rem 0 1rem";

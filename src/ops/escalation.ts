@@ -23,6 +23,7 @@ import { enqueueWhatsapp } from "../db/repositories/whatsappOutbox.js";
 import { resolveUserByKey, resolveUsersByAssigneeText } from "../identity/index.js";
 import { logger } from "../utils/logger.js";
 import { runControlScan, type Severity } from "./controlScan.js";
+import { runCrmScan } from "./crmScan.js";
 import { getOfficeState } from "./officeState.js";
 
 /** ימי עבודה (א׳–ה׳) בין שני תאריכים, לא כולל היום הראשון. */
@@ -86,12 +87,13 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
   const nowIso = now.toISO()!;
   logger.info("מנוע הבקרה: מתחיל סבב יומי");
 
-  const scan = await runControlScan();
+  const [scan, crm] = await Promise.all([runControlScan(), runCrmScan()]);
   const { projects } = await getOfficeState();
   const ownerByProject = new Map(projects.map((p) => [p.name, p.owner]));
+  const allFindings = [...scan.findings, ...crm.findings];
 
   // 1. שמירה: כל ממצא נוכחי → upsert
-  for (const f of scan.findings) {
+  for (const f of allFindings) {
     upsertFinding({
       findingKey: f.key,
       kind: f.kind,
@@ -174,13 +176,13 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
   }
 
   logger.info(
-    { findings: scan.findings.length, escalations: escalations.length, briefingQueued },
+    { findings: allFindings.length, escalations: escalations.length, briefingQueued },
     "מנוע הבקרה: סבב הסתיים",
   );
 
   return {
     ranAt: nowIso,
-    findings: scan.findings.length,
+    findings: allFindings.length,
     forManager: managerFindings.length,
     escalations,
     briefingQueued,

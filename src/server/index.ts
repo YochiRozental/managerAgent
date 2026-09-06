@@ -22,6 +22,7 @@ import {
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import { getControlScan } from "../ops/controlScan.js";
+import { runCrmScan } from "../ops/crmScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { runDailyControlCycle } from "../ops/escalation.js";
 import { getOversightReport } from "../ops/oversight.js";
@@ -183,6 +184,15 @@ const server = createServer(async (req, res) => {
       return send(res, 200, await getControlScan(user));
     }
 
+    if (req.method === "GET" && path === "/api/crm") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (!user.permissions.includes("view:all_work") && !user.permissions.includes("view:finance")) {
+        return send(res, 403, { error: "בקרת מכירות וכספים — למוטי ולגולדי" });
+      }
+      return send(res, 200, await runCrmScan());
+    }
+
     if (req.method === "POST" && path === "/api/control/run") {
       const user = currentUser(req);
       if (!user || !user.permissions.includes("view:all_work")) {
@@ -218,6 +228,7 @@ function publicUser(user: IdentifiedUser) {
     role: user.role,
     roleDescription: user.roleDescription,
     canOversee: user.permissions.includes("view:all_work"),
+    canFinance: user.permissions.includes("view:finance"),
     canUpdate: user.permissions.includes("task:update_own") && !!user.mondayUserId,
     hasMondayTasks: !!user.mondayUserId,
   };

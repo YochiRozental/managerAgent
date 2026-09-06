@@ -52,7 +52,8 @@ export async function addUpdateToItem(
   if (!canNote) throw new Error("אין לך הרשאה להוסיף הערות");
   if (!body.trim()) throw new Error("הערה ריקה");
   if (!/^\d+$/.test(itemId)) throw new Error("מזהה פריט לא תקין");
-  await addTaskNote(itemId, `${body.trim()}\n\n— ${user.name} · דרך העוזר התפעולי`);
+  // כל כתיבה ל-Monday רשומה על חשבון ה-API (מוטי). השורה הראשונה היא מי באמת רשם.
+  await addTaskNote(itemId, `✍️ נרשם ע"י ${user.name} (דרך העוזר התפעולי)\n\n${body.trim()}`);
   return { ok: true, message: "ההערה נוספה ל-Monday" };
 }
 

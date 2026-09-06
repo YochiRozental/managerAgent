@@ -14,7 +14,13 @@ export const BOARD_PAYMENTS = "1550734569"; // תת-פריטים של גבייה
 
 const REL = `... on BoardRelationValue { display_value linked_item_ids } ... on MirrorValue { display_value } ... on CreationLogValue { created_at }`;
 
-type RawCV = { id: string; text: string | null; display_value?: string | null; created_at?: string | null };
+type RawCV = {
+  id: string;
+  text: string | null;
+  display_value?: string | null;
+  created_at?: string | null;
+  linked_item_ids?: string[] | null;
+};
 type RawItem = { id: string; name: string; column_values: RawCV[] };
 
 function cv(vals: RawCV[], id: string): string {
@@ -44,7 +50,11 @@ async function pageAll(query: (cursor: string | null) => string): Promise<RawIte
 }
 
 // עמודות שנמשכות לכל שלושת הבורדים הראשיים (איחוד — לא כל אחת קיימת בכל בורד, וזה בסדר)
-const CV_IDS = `["multiple_person__1", "person", "color__1", "status", "date__1", "color1__1", "color5__1", "color04__1", "date8__1", "pulse_log__1", "creation_log__1", "link_to___________1", "lookup64__1", "formula_mkkr1egj"]`;
+const CV_IDS = `["multiple_person__1", "person", "color__1", "status", "date__1", "color1__1", "color5__1", "color04__1", "date8__1", "pulse_log__1", "creation_log__1", "link_to___________1", "lookup64__1", "formula_mkkr1egj", "board_relation_mkqpq309"]`;
+
+function linkedIds(vals: RawCV[], id: string): string[] {
+  return vals.find((c) => c.id === id)?.linked_item_ids ?? [];
+}
 
 // ---------------------------------------------------------------------------
 
@@ -57,6 +67,8 @@ export interface Lead {
   product: string;
   reminderDate?: string;
   createdDate?: string;
+  /** האם הליד מקושר לעסקה בבורד העסקאות (board_relation_mkqpq309) */
+  hasDeal: boolean;
   url: string;
 }
 
@@ -80,6 +92,7 @@ export async function fetchOpenLeads(): Promise<Lead[]> {
       product: cv(it.column_values, "color5__1"),
       reminderDate: dateOnly(cv(it.column_values, "date__1")),
       createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
+      hasDeal: linkedIds(it.column_values, "board_relation_mkqpq309").length > 0,
       url: `${HOST}/boards/${BOARD_LEADS}/pulses/${it.id}`,
     });
   }

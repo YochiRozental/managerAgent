@@ -90,6 +90,25 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
   for (const l of leads) {
     leadsByStatus[l.status] = (leadsByStatus[l.status] ?? 0) + 1;
     if (l.createdDate && l.createdDate >= recentStart) leadsCreatedRecent.push({ name: l.name, date: l.createdDate });
+
+    // ליד שסומן "עבר לעסקה" אבל אין עסקה מקושרת — נפל בין הבורדים. רק המרות מהחודשיים האחרונים
+    // (ישנות מזה הן כנראה פרויקטים שכבר רצים ושהעסקה שלהם נסגרה/נארכבה).
+    if (l.status === "עבר לעסקה" && !l.hasDeal) {
+      const age = daysPast(l.createdDate);
+      if (age >= 0 && age <= 60) {
+        findings.push({
+          key: `lead_orphan:${l.itemId}`,
+          severity: age <= 21 ? "high" : "normal",
+          kind: "no_owner",
+          headline: `ליד "עבר לעסקה" בלי עסקה: ${l.name}`,
+          detail: `סומן כמומר אבל אין עסקה בבורד העסקאות. ליצור עסקה או לעדכן סטטוס.`,
+          who: l.owner || "מוטי",
+          project: "לידים",
+          url: l.url,
+        });
+      }
+      continue;
+    }
     if (LEAD_MOVED_ON.has(l.status)) continue;
     if (inSoon(l.reminderDate)) remindersDueSoon.push({ name: l.name, kind: "ליד", date: l.reminderDate! });
     const who = l.owner || "מוטי";
@@ -117,13 +136,13 @@ export async function runCrmScan(force = false): Promise<CrmScanReport> {
         url: l.url,
       });
     }
-    if (l.status === "ליד חדש" && daysPast(l.createdDate) >= 5) {
+    if ((l.status === "ליד חדש" || l.status === "פוטנציאלי") && daysPast(l.createdDate) >= 2) {
       findings.push({
         key: `lead_new:${l.itemId}`,
-        severity: "high",
+        severity: daysPast(l.createdDate) >= 4 ? "high" : "normal",
         kind: "overdue_stale",
-        headline: `ליד חדש שלא נלקח (${daysPast(l.createdDate)} ימים): ${l.name}`,
-        detail: `עדיין "ליד חדש"${l.source ? ` · מקור: ${l.source}` : ""}`,
+        headline: `ליד ${l.status === "ליד חדש" ? "חדש" : "פוטנציאלי"} שלא נלקח (${daysPast(l.createdDate)} ימים): ${l.name}`,
+        detail: `עדיין "${l.status}"${l.source ? ` · מקור: ${l.source}` : ""}${l.owner ? "" : " · בלי אחראי"}`,
         who,
         project: "לידים",
         url: l.url,

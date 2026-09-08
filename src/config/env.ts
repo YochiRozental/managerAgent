@@ -3,6 +3,8 @@ import { z } from "zod";
 
 const schema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
+  // נדרש רק אם tier כלשהו מוגדר AI_*_PROVIDER=openai (ראה src/ai/tierConfig.ts)
+  OPENAI_API_KEY: z.string().optional(),
   MONDAY_API_TOKEN: z.string().min(1),
   MONDAY_BOARD_ID: z.string().optional(),
   ALLOWED_WHATSAPP_JIDS: z.string().default(""),

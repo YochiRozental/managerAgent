@@ -1,47 +1,22 @@
 /**
- * ניתוב מודלים מרכזי — המקום היחיד שבו מוגדרים שמות מודלים ושבו מחליטים FAST מול SMART.
+ * ה-router — בוחר FAST מול SMART לפי סוג הבקשה, ומודד usage / עלות / לוגים.
  *
- * הרעיון (בקשת מוטי/יוכי, 2026-09-08): במקום לשלוח כל בקשה למודל היקר, מנתבים דטרמיניסטית:
- *   FAST  = Claude Haiku  — שאלות עובד רגילות, קריאת מידע, עדכוני סטטוס, tool-use פשוט, סיכומים קצרים.
- *   SMART = Claude Sonnet — ניתוח מצב, תכנון סדר עבודה, זיהוי חריגות, החלטה בין אפשרויות, בקשות עמומות/ארוכות.
+ * חשוב: ה-router בוחר **רק tier** (fast/smart). התרגום ל-provider ול-model נעשה ב-tierConfig.ts
+ * לפי משתני סביבה. הבחירה כאן דטרמיניסטית — אין קריאת AI רק כדי להחליט איזה מודל.
  *
- * אין כאן קריאת AI נוספת רק כדי לבחור מודל — הבחירה היא לפי סוג הפעולה, הרשאות המשתמש וטקסט הבקשה.
- *
- * שמות מודלים תקפים (לפי ה-SDK והסביבה): "claude-haiku-4-5-20251001", "claude-sonnet-5".
- * ניתן לעקוף דרך משתני סביבה MODEL_FAST / MODEL_SMART אם Anthropic משחררת מודל חדש.
+ * FAST  — שאלות עובד רגילות, קריאת מידע, עדכוני סטטוס, tool-use פשוט, סיכומים קצרים.
+ * SMART — ניתוח מצב, תכנון סדר עבודה, זיהוי חריגות, החלטה בין אפשרויות, בקשות עמומות/ארוכות.
  */
 
 import { logger } from "../utils/logger.js";
+import { estimateCostUsd } from "./pricing.js";
+import { aiConfig } from "./tierConfig.js";
+import type { NormUsage, ProviderName } from "./providers/types.js";
 
 export type ModelTier = "fast" | "smart";
 export type AiUseCase = "ops_chat" | "whatsapp_orchestrator";
 
-export const DEFAULT_MODEL_FAST = "claude-haiku-4-5-20251001";
-export const DEFAULT_MODEL_SMART = "claude-sonnet-5";
-
-export interface ModelConfig {
-  fast: string;
-  smart: string;
-  /** האם ללוגג עלות משוערת (ברירת מחדל: כן; כבה עם AI_COST_LOGGING=false) */
-  costLogging: boolean;
-}
-
-/** פונקציה טהורה — מקבלת מקור env ומחזירה קונפיג. מופרד כדי שאפשר לבדוק גם ערכים חלופיים. */
-export function resolveModelConfig(source: NodeJS.ProcessEnv = process.env): ModelConfig {
-  return {
-    fast: source.MODEL_FAST?.trim() || DEFAULT_MODEL_FAST,
-    smart: source.MODEL_SMART?.trim() || DEFAULT_MODEL_SMART,
-    costLogging: (source.AI_COST_LOGGING ?? "true").toLowerCase() !== "false",
-  };
-}
-
-export const modelConfig: ModelConfig = resolveModelConfig();
-
-export function modelForTier(tier: ModelTier, cfg: ModelConfig = modelConfig): string {
-  return tier === "smart" ? cfg.smart : cfg.fast;
-}
-
-// ───────────────────────── בחירת מודל (דטרמיניסטית) ─────────────────────────
+// ───────────────────────── בחירת tier (דטרמיניסטית) ─────────────────────────
 
 /**
  * מילות מפתח שמעידות על צורך ב-reasoning אמיתי — תכנון, ניתוח, השוואה, קבלת החלטה, תעדוף.
@@ -66,7 +41,6 @@ export interface RouteContext {
 
 export interface RouteDecision {
   tier: ModelTier;
-  model: string;
   /** למה נבחר ה-tier הזה — נכנס ללוג, לא חושף תוכן */
   reason: string;
 }
@@ -83,13 +57,11 @@ export function chooseModelForTask(ctx: RouteContext): RouteDecision {
   // ברכה / אישור קצר ("בוקר טוב", "כן", "תודה") — FAST, אלא אם יש אות אחר למורכבות.
   const isShort = text.length <= 12 && !ANALYTICAL_PATTERN.test(text);
   if (isShort && reasons.length === 0) {
-    return { tier: "fast", model: modelForTier("fast"), reason: "trivial" };
+    return { tier: "fast", reason: "trivial" };
   }
 
-  const tier: ModelTier = reasons.length > 0 ? "smart" : "fast";
   return {
-    tier,
-    model: modelForTier(tier),
+    tier: reasons.length > 0 ? "smart" : "fast",
     reason: reasons.length > 0 ? reasons.join(",") : "default-simple",
   };
 }
@@ -99,6 +71,7 @@ export function chooseModelForTask(ctx: RouteContext): RouteDecision {
  * מסלימים רק אם: השתמשנו ב-FAST, הניסיון נכשל (שגיאה / אין תשובה / נגמרו הסבבים),
  * ו*לא* בוצעו תופעות לוואי (כתיבות ל-Monday / הרצת כלים) — אחרת retry יכפיל פעולות.
  * זה גם מה שמונע קריאת AI שנייה מיותרת: אם FAST הצליח או שכבר רצו כלים — לא מסלימים.
+ * עובד ללא תלות בספקים — SMART יכול להיות provider אחר מ-FAST.
  */
 export function shouldEscalateToSmart(params: {
   attemptedTier: ModelTier;
@@ -108,49 +81,23 @@ export function shouldEscalateToSmart(params: {
   return params.attemptedTier === "fast" && params.failed && params.sideEffectsCount === 0;
 }
 
-// ───────────────────────── מדידת usage ועלות ─────────────────────────
+// ───────────────────────── מדידת usage ─────────────────────────
 
 export interface UsageAcc {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
 }
 
 export function newUsageAcc(): UsageAcc {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
 }
 
-interface RawUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_input_tokens?: number | null;
-  cache_creation_input_tokens?: number | null;
-}
-
-export function addUsage(acc: UsageAcc, usage: RawUsage | null | undefined): void {
+export function addUsage(acc: UsageAcc, usage: NormUsage | null | undefined): void {
   if (!usage) return;
-  acc.input += usage.input_tokens ?? 0;
-  acc.output += usage.output_tokens ?? 0;
-  acc.cacheRead += usage.cache_read_input_tokens ?? 0;
-  acc.cacheWrite += usage.cache_creation_input_tokens ?? 0;
-}
-
-/**
- * מחירון Anthropic ל-1M tokens (USD) — list price נכון לתחילת 2026. אם המחירים משתנים — לעדכן כאן.
- * מודל שלא במפה → לא מחשבים עלות (מחזירים null), רק מדווחים tokens.
- */
-const PRICING_PER_MTOK: Record<string, { input: number; output: number }> = {
-  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
-  "claude-sonnet-5": { input: 3, output: 15 },
-};
-
-/** עלות משוערת בדולרים, או null אם אין מחיר ידוע למודל. הערכה בלבד (cache-read מחושב כ-input מלא — שמרני). */
-export function estimateCostUsd(model: string, usage: UsageAcc): number | null {
-  const p = PRICING_PER_MTOK[model];
-  if (!p) return null;
-  const inputTok = usage.input + usage.cacheRead;
-  return (inputTok / 1_000_000) * p.input + (usage.output / 1_000_000) * p.output;
+  acc.inputTokens += usage.inputTokens ?? 0;
+  acc.outputTokens += usage.outputTokens ?? 0;
+  acc.cachedInputTokens += usage.cachedInputTokens ?? 0;
 }
 
 // ───────────────────────── logging ─────────────────────────
@@ -158,6 +105,7 @@ export function estimateCostUsd(model: string, usage: UsageAcc): number | null {
 export interface AiCallLog {
   useCase: AiUseCase;
   tier: ModelTier;
+  provider: ProviderName;
   model: string;
   usage: UsageAcc;
   turns: number;
@@ -169,24 +117,31 @@ export interface AiCallLog {
 
 /**
  * לוג לכל קריאת AI — בלי תוכן הודעות, בלי מפתחות/סודות. רק מטא-דאטה תפעולי:
- * tier, model, use case, tokens, ועלות משוערת.
+ * tier, provider, model, use case, tokens, ועלות משוערת (אם המחיר ידוע).
  */
 export function logAiCall(entry: AiCallLog): void {
-  const cost = modelConfig.costLogging ? estimateCostUsd(entry.model, entry.usage) : null;
+  const cost = aiConfig.costLogging
+    ? estimateCostUsd(entry.model, {
+        inputTokens: entry.usage.inputTokens,
+        outputTokens: entry.usage.outputTokens,
+        cachedInputTokens: entry.usage.cachedInputTokens,
+      })
+    : null;
   logger.info(
     {
       ai_call: true,
       use_case: entry.useCase,
       tier: entry.tier,
+      provider: entry.provider,
       model: entry.model,
       route_reason: entry.routeReason,
       fallback_to_smart: entry.fallback,
       turns: entry.turns,
-      input_tokens: entry.usage.input,
-      output_tokens: entry.usage.output,
-      cache_read_tokens: entry.usage.cacheRead,
+      input_tokens: entry.usage.inputTokens,
+      output_tokens: entry.usage.outputTokens,
+      cached_tokens: entry.usage.cachedInputTokens,
       ...(cost != null ? { est_cost_usd: Number(cost.toFixed(5)) } : {}),
     },
-    `AI ${entry.tier}/${entry.model} · ${entry.useCase}${entry.fallback ? " (fallback→smart)" : ""}`,
+    `AI ${entry.tier}/${entry.provider}/${entry.model} · ${entry.useCase}${entry.fallback ? " (fallback→smart)" : ""}`,
   );
 }

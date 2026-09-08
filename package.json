@@ -10,6 +10,7 @@
     "window:watch": "tsx watch src/server/index.ts",
     "links": "tsx scripts/print-links.ts",
     "test:identity": "tsx scripts/test-identity.ts",
+    "test:router": "tsx scripts/test-model-router.ts",
     "test:ops": "tsx scripts/test-ops.ts",
     "test:monday": "tsx scripts/test-monday.ts",
     "test:google": "tsx scripts/test-google.ts",

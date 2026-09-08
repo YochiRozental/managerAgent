@@ -26,6 +26,14 @@ import {
   listUserCommitments,
 } from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
+import {
+  addUsage,
+  chooseModelForTask,
+  logAiCall,
+  modelConfig,
+  newUsageAcc,
+  shouldEscalateToSmart,
+} from "../ai/models.js";
 import { addUpdateToItem, reassignItem, updateTask } from "./actions.js";
 import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
@@ -35,7 +43,6 @@ import { getOfficeState } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
 
 const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-const MODEL = "claude-sonnet-5";
 const MAX_TURNS = 7;
 
 export interface ChatMessage {
@@ -596,45 +603,110 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
     input_schema: t.input_schema,
   }));
 
-  const messages: Anthropic.MessageParam[] = history.map((m) => ({ role: m.role, content: m.content }));
-
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const res = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: systemPrompt(user),
-      tools: anthropicTools,
-      messages,
-    });
-
-    const toolUses = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-    if (toolUses.length === 0) {
-      const text = res.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
-      // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא, עם ברכה קצרה,
-      // במקום הניסוח החופשי של המודל (שנוטה לאבד את מבנה 'עכשיו:' לכל פרויקט).
-      if (capturedBriefing && actions.length === 0) {
-        const hour = now.hour;
-        const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
-        return { reply: `${greet} ${user.name} ☀️\n\n${capturedBriefing}\n\nעל מה מתחילים?`, actions };
-      }
-      return { reply: text, actions };
-    }
-
-    messages.push({ role: "assistant", content: res.content });
-    const results: Anthropic.ToolResultBlockParam[] = [];
-    for (const tu of toolUses) {
-      const tool = tools.find((t) => t.name === tu.name);
-      let content: string;
-      try {
-        content = JSON.stringify(await tool!.run((tu.input ?? {}) as Record<string, unknown>));
-      } catch (err) {
-        logger.warn({ err, tool: tu.name, user: user.key }, "כלי צ'אט תפעולי נכשל");
-        content = `שגיאה: ${(err as Error).message}`;
-      }
-      results.push({ type: "tool_result", tool_use_id: tu.id, content });
-    }
-    messages.push({ role: "user", content: results });
+  // ── סבב tool-use שלם מול מודל נתון ──────────────────────────────────────────
+  // מוחזר: התשובה (או null אם לא הופקה), ודגלים שמאפשרים להחליט אם כדאי להסלים ל-SMART.
+  interface LoopOutcome {
+    reply: string | null;
+    exhausted: boolean;
+    errored: boolean;
+    turns: number;
   }
 
-  return { reply: "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?", actions };
+  const runLoop = async (model: string, usage: ReturnType<typeof newUsageAcc>): Promise<LoopOutcome> => {
+    const messages: Anthropic.MessageParam[] = history.map((m) => ({ role: m.role, content: m.content }));
+    let turns = 0;
+
+    for (let turn = 0; turn < MAX_TURNS; turn++) {
+      turns = turn + 1;
+      let res: Anthropic.Message;
+      try {
+        res = await anthropic.messages.create({
+          model,
+          max_tokens: 1024,
+          system: systemPrompt(user),
+          tools: anthropicTools,
+          messages,
+        });
+      } catch (err) {
+        logger.warn({ err, model, user: user.key }, "קריאת AI נכשלה בצ'אט התפעולי");
+        return { reply: null, exhausted: false, errored: true, turns };
+      }
+      addUsage(usage, res.usage);
+
+      const toolUses = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+      if (toolUses.length === 0) {
+        const text = res.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
+        // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא, עם ברכה קצרה,
+        // במקום הניסוח החופשי של המודל (שנוטה לאבד את מבנה 'עכשיו:' לכל פרויקט).
+        if (capturedBriefing && actions.length === 0) {
+          const hour = now.hour;
+          const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
+          return {
+            reply: `${greet} ${user.name} ☀️\n\n${capturedBriefing}\n\nעל מה מתחילים?`,
+            exhausted: false,
+            errored: false,
+            turns,
+          };
+        }
+        return { reply: text || null, exhausted: false, errored: false, turns };
+      }
+
+      messages.push({ role: "assistant", content: res.content });
+      const results: Anthropic.ToolResultBlockParam[] = [];
+      for (const tu of toolUses) {
+        const tool = tools.find((t) => t.name === tu.name);
+        let content: string;
+        try {
+          content = JSON.stringify(await tool!.run((tu.input ?? {}) as Record<string, unknown>));
+        } catch (err) {
+          logger.warn({ err, tool: tu.name, user: user.key }, "כלי צ'אט תפעולי נכשל");
+          content = `שגיאה: ${(err as Error).message}`;
+        }
+        results.push({ type: "tool_result", tool_use_id: tu.id, content });
+      }
+      messages.push({ role: "user", content: results });
+    }
+    return { reply: null, exhausted: true, errored: false, turns };
+  };
+
+  // ── ניתוב: FAST כברירת מחדל, SMART לפי סוג הבקשה/הרשאות ─────────────────────
+  const route = chooseModelForTask({
+    useCase: "ops_chat",
+    latestMessage: history[history.length - 1]?.content ?? "",
+    historyLength: history.length,
+    canSeeAllWork: userCan(user, "view:all_work"),
+  });
+
+  const fastUsage = newUsageAcc();
+  let outcome = await runLoop(route.model, fastUsage);
+  logAiCall({
+    useCase: "ops_chat",
+    tier: route.tier,
+    model: route.model,
+    usage: fastUsage,
+    turns: outcome.turns,
+    fallback: false,
+    routeReason: route.reason,
+  });
+
+  // הסלמה אחת ל-SMART: רק אם FAST לא הצליח (שגיאה / אין תשובה / נגמרו הסבבים)
+  // ורק אם לא בוצעו כתיבות ל-Monday — אחרת הרצה חוזרת של הלולאה תכפיל פעולות. אין retry loop.
+  const failed = outcome.errored || outcome.exhausted || !outcome.reply;
+  if (shouldEscalateToSmart({ attemptedTier: route.tier, failed, sideEffectsCount: actions.length })) {
+    capturedBriefing = null;
+    logger.info({ user: user.key, route: route.reason }, "FAST לא הספיק — מסלים ל-SMART פעם אחת");
+    const smartUsage = newUsageAcc();
+    outcome = await runLoop(modelConfig.smart, smartUsage);
+    logAiCall({
+      useCase: "ops_chat",
+      tier: "smart",
+      model: modelConfig.smart,
+      usage: smartUsage,
+      turns: outcome.turns,
+      fallback: true,
+      routeReason: route.reason,
+    });
+  }
+
+  return { reply: outcome.reply ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?", actions };
 }

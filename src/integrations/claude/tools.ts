@@ -16,12 +16,17 @@ import {
   deleteTask,
   findBoardsByName,
   listBoards,
-  listMyWork,
   listTasks,
   setTaskDueDate,
   updateTaskStatus,
 } from "../monday/tasks.js";
 import { findUsersByName } from "../monday/users.js";
+import { getMyWorkBrief } from "../../ops/myWorkBrief.js";
+
+/** הקשר הרצה שה-orchestrator מזריק לכלי — מי המשתמש ששאל. */
+export interface ToolContext {
+  user: IdentifiedUser | null;
+}
 
 export interface ToolDefinition {
   name: string;
@@ -35,7 +40,7 @@ export interface ToolDefinition {
    */
   requiredPermission?: Permission;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  execute: (input: any) => Promise<unknown>;
+  execute: (input: any, ctx: ToolContext) => Promise<unknown>;
 }
 
 export const tools: ToolDefinition[] = [
@@ -74,11 +79,14 @@ export const tools: ToolDefinition[] = [
   {
     name: "list_my_work",
     description:
-      "מחזיר את כל המשימות הפתוחות (לא 'בוצע') שמוקצות למשתמש (בעל חשבון ה-API) בלוח המשימות הראשי ותתי-הפריטים שלו - מקביל לתצוגת 'המשימות שלי' (My Work) במאנדיי, אך ממוקד רק במשימות אמיתיות (לא בלוחות לקוחות/עסקאות/לידים, ששם 'אחראי' פירושו בעלים ולא משימה). כל משימה כוללת סטטוס ותאריך יעד אם קיימים, ממוין לפי תאריך יעד. להשתמש כשמבקשים 'מה יש לי לעשות', 'המשימות שלי', 'מה על הפרק' וכדומה.",
+      "מחזיר תדריך קומפקטי ומתועדף של העבודה של *המשתמש ששואל* להיום: משימות שבאיחור / להיום / השבוע / בעבודה, ואם דל — גם מה שדורש תשומת לב. עד 30 פריטים, כל אחד עם פרויקט/שלב/סטטוס/תעדוף/תאריך/ימי איחור אם רלוונטי, ושדה summary עם הספירות המלאות. להשתמש כשמבקשים 'מה יש לי לעשות', 'המשימות שלי', 'מה על הפרק', 'מה עליי לבצע היום'.",
     input_schema: { type: "object", properties: {} },
     requiresConfirmation: false,
     requiredPermission: "view:own_work",
-    execute: async () => listMyWork(),
+    execute: async (_input, ctx: ToolContext) => {
+      if (!ctx.user) throw new Error("חסר הקשר משתמש — אי אפשר לשלוף 'המשימות שלי' בלי לדעת מי שואל.");
+      return getMyWorkBrief(ctx.user);
+    },
   },
   {
     name: "create_monday_task",

@@ -34,6 +34,12 @@ import { runAgentLoop } from "../src/ai/agentLoop.js";
 import { estimateCostUsd } from "../src/ai/pricing.js";
 import { aiConfig } from "../src/ai/tierConfig.js";
 import { isProviderName, type NormTool, type NormToolCall, type ProviderName } from "../src/ai/providers/types.js";
+import {
+  TEAM_DIRECTORY,
+  resolveUserByKey,
+  resolveUserByMondayId,
+  type IdentifiedUser,
+} from "../src/identity/index.js";
 import { logger } from "../src/utils/logger.js";
 
 type ToolScope = "none" | "monday" | "google" | "all";
@@ -51,6 +57,10 @@ const USAGE = `test:ai-compare — השוואת ספק/מודל, READ ONLY בל�
                          אילו כלי קריאה לחשוף. ללא הדגל — בלי כלים.
                          --tools בלי ערך = all (תאימות לאחור).
                          monday: Google לא נטען כלל, אין OAuth.
+  --user <key>           מי המשתמש עבור list_my_work (${TEAM_DIRECTORY.map((m) => m.key).join(" / ")}).
+  --monday-user-id <id>  חלופה: Monday user id ישיר (לבדיקות בלבד).
+                         בלי אחד מאלה — list_my_work יחזיר שגיאה "חסר user context",
+                         ולעולם לא ייפול ל-assigned_to_me.
   --turns <N>            מקסימום סבבי tool-use (ברירת מחדל 4)
   --max-tokens <N>       תקציב output לכל קריאה (ברירת מחדל 2000)
   --list-tools           הצגת הכלים ש-scope נתון חושף ויציאה (בלי מודלים, בלי API)
@@ -76,6 +86,34 @@ function resolveToolScope(): ToolScope {
   const v = next.toLowerCase();
   if (v === "monday" || v === "google" || v === "all") return v;
   throw new Error(`--tools ערך לא תקין: "${next}". תקפים: monday | google | all (או --tools בלי ערך = all)`);
+}
+
+/** משתמש הבדיקה עבור list_my_work — דרך ה-identity layer הקיים. null = לא סופק. */
+function resolveTestUser(): IdentifiedUser | null {
+  const key = arg("user");
+  if (key) {
+    const u = resolveUserByKey(key);
+    if (!u) throw new Error(`--user "${key}" לא מוכר. תקפים: ${TEAM_DIRECTORY.map((m) => m.key).join(", ")}`);
+    return u;
+  }
+  const mid = arg("monday-user-id");
+  if (mid) {
+    if (!/^\d+$/.test(mid)) throw new Error(`--monday-user-id חייב להיות מספר, קיבל "${mid}"`);
+    const known = resolveUserByMondayId(mid);
+    if (known) return known;
+    // id שאינו בספר הצוות — stub מינימלי לבדיקות בלבד (לא נכנס ל-production code)
+    return {
+      key: `monday:${mid}`,
+      name: `Monday user ${mid}`,
+      role: "planner",
+      mondayUserId: mid,
+      email: null,
+      whatsappJid: null,
+      permissions: ["view:own_work"],
+      roleDescription: "משתמש בדיקה",
+    };
+  }
+  return null;
 }
 
 function parseTarget(spec: string | undefined, fallback: { provider: ProviderName; model: string }) {
@@ -115,13 +153,14 @@ function isGoogleapisLoaded(): boolean {
  * לא טוען את מודולי Google בכלל (אין `googleapis`, אין `auth.ts`, אין OAuth).
  * הרישום מכיל אך ורק פונקציות קריאה.
  */
-async function loadReadTools(scope: ToolScope): Promise<Map<string, ReadTool>> {
+async function loadReadTools(scope: ToolScope, user: IdentifiedUser | null): Promise<Map<string, ReadTool>> {
   const reg = new Map<string, ReadTool>();
   if (scope === "none") return reg;
 
   if (scope === "monday" || scope === "all") {
-    const { listBoards, findBoardsByName, listTasks, listMyWork } = await import("../src/integrations/monday/tasks.js");
+    const { listBoards, findBoardsByName, listTasks } = await import("../src/integrations/monday/tasks.js");
     const { findUsersByName } = await import("../src/integrations/monday/users.js");
+    const { getMyWorkBrief } = await import("../src/ops/myWorkBrief.js");
     reg.set("list_monday_boards", {
       spec: { name: "list_monday_boards", description: "מחזיר את כל הלוחות ב-Monday עם שם ו-id.", parameters: { type: "object", properties: {} } },
       run: () => listBoards(),
@@ -143,8 +182,20 @@ async function loadReadTools(scope: ToolScope): Promise<Map<string, ReadTool>> {
       run: (i) => listTasks(String(i.boardId ?? "")),
     });
     reg.set("list_my_work", {
-      spec: { name: "list_my_work", description: "משימות פתוחות של בעל חשבון ה-API (מקביל ל-My Work).", parameters: { type: "object", properties: {} } },
-      run: () => listMyWork(),
+      spec: {
+        name: "list_my_work",
+        description:
+          "תדריך קומפקטי ומתועדף של העבודה של המשתמש להיום (משימות באיחור/להיום/השבוע/בעבודה), עד 30 פריטים + summary.",
+        parameters: { type: "object", properties: {} },
+      },
+      run: async () => {
+        if (!user) {
+          throw new Error(
+            "חסר user context — הרץ עם --user <key> או --monday-user-id <id>. אין fallback ל-assigned_to_me.",
+          );
+        }
+        return getMyWorkBrief(user);
+      },
     });
     reg.set("find_monday_user", {
       spec: {
@@ -321,10 +372,12 @@ async function main() {
   }
 
   const scope = resolveToolScope();
+  const user = resolveTestUser();
 
   if (process.argv.includes("--list-tools")) {
-    const reg = await loadReadTools(scope);
+    const reg = await loadReadTools(scope, user);
     logger.info(`scope: ${scope} — ${SCOPE_LABEL[scope]}`);
+    logger.info(`משתמש ל-list_my_work: ${user ? `${user.name} (monday=${user.mondayUserId ?? "—"})` : "לא סופק → list_my_work יחזיר שגיאה"}`);
     logger.info(`כלים שנחשפים (${reg.size}): ${[...reg.keys()].join(", ") || "—"}`);
     logger.info(`import דינמי ל-Google בוצע: ${googleModuleImported ? "כן" : "לא"}`);
     logger.info(`חבילת googleapis ב-require cache: ${isGoogleapisLoaded() ? "כן" : "לא"}`);
@@ -340,12 +393,12 @@ async function main() {
 
   logger.info("═══ השוואת AI ═══");
   logger.info(`בקשה: "${prompt}"`);
-  logger.info(`כלים: ${SCOPE_LABEL[scope]}`);
+  logger.info(`כלים: ${SCOPE_LABEL[scope]}${scope !== "none" ? ` · משתמש: ${user ? user.name : "לא סופק"}` : ""}`);
   if (a.provider === b.provider && a.model === b.model) {
     logger.warn("שתי התצורות זהות — ההשוואה לא מאוד מעניינת. העבר/י --a ו/או --b.");
   }
 
-  const reg = await loadReadTools(scope);
+  const reg = await loadReadTools(scope, user);
   const [ra, rb] = await Promise.all([runOne(a, prompt, reg), runOne(b, prompt, reg)]);
   printReport("A", a, ra);
   printReport("B", b, rb);

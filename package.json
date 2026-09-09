@@ -11,6 +11,7 @@
     "links": "tsx scripts/print-links.ts",
     "test:identity": "tsx scripts/test-identity.ts",
     "test:router": "tsx scripts/test-model-router.ts",
+    "test:mywork": "tsx scripts/test-mywork-brief.ts",
     "test:ai-providers": "tsx scripts/test-ai-providers.ts",
     "test:ai-compare": "tsx scripts/test-ai-compare.ts",
     "test:ops": "tsx scripts/test-ops.ts",

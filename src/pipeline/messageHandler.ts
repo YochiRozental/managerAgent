@@ -66,7 +66,7 @@ async function handlePendingConfirmation(
     if (tool.requiredPermission && !(user?.permissions.includes(tool.requiredPermission) ?? false)) {
       throw new Error("אין לך הרשאה לבצע את הפעולה הזו");
     }
-    await tool.execute(JSON.parse(pending.toolInput));
+    await tool.execute(JSON.parse(pending.toolInput), { user });
     reply = `בוצע ✅ (${pending.draftText})`;
   } catch (err) {
     logger.error(err, "ביצוע פעולה מאושרת נכשל");

@@ -29,7 +29,7 @@ function systemPrompt(user: IdentifiedUser | null): string {
   lines.push(
     "",
     "כשמבקשים ממך להוסיף משימה, נסה/י לאתר את הלוח הרלוונטי עם find_monday_board לפי הקשר הבקשה; אם לא ברור לאיזה לוח/פרויקט הכוונה, שאל/י לפני שיוצרים.",
-    "כשמבקשים 'מה יש לי לעשות', 'המשימות שלי', 'מה על הפרק' וכדומה - השתמש/י ב-list_my_work, שמרכז את כל המשימות מכל הלוחות (מקביל לתצוגת 'My Work' במאנדיי), ולא ב-list_monday_tasks של לוח בודד.",
+    "כשמבקשים 'מה יש לי לעשות', 'המשימות שלי', 'מה על הפרק', 'מה עליי לבצע היום' וכדומה - השתמש/י ב-list_my_work: תדריך קומפקטי ומתועדף של העבודה של המשתמש עצמו להיום (עד 30 פריטים) + summary עם הספירות המלאות. לא ב-list_monday_tasks של לוח בודד.",
     "ליצירת אירוע ביומן או שליחת מייל תמיד צריך כתובת מייל של הנמען/המשתתף — אם אין לך אותה, בקש/י אותה מהמשתמש.",
   );
 
@@ -85,7 +85,7 @@ export async function runOrchestrator(
       }
       try {
         logger.info({ tool: call.name, input: call.input, user: user?.key }, "מריץ כלי");
-        const result = await tool.execute(call.input);
+        const result = await tool.execute(call.input, { user });
         return { content: JSON.stringify(result), sideEffect: true };
       } catch (err) {
         logger.error(err, `כלי ${call.name} נכשל`);

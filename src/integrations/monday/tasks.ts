@@ -1,6 +1,5 @@
 import { mondayClient } from "./client.js";
 import { env } from "../../config/env.js";
-import { logger } from "../../utils/logger.js";
 
 export interface MondayBoardSummary {
   id: string;
@@ -80,133 +79,11 @@ export async function listTasks(boardId: string = env.MONDAY_BOARD_ID ?? ""): Pr
   return all;
 }
 
-export interface MyWorkItem {
-  boardId: string;
-  boardName: string;
-  itemId: string;
-  itemName: string;
-  status?: string;
-  dueDate?: string;
-}
-
-const DONE_STATUS_LABELS = ["בוצע"];
-
 /**
- * Monday's "My Work" view (items assigned to the token's own user, aggregated across every board) has
- * no dedicated API — it has to be rebuilt ourselves. Scoped deliberately to just the real tasks board
- * (MONDAY_BOARD_ID) and its subitems, not every board with a People column: boards like clients/deals/
- * leads also have an "אחראי" column, but there it means "account owner", not "thing to do" — including
- * them turned up 1,800+ historical CRM rows instead of an actual to-do list.
+ * "המשימות שלי" עבור סוכן ה-AI עברה ל-`src/ops/myWorkBrief.ts` (getMyWorkBrief) — נבנית מעל
+ * fetchUserOpsTasks + buildDashboardViews, מסוננת לפי המשתמש האמיתי, לא לפי בעל הטוקן.
+ * המימוש הישן (על MONDAY_BOARD_ID + ערך הקסם של Monday) הוסר לאחר החקירה של 2026-09-09.
  */
-export async function listMyWork(): Promise<MyWorkItem[]> {
-  const mainBoardId = env.MONDAY_BOARD_ID ?? "";
-  if (!mainBoardId) throw new Error("No board id — set MONDAY_BOARD_ID");
-
-  const mainBoardResult = await mondayClient.request<{
-    boards: { id: string; name: string; columns: { id: string; type: string; title: string; settings_str: string }[] }[];
-  }>(
-    `query ($boardId: ID!) { boards(ids: [$boardId]) { id name columns { id type title settings_str } } }`,
-    { boardId: mainBoardId },
-  );
-  const mainBoard = mainBoardResult.boards[0];
-  if (!mainBoard) throw new Error(`לוח ${mainBoardId} לא נמצא`);
-
-  const subitemsCol = mainBoard.columns.find((c) => c.type === "subtasks");
-  const subitemsBoardId = subitemsCol
-    ? ((JSON.parse(subitemsCol.settings_str) as { boardIds?: number[] }).boardIds?.[0]?.toString() ?? null)
-    : null;
-
-  const boardIds = [mainBoard.id, ...(subitemsBoardId ? [subitemsBoardId] : [])];
-
-  const boards: { id: string; name: string; columns: { id: string; type: string; title: string }[] }[] = [];
-  for (const id of boardIds) {
-    if (id === mainBoard.id) {
-      boards.push(mainBoard);
-      continue;
-    }
-    const result = await mondayClient.request<{
-      boards: { id: string; name: string; columns: { id: string; type: string; title: string }[] }[];
-    }>(
-      `query ($boardId: ID!) { boards(ids: [$boardId]) { id name columns { id type title } } }`,
-      { boardId: id },
-    );
-    if (result.boards[0]) boards.push(result.boards[0]);
-  }
-
-  const results: MyWorkItem[] = [];
-
-  for (const board of boards) {
-    const peopleCol = board.columns.find((c) => c.type === "people");
-    if (!peopleCol) continue;
-    const statusCols = board.columns.filter((c) => c.type === "status");
-    // Boards can have several status-type columns (workflow status, priority, category) — prefer the one
-    // actually titled "סטטוס"/"status" over the others.
-    const statusCol = statusCols.find((c) => /^(סטטוס|status)$/i.test(c.title)) ?? statusCols[0];
-    const dateCols = board.columns.filter((c) => c.type === "date");
-    const dateCol = dateCols.find((c) => /לביצוע|יעד|due/i.test(c.title)) ?? dateCols[0];
-
-    try {
-      type Item = { id: string; name: string; column_values: { id: string; text: string | null }[] };
-      const first = await mondayClient.request<{
-        boards: { items_page: { cursor: string | null; items: Item[] } }[];
-      }>(
-        `query ($boardId: ID!) {
-          boards(ids: [$boardId]) {
-            items_page(
-              limit: 100
-              query_params: { rules: [{ column_id: "${peopleCol.id}", compare_value: ["assigned_to_me"], operator: any_of }] }
-            ) {
-              cursor
-              items {
-                id
-                name
-                column_values { id text }
-              }
-            }
-          }
-        }`,
-        { boardId: board.id },
-      );
-
-      const page = first.boards[0]?.items_page;
-      const items = page ? [...page.items] : [];
-      let cursor = page?.cursor ?? null;
-      while (cursor) {
-        const next = await mondayClient.request<{
-          next_items_page: { cursor: string | null; items: Item[] };
-        }>(
-          `query ($cursor: String!) {
-            next_items_page(cursor: $cursor, limit: 100) {
-              cursor
-              items { id name column_values { id text } }
-            }
-          }`,
-          { cursor },
-        );
-        items.push(...next.next_items_page.items);
-        cursor = next.next_items_page.cursor;
-      }
-
-      for (const item of items) {
-        const status = statusCol ? (item.column_values.find((c) => c.id === statusCol.id)?.text || undefined) : undefined;
-        if (status && DONE_STATUS_LABELS.includes(status)) continue;
-        results.push({
-          boardId: board.id,
-          boardName: board.name,
-          itemId: item.id,
-          itemName: item.name,
-          status,
-          dueDate: dateCol ? (item.column_values.find((c) => c.id === dateCol.id)?.text || undefined) : undefined,
-        });
-      }
-    } catch (err) {
-      logger.warn({ err, boardId: board.id, boardName: board.name }, "שאילתת 'המשימות שלי' נכשלה עבור לוח, מדלג");
-    }
-  }
-
-  results.sort((a, b) => (a.dueDate ?? "9999-99-99").localeCompare(b.dueDate ?? "9999-99-99"));
-  return results;
-}
 
 async function firstGroupId(boardId: string): Promise<string> {
   const result = await mondayClient.request<{ boards: { groups: { id: string }[] }[] }>(

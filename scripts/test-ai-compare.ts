@@ -1,42 +1,71 @@
 /**
  * השוואת ספקים/מודלים — מריץ *אותה* בקשה מול שתי תצורות ומדפיס זמן/טוקנים/עלות/tool-calls/הצלחה.
  *
- * ⚠️  READ ONLY כברירת מחדל — לא נוגע ב-Monday / יומן / מייל / שום פעולה חיצונית.
- *     הבקשה נשלחת למודל *בלי כלים* (טקסט בלבד). עם --tools מופעל תת-קבוצה של כלי קריאה
- *     בלבד (list boards / my work / calendar list) — אף פעם לא כלי כתיבה.
+ * ⚠️  READ ONLY בכל מצב. אין כאן שום כלי כתיבה/שינוי — לא יוצר משימות, לא שולח מייל, לא נוגע ביומן,
+ *     לא משנה כלום ב-Monday. גם אם המודל יבקש כלי כתיבה — הוא לא קיים ברישום ולכן נחסם.
+ *
+ * כלים (--tools):
+ *   (ללא --tools)      → בלי כלים בכלל, טקסט בלבד.
+ *   --tools monday     → רק כלי קריאה של Monday. **Google לא נטען כלל** (import דינמי מותנה) — אין OAuth.
+ *   --tools google     → רק כלי קריאה של Google (list_calendar_events). עלול להפעיל Google OAuth בפעם הראשונה.
+ *   --tools all        → Monday + Google (התנהגות --tools הישנה).
+ *   --tools (בלי ערך)  → כמו all (תאימות לאחור).
  *
  * שימוש:
+ *   npm run test:ai-compare -- --help
  *   npm run test:ai-compare
- *   npm run test:ai-compare -- --a anthropic:claude-haiku-4-5-20251001 --b openai:gpt-5.4-mini
- *   npm run test:ai-compare -- --prompt "נסח סיכום קצר של מצב פרויקט תקוע" --tools
+ *   npm run test:ai-compare -- --a anthropic:claude-haiku-4-5-20251001 --b openai:gpt-5.4-mini --tools monday
+ *   npm run test:ai-compare -- --prompt "נסח סיכום קצר של מצב פרויקט תקוע"
  *
  * דורש ANTHROPIC_API_KEY / OPENAI_API_KEY לפי הספקים שנבחרו.
- * הערה: gpt-5.4-mini הוא reasoning model — נותנים כאן תקציב output גדול יותר (2000) כדי
- * שההשוואה תהיה הוגנת (טוקני reasoning נספרים ב-output).
+ * הערה: gpt-5.4-mini הוא reasoning model — תקציב ה-output כאן גדול (2000) כדי שההשוואה תהיה הוגנת
+ * (טוקני reasoning נספרים ב-output).
  */
 import "dotenv/config";
 import { performance } from "node:perf_hooks";
+import { createRequire } from "node:module";
 import { runAgentLoop } from "../src/ai/agentLoop.js";
 import { estimateCostUsd } from "../src/ai/pricing.js";
 import { aiConfig } from "../src/ai/tierConfig.js";
-import { isProviderName, type NormTool, type ProviderName } from "../src/ai/providers/types.js";
-import { getTool, tools as allTools } from "../src/integrations/claude/tools.js";
+import { isProviderName, type NormTool, type NormToolCall, type ProviderName } from "../src/ai/providers/types.js";
 import { logger } from "../src/utils/logger.js";
 
-const READ_ONLY_TOOLS = new Set([
-  "list_monday_boards",
-  "find_monday_board",
-  "list_monday_tasks",
-  "list_my_work",
-  "find_monday_user",
-  "list_calendar_events",
-]);
+type ToolScope = "none" | "monday" | "google" | "all";
+
+const USAGE = `test:ai-compare — השוואת ספק/מודל, READ ONLY בלבד.
+
+  npm run test:ai-compare -- [אפשרויות]
+
+אפשרויות:
+  --a <provider:model>   תצורה A (ברירת מחדל: ה-tier FAST הנוכחי — ${aiConfig.fast.provider}:${aiConfig.fast.model})
+  --b <provider:model>   תצורה B (ברירת מחדל: ה-tier SMART הנוכחי — ${aiConfig.smart.provider}:${aiConfig.smart.model})
+                         provider תקף: anthropic | openai
+  --prompt "<טקסט>"      הבקשה לשליחה לשני המודלים
+  --tools [monday|google|all]
+                         אילו כלי קריאה לחשוף. ללא הדגל — בלי כלים.
+                         --tools בלי ערך = all (תאימות לאחור).
+                         monday: Google לא נטען כלל, אין OAuth.
+  --turns <N>            מקסימום סבבי tool-use (ברירת מחדל 4)
+  --max-tokens <N>       תקציב output לכל קריאה (ברירת מחדל 2000)
+  --list-tools           הצגת הכלים ש-scope נתון חושף ויציאה (בלי מודלים, בלי API)
+  --help, -h             הצגת עזרה זו ויציאה (בלי להריץ מודלים, בלי לצרוך API)
+
+אף מצב לא מריץ כלי כתיבה/שינוי. הכל read-only.`;
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
-const hasFlag = (name: string) => process.argv.includes(`--${name}`);
+
+function resolveToolScope(): ToolScope {
+  const i = process.argv.indexOf("--tools");
+  if (i === -1) return "none";
+  const next = process.argv[i + 1];
+  if (!next || next.startsWith("-")) return "all"; // --tools בלי ערך → תאימות לאחור
+  const v = next.toLowerCase();
+  if (v === "monday" || v === "google" || v === "all") return v;
+  throw new Error(`--tools ערך לא תקין: "${next}". תקפים: monday | google | all (או --tools בלי ערך = all)`);
+}
 
 function parseTarget(spec: string | undefined, fallback: { provider: ProviderName; model: string }) {
   if (!spec) return fallback;
@@ -47,6 +76,93 @@ function parseTarget(spec: string | undefined, fallback: { provider: ProviderNam
     throw new Error(`--target לא תקין: "${spec}". פורמט: <anthropic|openai>:<model>`);
   }
   return { provider, model };
+}
+
+interface ReadTool {
+  spec: NormTool;
+  run: (input: Record<string, unknown>) => Promise<unknown>;
+}
+
+/** נדלק רק אם באמת נעשה import דינמי למודול Google — לשקיפות ב---list-tools. */
+let googleModuleImported = false;
+
+/**
+ * בדיקת אמת: האם חבילת `googleapis` (CJS) נטענה בפועל ל-require cache.
+ * היא נכנסת רק אם משהו ייבא את src/integrations/google/* — כלומר עדות ש-Google *לא* נגעה.
+ */
+const req = createRequire(import.meta.url);
+function isGoogleapisLoaded(): boolean {
+  try {
+    return !!req.cache[req.resolve("googleapis")];
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * בונה את רישום כלי הקריאה לפי ה-scope. **imports דינמיים מותנים** — כך ש-`monday`
+ * לא טוען את מודולי Google בכלל (אין `googleapis`, אין `auth.ts`, אין OAuth).
+ * הרישום מכיל אך ורק פונקציות קריאה.
+ */
+async function loadReadTools(scope: ToolScope): Promise<Map<string, ReadTool>> {
+  const reg = new Map<string, ReadTool>();
+  if (scope === "none") return reg;
+
+  if (scope === "monday" || scope === "all") {
+    const { listBoards, findBoardsByName, listTasks, listMyWork } = await import("../src/integrations/monday/tasks.js");
+    const { findUsersByName } = await import("../src/integrations/monday/users.js");
+    reg.set("list_monday_boards", {
+      spec: { name: "list_monday_boards", description: "מחזיר את כל הלוחות ב-Monday עם שם ו-id.", parameters: { type: "object", properties: {} } },
+      run: () => listBoards(),
+    });
+    reg.set("find_monday_board", {
+      spec: {
+        name: "find_monday_board",
+        description: "מחפש לוחות ב-Monday לפי מילה בשם.",
+        parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+      },
+      run: (i) => findBoardsByName(String(i.query ?? "")),
+    });
+    reg.set("list_monday_tasks", {
+      spec: {
+        name: "list_monday_tasks",
+        description: "מחזיר את המשימות בלוח מסוים ב-Monday.",
+        parameters: { type: "object", properties: { boardId: { type: "string" } }, required: ["boardId"] },
+      },
+      run: (i) => listTasks(String(i.boardId ?? "")),
+    });
+    reg.set("list_my_work", {
+      spec: { name: "list_my_work", description: "משימות פתוחות של בעל חשבון ה-API (מקביל ל-My Work).", parameters: { type: "object", properties: {} } },
+      run: () => listMyWork(),
+    });
+    reg.set("find_monday_user", {
+      spec: {
+        name: "find_monday_user",
+        description: "מחפש איש/אשת צוות ב-Monday לפי שם.",
+        parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+      },
+      run: (i) => findUsersByName(String(i.query ?? "")),
+    });
+  }
+
+  if (scope === "google" || scope === "all") {
+    googleModuleImported = true;
+    const { listCalendarEvents } = await import("../src/integrations/google/calendar.js");
+    reg.set("list_calendar_events", {
+      spec: {
+        name: "list_calendar_events",
+        description: "מחזיר אירועים ביומן Google בטווח זמן (timeMinISO / timeMaxISO ב-ISO 8601).",
+        parameters: {
+          type: "object",
+          properties: { timeMinISO: { type: "string" }, timeMaxISO: { type: "string" } },
+          required: ["timeMinISO", "timeMaxISO"],
+        },
+      },
+      run: (i) => listCalendarEvents({ timeMinISO: String(i.timeMinISO ?? ""), timeMaxISO: String(i.timeMaxISO ?? "") }),
+    });
+  }
+
+  return reg;
 }
 
 interface RunReport {
@@ -64,13 +180,9 @@ interface RunReport {
 async function runOne(
   target: { provider: ProviderName; model: string },
   prompt: string,
-  withTools: boolean,
+  reg: Map<string, ReadTool>,
 ): Promise<RunReport> {
-  const normTools: NormTool[] = withTools
-    ? allTools
-        .filter((t) => READ_ONLY_TOOLS.has(t.name))
-        .map((t) => ({ name: t.name, description: t.description, parameters: t.input_schema as Record<string, unknown> }))
-    : [];
+  const normTools: NormTool[] = [...reg.values()].map((t) => t.spec);
 
   const started = performance.now();
   try {
@@ -82,13 +194,14 @@ async function runOne(
       maxTurns: Number(arg("turns") ?? 4),
       messages: [{ role: "user", content: prompt }],
       tools: normTools,
-      // גם אם המודל יבקש — רק כלי קריאה מותרים, אף פעם לא כתיבה
-      executeToolCall: async (call) => {
-        if (!READ_ONLY_TOOLS.has(call.name)) {
-          return { content: `שגיאה: הכלי ${call.name} חסום בסקריפט ההשוואה (read-only)`, sideEffect: false };
+      // רק כלי קריאה מהרישום. כל שם אחר (כולל כלי כתיבה) → נחסם.
+      executeToolCall: async (call: NormToolCall) => {
+        const tool = reg.get(call.name);
+        if (!tool) {
+          return { content: `שגיאה: הכלי ${call.name} אינו זמין בסקריפט ההשוואה (רק כלי קריאה, לפי --tools)`, sideEffect: false };
         }
         try {
-          const out = await getTool(call.name)!.execute(call.input);
+          const out = await tool.run((call.input ?? {}) as Record<string, unknown>);
           return { content: JSON.stringify(out), sideEffect: false };
         } catch (err) {
           return { content: `שגיאה: ${(err as Error).message}`, sideEffect: false };
@@ -136,8 +249,31 @@ function printReport(label: string, t: { provider: string; model: string }, r: R
   if (r.preview) logger.info(`  💬 ${r.preview}${r.preview.length >= 160 ? "…" : ""}`);
 }
 
+const SCOPE_LABEL: Record<ToolScope, string> = {
+  none: "ללא כלים (טקסט בלבד)",
+  monday: "כלי קריאה של Monday בלבד — Google לא נטען, אין OAuth",
+  google: "כלי קריאה של Google בלבד (list_calendar_events)",
+  all: "כלי קריאה של Monday + Google",
+};
+
 async function main() {
-  const withTools = hasFlag("tools");
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    logger.info(USAGE);
+    return;
+  }
+
+  const scope = resolveToolScope();
+
+  if (process.argv.includes("--list-tools")) {
+    const reg = await loadReadTools(scope);
+    logger.info(`scope: ${scope} — ${SCOPE_LABEL[scope]}`);
+    logger.info(`כלים שנחשפים (${reg.size}): ${[...reg.keys()].join(", ") || "—"}`);
+    logger.info(`import דינמי ל-Google בוצע: ${googleModuleImported ? "כן" : "לא"}`);
+    logger.info(`חבילת googleapis ב-require cache: ${isGoogleapisLoaded() ? "כן" : "לא"}`);
+    logger.info("כל הכלים כאן הם קריאה בלבד. לא הורצו מודלים ולא נצרך API.");
+    return;
+  }
+
   const prompt =
     arg("prompt") ??
     "יש פרויקט בנייה שתקוע 12 יום כי אין אישור ועדה, ומנהל הפרויקט לא עדכן. נסח בקצרה מה הצעד הבא ואיך להתריע.";
@@ -146,12 +282,13 @@ async function main() {
 
   logger.info("═══ השוואת AI ═══");
   logger.info(`בקשה: "${prompt}"`);
-  logger.info(`כלים: ${withTools ? "כלי קריאה בלבד (list boards / my work / calendar) — לא כותב כלום" : "ללא כלים (טקסט בלבד)"}`);
+  logger.info(`כלים: ${SCOPE_LABEL[scope]}`);
   if (a.provider === b.provider && a.model === b.model) {
     logger.warn("שתי התצורות זהות — ההשוואה לא מאוד מעניינת. העבר/י --a ו/או --b.");
   }
 
-  const [ra, rb] = await Promise.all([runOne(a, prompt, withTools), runOne(b, prompt, withTools)]);
+  const reg = await loadReadTools(scope);
+  const [ra, rb] = await Promise.all([runOne(a, prompt, reg), runOne(b, prompt, reg)]);
   printReport("A", a, ra);
   printReport("B", b, rb);
 

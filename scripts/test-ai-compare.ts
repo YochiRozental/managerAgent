@@ -17,6 +17,12 @@
  *   npm run test:ai-compare -- --a anthropic:claude-haiku-4-5-20251001 --b openai:gpt-5.4-mini --tools monday
  *   npm run test:ai-compare -- --prompt "נסח סיכום קצר של מצב פרויקט תקוע"
  *
+ * הפלט לכל מודל: provider/model · זמן · input/output tokens · עלות משוערת · מספר tool calls,
+ * ובנוסף — פירוט כל tool call (שם, הפרמטרים שהמודל שלח, הצלחה + כמה פריטים חזרו),
+ * ובסוף **התשובה המלאה של המודל בלי שום קיצור**.
+ * תוצאות הכלים עצמן (תוכן הפריטים מ-Monday) **אינן מודפסות** — רק המודל מקבל אותן, כדי שההשוואה
+ * תהיה אמיתית וכדי לא ליצור לוג ענק / לחשוף מידע מיותר.
+ *
  * דורש ANTHROPIC_API_KEY / OPENAI_API_KEY לפי הספקים שנבחרו.
  * הערה: gpt-5.4-mini הוא reasoning model — תקציב ה-output כאן גדול (2000) כדי שההשוואה תהיה הוגנת
  * (טוקני reasoning נספרים ב-output).
@@ -50,6 +56,11 @@ const USAGE = `test:ai-compare — השוואת ספק/מודל, READ ONLY בל�
   --list-tools           הצגת הכלים ש-scope נתון חושף ויציאה (בלי מודלים, בלי API)
   --help, -h             הצגת עזרה זו ויציאה (בלי להריץ מודלים, בלי לצרוך API)
 
+הפלט לכל מודל:
+  • provider/model · זמן תגובה · input/output tokens · עלות משוערת · מספר tool calls
+  • פירוט כל tool call: מספר סידורי, שם הכלי, הפרמטרים שהמודל שלח, הצלחה/כשל + מספר פריטים שחזרו
+  • התשובה המלאה של המודל — ללא קיצור וללא "..."
+תוצאות הכלים עצמן (תוכן הפריטים) לא מודפסות — רק המודל מקבל אותן.
 אף מצב לא מריץ כלי כתיבה/שינוי. הכל read-only.`;
 
 function arg(name: string): string | undefined {
@@ -165,6 +176,16 @@ async function loadReadTools(scope: ToolScope): Promise<Map<string, ReadTool>> {
   return reg;
 }
 
+interface ToolTraceEntry {
+  order: number;
+  name: string;
+  /** JSON של מה שהמודל שלח לכלי (מקוצר לתצוגה). לא תוכן שחזר מהכלי. */
+  params: string;
+  ok: boolean;
+  /** תקציר טכני בלבד — מספר פריטים / הודעת שגיאה. אף פעם לא תוכן הפריטים. */
+  summary: string;
+}
+
 interface RunReport {
   ok: boolean;
   ms: number;
@@ -174,7 +195,29 @@ interface RunReport {
   toolCalls: number;
   cost: number | null;
   error?: string;
-  preview: string;
+  toolTrace: ToolTraceEntry[];
+  /** התשובה המלאה של המודל — מוצגת כמו שהיא, בלי קיצור. */
+  fullResponse: string;
+}
+
+/** תקציר טכני של ערך שחזר מכלי — **מספר בלבד, אף פעם לא התוכן**. */
+function describeToolResult(out: unknown): string {
+  if (Array.isArray(out)) return `${out.length} פריטים`;
+  if (typeof out === "string") return `טקסט · ${out.length} תווים`;
+  if (out && typeof out === "object") return `אובייקט · ${Object.keys(out).length} שדות`;
+  if (out == null) return "ריק";
+  return typeof out;
+}
+
+/** JSON של פרמטרי המודל, מקוצר לתצוגה. אלה ערכים שהמודל בחר (query / boardId / טווח זמן) — לא סודות. */
+function briefParams(input: unknown): string {
+  let s: string;
+  try {
+    s = JSON.stringify(input ?? {});
+  } catch {
+    s = String(input);
+  }
+  return s.length > 300 ? `${s.slice(0, 300)}…` : s;
 }
 
 async function runOne(
@@ -183,6 +226,7 @@ async function runOne(
   reg: Map<string, ReadTool>,
 ): Promise<RunReport> {
   const normTools: NormTool[] = [...reg.values()].map((t) => t.spec);
+  const toolTrace: ToolTraceEntry[] = [];
 
   const started = performance.now();
   try {
@@ -195,15 +239,22 @@ async function runOne(
       messages: [{ role: "user", content: prompt }],
       tools: normTools,
       // רק כלי קריאה מהרישום. כל שם אחר (כולל כלי כתיבה) → נחסם.
+      // רושמים כל קריאה ל-toolTrace: שם + פרמטרים + הצלחה + מספר פריטים. לא את התוכן שחזר.
       executeToolCall: async (call: NormToolCall) => {
+        const order = toolTrace.length + 1;
+        const params = briefParams(call.input);
         const tool = reg.get(call.name);
         if (!tool) {
+          toolTrace.push({ order, name: call.name, params, ok: false, summary: "כלי לא זמין — נחסם" });
           return { content: `שגיאה: הכלי ${call.name} אינו זמין בסקריפט ההשוואה (רק כלי קריאה, לפי --tools)`, sideEffect: false };
         }
         try {
           const out = await tool.run((call.input ?? {}) as Record<string, unknown>);
+          toolTrace.push({ order, name: call.name, params, ok: true, summary: describeToolResult(out) });
+          // התוכן המלא נשלח *למודל בלבד* (נחוץ להשוואה אמיתית) — לא ללוג.
           return { content: JSON.stringify(out), sideEffect: false };
         } catch (err) {
+          toolTrace.push({ order, name: call.name, params, ok: false, summary: `שגיאה: ${(err as Error).message}` });
           return { content: `שגיאה: ${(err as Error).message}`, sideEffect: false };
         }
       },
@@ -222,7 +273,8 @@ async function runOne(
         cachedInputTokens: res.usage.cachedInputTokens,
       }),
       error: res.errored ? "קריאת מודל נכשלה" : res.exhausted ? "נגמרו הסבבים" : undefined,
-      preview: (res.text ?? "").replace(/\s+/g, " ").slice(0, 160),
+      toolTrace,
+      fullResponse: res.text ?? "",
     };
   } catch (err) {
     return {
@@ -234,7 +286,8 @@ async function runOne(
       toolCalls: 0,
       cost: null,
       error: (err as Error).message,
-      preview: "",
+      toolTrace,
+      fullResponse: "",
     };
   }
 }
@@ -244,9 +297,14 @@ function printReport(label: string, t: { provider: string; model: string }, r: R
   logger.info(`  ${r.ok ? "✓ הצליח" : "✗ נכשל"}${r.error ? ` (${r.error})` : ""}`);
   logger.info(`  ⏱  ${r.ms.toFixed(0)} ms`);
   logger.info(`  🔤 input: ${r.inputTokens}${r.cachedTokens ? ` (מתוכם ${r.cachedTokens} מ-cache)` : ""} · output: ${r.outputTokens}`);
-  logger.info(`  🔧 tool calls: ${r.toolCalls}`);
   logger.info(`  💰 עלות משוערת: ${r.cost != null ? `$${r.cost.toFixed(5)}` : "לא ידוע (מודל לא במחירון)"}`);
-  if (r.preview) logger.info(`  💬 ${r.preview}${r.preview.length >= 160 ? "…" : ""}`);
+  logger.info(`  🔧 tool calls: ${r.toolCalls}`);
+  for (const e of r.toolTrace) {
+    logger.info(`     ${e.order}. ${e.name}  params=${e.params}  → ${e.ok ? "✓" : "✗"} ${e.summary}`);
+  }
+  const body = r.fullResponse.trim();
+  logger.info(`  ─────── תשובה מלאה (${body.length} תווים) ───────`);
+  logger.info(body || "(אין תשובה)");
 }
 
 const SCOPE_LABEL: Record<ToolScope, string> = {

@@ -22,6 +22,8 @@ export interface TeamMember {
   email: string | null;
   /** JID של WhatsApp (מספר@s.whatsapp.net); null אם לא מוגדר ערוץ WhatsApp */
   whatsappJid: string | null;
+  /** שמות נוספים שבהם המשתמש עשוי להופיע בעמודות אחראי ב-Monday (למשל שם באנגלית) */
+  aliases?: string[];
 }
 
 /**
@@ -76,6 +78,7 @@ export const TEAM_DIRECTORY: TeamMember[] = [
     mondayUserId: "71724151",
     email: "yochi66850@gmail.com",
     whatsappJid: null,
+    aliases: ["Yochi", "yochi", "Yochi Rozental", "יוכי רוזנטל"],
   },
 ];
 

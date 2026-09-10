@@ -58,7 +58,11 @@ export function resolveUsersByAssigneeText(text: string): IdentifiedUser[] {
   const out: IdentifiedUser[] = [];
   for (const part of parts) {
     const member = TEAM_DIRECTORY.find(
-      (m) => m.name === part || m.name.includes(part) || part.includes(m.name),
+      (m) =>
+        m.name === part ||
+        m.name.includes(part) ||
+        part.includes(m.name) ||
+        (m.aliases ?? []).some((a) => a === part || a.includes(part) || part.includes(a)),
     );
     if (member && !out.some((u) => u.key === member.key)) out.push(identify(member));
   }

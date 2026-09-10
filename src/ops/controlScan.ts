@@ -129,6 +129,7 @@ export async function runControlScan(): Promise<ControlScanReport> {
           who,
           project: t.context,
           url: t.url,
+          ...taskRef,
         });
       } else {
         add({
@@ -140,6 +141,7 @@ export async function runControlScan(): Promise<ControlScanReport> {
           who,
           project: t.context,
           url: t.url,
+          ...taskRef,
         });
       }
       continue;

@@ -35,12 +35,16 @@ import { runControlScan, type Severity } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
 import { getOfficeState } from "./officeState.js";
 
-/** ימי עבודה (א׳–ה׳) בין שני תאריכים, לא כולל היום הראשון. */
+/**
+ * ימי עבודה (א׳–ה׳) שחלפו בין שני מועדים, לא כולל היום של `from`.
+ * חשוב: משווים לפי יומן אזור הזמן של המשרד. אם משאירים את ההשוואה על מופעי DateTime עם offset
+ * שונה (השרת רץ ב-UTC, ה-firstSeen נשמר עם +03:00) — היום האחרון נחתך והספירה יוצאת נמוכה ביום.
+ */
 function businessDaysBetween(from: DateTime, to: DateTime): number {
+  let d = from.setZone(env.TIMEZONE).startOf("day").plus({ days: 1 });
+  const end = to.setZone(env.TIMEZONE).startOf("day");
   let count = 0;
-  let d = from.startOf("day").plus({ days: 1 });
-  const end = to.startOf("day");
-  while (d <= end) {
+  while (d.toMillis() <= end.toMillis()) {
     if (d.weekday !== 5 && d.weekday !== 6) count++; // 5=Fri 6=Sat
     d = d.plus({ days: 1 });
   }
@@ -85,11 +89,15 @@ export function escalationDecision(
   if (snooze && DateTime.fromISO(snooze, { zone: env.TIMEZONE }).startOf("day") >= now.startOf("day")) {
     return { skip: true, skipReason: "snoozed", target: 0, stale: 0 };
   }
-  const respondedAt = deps.lastResponseAt(finding.findingKey);
-  const clockStart =
-    respondedAt && respondedAt > finding.firstSeen
-      ? DateTime.fromISO(respondedAt)
-      : DateTime.fromISO(finding.firstSeen);
+  const firstSeenDt = DateTime.fromISO(finding.firstSeen);
+  const respondedRaw = deps.lastResponseAt(finding.findingKey);
+  // תגובות נשמרות ב-datetime('now') של SQLite = "YYYY-MM-DD HH:MM:SS" ב-UTC.
+  const respondedDt = respondedRaw
+    ? (DateTime.fromSQL(respondedRaw, { zone: "utc" }).isValid
+        ? DateTime.fromSQL(respondedRaw, { zone: "utc" })
+        : DateTime.fromISO(respondedRaw))
+    : null;
+  const clockStart = respondedDt && respondedDt > firstSeenDt ? respondedDt : firstSeenDt;
   const stale = businessDaysBetween(clockStart, now);
   const target = targetLevel(finding.severity, stale);
   return { skip: false, target, stale };

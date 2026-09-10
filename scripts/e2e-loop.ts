@@ -50,11 +50,14 @@ async function itemCol(itemId: string, colId: string): Promise<string> {
 
 async function cleanup(itemId: string) {
   try {
-    db.exec(`DELETE FROM finding_events WHERE finding_key IN ('overdue:${itemId}','stuck:${itemId}','clientwait:${itemId}')`);
-    db.exec(`DELETE FROM notifications WHERE item_id = '${itemId}'`);
-    db.exec(`DELETE FROM control_findings WHERE item_id = '${itemId}'`);
+    const keys = `('overdue:${itemId}','stuck:${itemId}','clientwait:${itemId}','verystale:${itemId}','blocking:${itemId}')`;
+    db.exec(`DELETE FROM finding_events WHERE finding_key IN ${keys}`);
+    db.exec(
+      `DELETE FROM notifications WHERE item_id = '${itemId}' OR finding_key IN ${keys} OR body LIKE '%בדיקת לולאה E2E%'`,
+    );
+    db.exec(`DELETE FROM control_findings WHERE finding_key IN ${keys}`);
     await deleteTask(itemId);
-    log(`  ניקוי: משימה ${itemId} נמחקה + רשומות DR נמחקו`);
+    log(`  ניקוי: משימה ${itemId} נמחקה + רשומות DB נמחקו`);
   } catch (e) {
     log(`  ניקוי נכשל (ידני): ${(e as Error).message}`);
   }

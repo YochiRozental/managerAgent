@@ -9,6 +9,7 @@
     "window": "tsx src/server/index.ts",
     "window:watch": "tsx watch src/server/index.ts",
     "links": "tsx scripts/print-links.ts",
+    "google-auth": "tsx scripts/google-auth.ts",
     "test:identity": "tsx scripts/test-identity.ts",
     "test:router": "tsx scripts/test-model-router.ts",
     "test:mywork": "tsx scripts/test-mywork-brief.ts",

@@ -83,5 +83,15 @@ export async function getGoogleClient(): Promise<OAuth2Client> {
     return oAuth2Client;
   }
 
+  // בשרת אין דפדפן — זרימת ה-OAuth האינטראקטיבית (server + open) לעולם לא תושלם ותתקע כל קורא
+  // (ראה: הסבב היומי נתקע כי listCalendarEvents חיכה לאישור גוגל). נכשלים מהר במקום להיתקע.
+  // GOOGLE_AUTH_INTERACTIVE=true — רק בסביבה מקומית, לצורך יצירת הטוקן הראשוני (npm run google-auth).
+  if (process.env.GOOGLE_AUTH_INTERACTIVE !== "true") {
+    throw new Error(
+      "אין data/google-token.json — הרשאת Google לא הוגדרה. " +
+        "צור טוקן מקומית (npm run google-auth) והעלה את data/google-token.json לשרת.",
+    );
+  }
+
   return interactiveAuth(client_id, client_secret);
 }

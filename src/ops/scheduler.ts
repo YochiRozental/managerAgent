@@ -13,6 +13,7 @@ import { env } from "../config/env.js";
 import {
   finishJobRun,
   jobRunCountOn,
+  lastJobRun,
   startJobRun,
   type JobTrigger,
 } from "../db/repositories/systemHealth.js";
@@ -86,8 +87,19 @@ function catchUp(): void {
   for (const job of JOBS) {
     if (!job.runsOn(now.weekday)) continue;
     if (now.hour < job.hour) continue; // עוד לא הגיע הזמן — ה-schedule יתפוס
-    if (jobRunCountOn(job.key, today) > 0) continue; // כבר הותנעה היום (הצליחה או נכשלה)
-    logger.info(`מתזמן [${job.label}]: לא רץ היום והשעה עברה — catch-up`);
+    if (jobRunCountOn(job.key, today) > 0) {
+      // כבר הותנעה היום — אלא אם היא "תקועה": ריצה שלא הסתיימה מלפני יותר מ-30 דק'
+      // (התהליך קרס באמצע ריצה קודמת). במקרה כזה כן מריצים שוב.
+      const last = lastJobRun(job.key);
+      const stuck =
+        last?.ok === null &&
+        !last.finishedAt &&
+        now.diff(DateTime.fromSQL(last.startedAt, { zone: "utc" })).as("minutes") > 30;
+      if (!stuck) continue;
+      logger.warn(`מתזמן [${job.label}]: ריצה קודמת תקועה (${last?.startedAt}) — מריץ שוב`);
+    } else {
+      logger.info(`מתזמן [${job.label}]: לא רץ היום והשעה עברה — catch-up`);
+    }
     void runTracked(job, "catchup");
   }
 }

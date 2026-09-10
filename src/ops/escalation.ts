@@ -206,9 +206,14 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
 
   const dayStart = now.startOf("day");
   const dayEnd = now.endOf("day");
-  const meetings = await listCalendarEvents({ timeMinISO: dayStart.toISO()!, timeMaxISO: dayEnd.toISO()! })
-    .then((evs) => evs.map((e) => `${e.summary ?? "פגישה"}${e.start ? ` (${e.start})` : ""}`))
-    .catch(() => [] as string[]);
+  // היומן הוא "נחמד שיש" בתדריך — לא מפיל ולא מעכב את הסבב אם Google לא זמין/לא מוגדר.
+  const calendarTimeout = new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 15_000));
+  const meetings = await Promise.race([
+    listCalendarEvents({ timeMinISO: dayStart.toISO()!, timeMaxISO: dayEnd.toISO()! })
+      .then((evs) => evs.map((e) => `${e.summary ?? "פגישה"}${e.start ? ` (${e.start})` : ""}`))
+      .catch(() => [] as string[]),
+    calendarTimeout,
+  ]);
 
   const dueTodayTasks = [
     ...new Map(

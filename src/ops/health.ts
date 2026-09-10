@@ -95,7 +95,14 @@ export function getHealth(): HealthReport {
 
     // נחשב מאחר רק אחרי שהשעה המתוזמנת + שעתיים חלפה, כדי לא לצעוק על שרת שרק עלה בבוקר.
     const pastWindow = now.hour >= DAILY_HOUR + 2;
-    if (j.expectedToday && pastWindow) {
+    // ריצה שנמצאת כרגע בתהליך (התחילה לאחרונה) — לא "מאחר", היא פשוט עוד לא סיימה.
+    const runningNow =
+      lastResult === "running" &&
+      !!last &&
+      now.diff(parseDbTime(last.startedAt)).as("minutes") < 20;
+    // חלון חסד אחרי עליית התהליך — ה-catch-up צריך זמן לרוץ.
+    const startupGrace = process.uptime() < 12 * 60;
+    if (j.expectedToday && pastWindow && !runningNow && !startupGrace) {
       const okToday = lastOk && parseDbTime(lastOk.startedAt).setZone(env.TIMEZONE).hasSame(now, "day");
       if (!okToday) reasons.push(`${j.label} של היום עדיין לא רץ בהצלחה`);
     }

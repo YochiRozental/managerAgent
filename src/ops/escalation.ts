@@ -178,9 +178,8 @@ export function buildNudgeText(
   const m = finding.headline.match(/^(.*?):\s*(.+)$/);
   const state = m ? m[1]!.trim() : ageWord;
   const taskName = m ? m[2]!.trim() : finding.headline;
-  const where = finding.project && finding.project !== "מכירות" && finding.project !== "לידים" && finding.project !== "גבייה"
-    ? ` (פרויקט ${finding.project})`
-    : "";
+  const NON_PROJECT = new Set(["מכירות", "לידים", "גבייה", "משימת משרד", "פרויקט לא מקושר", ""]);
+  const where = finding.project && !NON_PROJECT.has(finding.project) ? ` (פרויקט ${finding.project})` : "";
   const opener =
     finding.kind === "stuck"
       ? `${firstName}, המשימה "${taskName}"${where} מסומנת תקועה`

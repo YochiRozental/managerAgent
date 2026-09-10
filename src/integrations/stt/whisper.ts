@@ -1,26 +1,38 @@
-import fs from "node:fs";
-import ffmpegPathImport from "ffmpeg-static";
-import ffmpeg from "fluent-ffmpeg";
-import { pipeline, type AutomaticSpeechRecognitionPipeline } from "@huggingface/transformers";
-import wavefile from "wavefile";
-import { logger } from "../../utils/logger.js";
+/**
+ * תמלול עברית (Whisper) — כבוי כברירת מחדל (ENABLE_VOICE_TRANSCRIPTION).
+ *
+ * כל הספריות הכבדות (@huggingface/transformers → onnxruntime, ffmpeg, wavefile) נטענות
+ * ב-import דינמי בתוך transcribeHebrew — כלומר **רק אם באמת מתמללים**. כשהתמלול כבוי,
+ * onnxruntime לא נטען כלל (הוא שומר עשרות GB של virtual memory ומכביד על שרת קטן).
+ */
 
-const ffmpegPath = ffmpegPathImport as unknown as string;
-if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
+import { logger } from "../../utils/logger.js";
 
 const MODEL = "Xenova/whisper-small";
 
-let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let transcriberPromise: Promise<any> | null = null;
+let ffmpegConfigured = false;
 
-function getTranscriber(): Promise<AutomaticSpeechRecognitionPipeline> {
+async function getTranscriber(): Promise<(audio: Float32Array, opts: unknown) => Promise<unknown>> {
   if (!transcriberPromise) {
     logger.info(`טוען מודל תמלול (${MODEL})... בפעם הראשונה זה מוריד את המודל ולוקח זמן`);
+    const { pipeline } = await import("@huggingface/transformers");
     transcriberPromise = pipeline("automatic-speech-recognition", MODEL);
   }
-  return transcriberPromise;
+  return transcriberPromise as Promise<(audio: Float32Array, opts: unknown) => Promise<unknown>>;
 }
 
-function convertToWav(inputPath: string): Promise<string> {
+async function convertToWav(inputPath: string): Promise<string> {
+  const [{ default: ffmpeg }, ffmpegStatic] = await Promise.all([
+    import("fluent-ffmpeg"),
+    import("ffmpeg-static"),
+  ]);
+  if (!ffmpegConfigured) {
+    const ffmpegPath = (ffmpegStatic.default ?? ffmpegStatic) as unknown as string;
+    if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
+    ffmpegConfigured = true;
+  }
   const outputPath = `${inputPath.replace(/\.[^.]+$/, "")}.wav`;
   return new Promise((resolve, reject) => {
     ffmpeg(inputPath)
@@ -35,6 +47,8 @@ function convertToWav(inputPath: string): Promise<string> {
 }
 
 export async function transcribeHebrew(audioFilePath: string): Promise<string> {
+  const fs = await import("node:fs");
+  const { default: wavefile } = await import("wavefile");
   const wavPath = await convertToWav(audioFilePath);
   try {
     const buffer = fs.readFileSync(wavPath);
@@ -45,7 +59,9 @@ export async function transcribeHebrew(audioFilePath: string): Promise<string> {
     const audioData: Float32Array = Array.isArray(rawSamples) ? rawSamples[0]! : rawSamples;
 
     const transcriber = await getTranscriber();
-    const output = await transcriber(audioData, { language: "hebrew", task: "transcribe" });
+    const output = (await transcriber(audioData, { language: "hebrew", task: "transcribe" })) as
+      | { text?: string }
+      | { text?: string }[];
     const result = Array.isArray(output) ? output[0] : output;
     return (result?.text ?? "").trim();
   } finally {

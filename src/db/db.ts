@@ -7,6 +7,12 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 
+// WAL — קורא וכותב לא חוסמים זה את זה (הסורק הכבד רץ בזמן שעובד עדכן משימה מהחלונית),
+// והקובץ פחות חשוף להשחתה בקריסה. busy_timeout — במקום להיכשל מיד על נעילה, לחכות עד 5ש'.
+db.exec("PRAGMA journal_mode = WAL");
+db.exec("PRAGMA busy_timeout = 5000");
+db.exec("PRAGMA synchronous = NORMAL");
+
 const schema = fs.readFileSync(new URL("./schema.sql", import.meta.url), "utf-8");
 db.exec(schema);
 

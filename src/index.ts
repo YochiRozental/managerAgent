@@ -6,6 +6,7 @@ import { connectWhatsApp } from "./integrations/whatsapp/client.js";
 import { startOutboxDrainer } from "./integrations/whatsapp/outboxDrainer.js";
 import { sendText } from "./integrations/whatsapp/send.js";
 import { handleIncomingMessage } from "./pipeline/messageHandler.js";
+import { recordHeartbeat } from "./db/repositories/systemHealth.js";
 import { logger } from "./utils/logger.js";
 
 // Baileys can throw mid-send when the socket dies (e.g. "Connection Closed") without ever firing a
@@ -62,6 +63,16 @@ async function main() {
 
   startLeadEmailWatcher(sock);
   startOutboxDrainer(sock);
+
+  // פעימת לב — כדי ש-/health (שרת החלונית) ידע שסוכן ה-WhatsApp חי.
+  recordHeartbeat("whatsapp-agent", `pid ${process.pid}`);
+  setInterval(() => {
+    try {
+      recordHeartbeat("whatsapp-agent", `pid ${process.pid}`);
+    } catch (err) {
+      logger.error(err, "כתיבת heartbeat נכשלה");
+    }
+  }, 60_000).unref();
 }
 
 main();

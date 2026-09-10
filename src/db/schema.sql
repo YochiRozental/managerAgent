@@ -71,3 +71,25 @@ CREATE TABLE IF NOT EXISTS whatsapp_outbox (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   sent_at TEXT
 );
+
+-- פעימות לב פר-תהליך. כל תהליך (ops-window / whatsapp-agent) כותב את השם שלו כל דקה.
+-- /health קורא מכאן כדי לדעת אם תהליך חי — עובד גם כשהתהליכים בשרתים/קונטיינרים נפרדים.
+CREATE TABLE IF NOT EXISTS heartbeats (
+  process TEXT PRIMARY KEY,
+  beat_at TEXT NOT NULL,
+  pid INTEGER,
+  detail TEXT
+);
+
+-- ריצות של עבודות מתוזמנות (הסבב היומי, הדוח השבועי, הגיבוי). מאפשר catch-up אחרי ריסטרט
+-- ("האם הסבב של היום כבר רץ?") ומזין את /health בזמן/הצלחת הריצה האחרונה.
+CREATE TABLE IF NOT EXISTS job_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job TEXT NOT NULL,               -- daily_cycle | weekly_report | db_backup
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT,
+  ok INTEGER,                      -- 1 הצליח · 0 נכשל · NULL עדיין רץ
+  trigger TEXT,                    -- schedule | catchup | manual
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs (job, started_at);

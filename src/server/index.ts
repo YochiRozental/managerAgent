@@ -29,12 +29,14 @@ import {
   listUnseenNotifications,
   markNotificationsSeen,
 } from "../db/repositories/notifications.js";
+import { recordHeartbeat } from "../db/repositories/systemHealth.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import { getControlScan } from "../ops/controlScan.js";
 import { runCrmScan } from "../ops/crmScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
 import { runDailyControlCycle } from "../ops/escalation.js";
+import { getHealth, noteIncident } from "../ops/health.js";
 import { getOversightReport } from "../ops/oversight.js";
 import { startScheduler } from "../ops/scheduler.js";
 import { buildWeeklyReport } from "../ops/weeklyReport.js";
@@ -45,6 +47,18 @@ import { clearSessionCookie, createSessionCookie, readSession } from "./session.
 
 const PORT = Number(process.env.PORT ?? 3001);
 const UI_HTML = await readFile(new URL("./ui.html", import.meta.url), "utf8");
+
+// שלא כמו סוכן ה-WhatsApp (src/index.ts) — שרת החלונית לא נופל על תקלה זמנית של Monday/AI/Google.
+// הוא מרים HTTP, מגיש את החלונית ומריץ את המתזמן; תקלה ברקע נרשמת כ-DEGRADED ונחשפת ב-/health,
+// והשרת ממשיך. מצב תקוע אמיתי מטופל ע"י ניטור חיצוני של /health + restart של Docker/PM2.
+process.on("unhandledRejection", (err) => {
+  logger.error(err, "[degraded] unhandledRejection — השרת ממשיך");
+  noteIncident("unhandledRejection", err instanceof Error ? err.message : String(err));
+});
+process.on("uncaughtException", (err) => {
+  logger.error(err, "[degraded] uncaughtException — השרת ממשיך");
+  noteIncident("uncaughtException", err.message);
+});
 
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
@@ -89,6 +103,12 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
 
   try {
+    if (req.method === "GET" && path === "/health") {
+      // ציבורי (בלי עוגייה) — לניטור חיצוני. לא חושף סודות, רק מצב תהליכים/עבודות/גיבוי.
+      const health = getHealth();
+      return send(res, health.status === "ok" ? 200 : 503, health);
+    }
+
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
       // קישור כניסה אישי: /?t=<token> → מזהה ומכניס ישירות. ה-token נשאר ב-URL כדי שהסימנייה
       // תמשיך לעבוד גם אחרי שהעוגייה פגה.
@@ -317,6 +337,16 @@ function lanAddresses(): string[] {
   }
   return out;
 }
+
+// פעימת לב — כל דקה, כדי ש-/health (ותהליכים אחרים) ידעו ש-ops-window חי.
+recordHeartbeat("ops-window", `pid ${process.pid}`);
+setInterval(() => {
+  try {
+    recordHeartbeat("ops-window", `pid ${process.pid}`);
+  } catch (err) {
+    logger.error(err, "כתיבת heartbeat נכשלה");
+  }
+}, 60_000).unref();
 
 startScheduler();
 

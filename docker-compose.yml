@@ -1,10 +1,77 @@
+# פריסת השרת (Hetzner CPX12 — 1 vCPU / 2 GB + 2 GB swap).
+#
+# ה-ingress: Caddy רץ על ה-host (systemd, /etc/caddy/Caddyfile) ומפנה ל-window.
+# כאן רק שני תהליכי הסוכן (+ oauth2-proxy תחת profile "auth", ראה docs/deployment-hetzner.md).
+#
+#   docker compose up -d --build           # שגרה
+#   docker compose --profile auth up -d     # אחרי שהוגדר oauth2-proxy
+#   docker compose ps ·  docker compose logs -f window
+#   curl -s localhost:3001/health | jq .
+#
+# mem_limit + swap = קונטיינר בודד לא מפיל את השרת (ה-OOM ב-8-9/9 קרה בלי swap, בזמן build).
+
 services:
   whatsapp-agent:
     build: .
     restart: unless-stopped
     env_file: .env
+    command: ["node", "node_modules/tsx/dist/cli.mjs", "src/index.ts"]
+    mem_limit: 512m
+    memswap_limit: 1g
     volumes:
       - ./data:/app/data
       - ./auth:/app/auth
       - ./google-credentials.json:/app/google-credentials.json:ro
-      - ./data/hf-cache:/app/node_modules/@huggingface/transformers/.cache
+    stop_grace_period: 10s
+
+  window:
+    build: .
+    restart: unless-stopped
+    # node ישירות (לא "npm run") — חוסך שכבות npm/sh/tsx-supervisor, ~80 MB על שרת קטן.
+    command: ["node", "node_modules/tsx/dist/cli.mjs", "src/server/index.ts"]
+    env_file: .env
+    environment:
+      PORT: "3001"
+    mem_limit: 768m
+    memswap_limit: 1536m
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - ./data:/app/data
+      - ./google-credentials.json:/app/google-credentials.json:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3001/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 10s
+
+  # שכבת אימות שנייה: Google (רק חשבונות @gotlib.biz) לפני שמגיעים לחלונית.
+  # לא עולה ב-`up` רגיל — רק עם `--profile auth`, אחרי שמולאו OAUTH2_PROXY_* ב-.env.
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    restart: unless-stopped
+    profiles: ["auth"]
+    env_file: .env
+    command:
+      - --http-address=0.0.0.0:4180
+      - --reverse-proxy=true
+      - --provider=google
+      - --email-domain=gotlib.biz
+      - --upstream=http://window:3001
+      - --cookie-secure=true
+      - --set-xauthrequest=true
+      - --pass-access-token=false
+      - --skip-provider-button=true
+    ports:
+      - "127.0.0.1:4180:4180"
+    mem_limit: 128m
+    depends_on:
+      - window

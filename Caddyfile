@@ -1,0 +1,19 @@
+# עותק ייחוס ל-/etc/caddy/Caddyfile שרץ על ה-host (systemd) — לא נטען ע"י docker-compose.
+# Caddy מנפיק TLS אוטומטית ל-manager-agent.gotlib.biz.
+
+# ── מצב נוכחי (לפני oauth2-proxy) ─────────────────────────────────────────────
+# manager-agent.gotlib.biz {
+#     reverse_proxy 127.0.0.1:3001
+# }
+
+# ── מצב יעד: כל בקשה עוברת דרך oauth2-proxy (Google, רק @gotlib.biz) ─────────
+manager-agent.gotlib.biz {
+	reverse_proxy 127.0.0.1:4180
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	encode gzip
+}

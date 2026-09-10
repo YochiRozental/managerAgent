@@ -5,4 +5,7 @@ auth
 .env
 google-credentials.json
 .git
+.claude
 *.log
+docs
+scratchpad

@@ -28,6 +28,16 @@ import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
 import { addUpdateToItem, reassignItem, updateTask } from "./actions.js";
+import {
+  replyAwaitManager,
+  replyBlocked,
+  replyDefer,
+  replyDone,
+  replyNotRelevant,
+  replyProgress,
+  replyWaiting,
+  type LoopContext,
+} from "./loopReply.js";
 import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
@@ -48,12 +58,35 @@ export interface OpsChatResult {
   actions: string[];
 }
 
-function systemPrompt(user: IdentifiedUser): string {
+function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
   const now = DateTime.now().setZone(env.TIMEZONE);
   return [
     `אתה העוזר התפעולי של ${user.name} במשרד האדריכלים "גוטליב אדריכלים". תפקיד המשתמש: ${user.roleDescription}`,
     `היום ${now.toFormat("EEEE, dd/MM/yyyy")}, השעה ${now.toFormat("HH:mm")} (${env.TIMEZONE}).`,
     "דבר עברית, קצר, חם ולעניין. אתה בצד של העובד — עוזר לו לנהל את היום, לא בודק אותו.",
+    ...(about
+      ? [
+          "",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          `🔔 מנוע הבקרה פנה לעובד ביוזמתו על משימה ספציפית: "${about.taskName ?? about.itemId}".`,
+          "ההודעה של העובד עכשיו היא התשובה שלו לפנייה הזו. המשימה כבר ידועה לך במלואה —",
+          "**אסור** לקרוא get_today_tasks או find_task. חובה: לזהות את הכוונה, לקרוא כלי reply_* אחד, ולסיים.",
+          "",
+          'מיפוי (הצד הימני = הכלי לקרוא):',
+          '  "סיימתי" / "הגשתי" / "בוצע" / "גמרתי"            → reply_done',
+          '  "עדיין עובד" / "באמצע" / "כמעט" / "מתקדם"        → reply_progress(note)',
+          '  "צריך עוד X ימים" / "עד יום ___" / "תן לי ארכה"  → reply_defer(newDate=YYYY-MM-DD, reason)',
+          '  "מחכה ללקוח" / "הכדור אצל הלקוח"                 → reply_waiting(on="client", reason)',
+          '  "מחכה ליועץ/לספק/לקונסטרוקטור/למהנדס"           → reply_waiting(on="consultant", reason)',
+          '  "מחכה שמוטי/שהמנהל יחליט" / "צריך אישור מלמעלה"  → reply_await_manager(question)',
+          '  "תקוע כי…" / "חסום כי…" / "לא יכול להתקדם כי…"    → reply_blocked(blocker)',
+          '  "לא רלוונטי" / "בוטל" / "כבר לא צריך"            → reply_not_relevant(reason)',
+          "",
+          "אחרי שהכלי חזר — אמור לעובד במשפט אחד את ה-message ואת ה-tracking שקיבלת. אל תקרא עוד כלים.",
+          "רק אם ההודעה ברור שאינה תשובה לפנייה (שאלה כללית, נושא אחר) — התעלם מהבלוק הזה וטפל רגיל.",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+      : []),
     "",
     "איך לעבוד:",
     "• כשהעובד אומר 'בוקר טוב' / 'מה יש לי' / 'מה על הפרק' — קרא get_today_tasks. הצג למשתמש את השדה 'briefing' שחוזר משם כמעט כמו שהוא — מותר להוסיף ברכה קצרה בהתאם לשעה ולסיים ב'על מה מתחילים?', אבל אל תשנה את רשימת הפרויקטים, את שורות 'עכשיו:' ואת סימוני האיחור/הקריטי. אל תוסיף 'דורש תשומת לב' / 'מחכים ממני' אלא אם ביקשו.",
@@ -187,7 +220,16 @@ interface ToolDef {
   run: (input: Record<string, unknown>) => Promise<unknown>;
 }
 
-export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): Promise<OpsChatResult> {
+export interface OpsChatOptions {
+  /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
+  about?: LoopContext;
+}
+
+export async function runOpsChat(
+  user: IdentifiedUser,
+  history: ChatMessage[],
+  opts: OpsChatOptions = {},
+): Promise<OpsChatResult> {
   if (!user.mondayUserId) {
     return { reply: "אין לך חשבון Monday מקושר, אז אין לי גישה למשימות שלך. פנה/י ליוכי.", actions: [] };
   }
@@ -422,6 +464,103 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
     },
   ];
 
+  // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה ----
+  if (opts.about) {
+    const c = opts.about;
+    const label = c.taskName ?? c.itemId;
+    const runLoop = async (
+      tag: string,
+      fn: () => Promise<{ message: string; tracking: string }>,
+    ): Promise<{ message: string; tracking: string }> => {
+      const r = await fn();
+      actions.push(tag);
+      await refresh();
+      return r;
+    };
+    tools.push(
+      {
+        name: "reply_done",
+        description: "העובד דיווח שסיים את המשימה. מסמן בוצע וסוגר את ממצא הבקרה.",
+        input_schema: { type: "object", properties: {} },
+        run: () => runLoop(`✅ ${label} — בוצע`, () => replyDone(user, c)),
+      },
+      {
+        name: "reply_progress",
+        description: "העובד דיווח שהוא עדיין עובד על המשימה / באמצע / כמעט סיים. רושם הערה ונותן לו עוד יום עבודה.",
+        input_schema: {
+          type: "object",
+          properties: { note: { type: "string", description: "מה שהעובד אמר על ההתקדמות" } },
+          required: ["note"],
+        },
+        run: (i) => runLoop(`🔄 ${label} — עדכון התקדמות`, () => replyProgress(user, c, String(i.note))),
+      },
+      {
+        name: "reply_defer",
+        description:
+          "העובד ביקש דחייה ('צריך עוד יומיים', 'עד יום חמישי', 'תדחה לשבוע הבא'). מעדכן את תאריך היעד ב-Monday, מתעד את בקשת הדחייה, ומשהה את הבקרה עד התאריך החדש.",
+        input_schema: {
+          type: "object",
+          properties: {
+            newDate: { type: "string", description: "תאריך היעד החדש, YYYY-MM-DD — חשב לפי התאריך היום שבמערכת" },
+            reason: { type: "string", description: "סיבת הדחייה אם נאמרה" },
+          },
+          required: ["newDate"],
+        },
+        run: (i) =>
+          runLoop(`📅 ${label} — נדחה ל-${String(i.newDate)}`, () =>
+            replyDefer(user, c, String(i.newDate), i.reason ? String(i.reason) : undefined),
+          ),
+      },
+      {
+        name: "reply_waiting",
+        description:
+          "העובד דיווח שהוא ממתין לגורם חיצוני: 'מחכה ללקוח' (on=client), 'מחכה ליועץ/לספק/לקונסטרוקטור' (on=consultant), גורם אחר (on=other). מעדכן סטטוס המתנה ומתעד את הסיבה.",
+        input_schema: {
+          type: "object",
+          properties: {
+            on: { type: "string", enum: ["client", "consultant", "other"] },
+            reason: { type: "string", description: "למה בדיוק מחכים" },
+          },
+          required: ["on"],
+        },
+        run: (i) =>
+          runLoop(`⏳ ${label} — ממתין (${String(i.on)})`, () =>
+            replyWaiting(user, c, i.on as "client" | "consultant" | "other", i.reason ? String(i.reason) : undefined),
+          ),
+      },
+      {
+        name: "reply_blocked",
+        description: "העובד דיווח שהמשימה תקועה בגלל חסם ('תקוע כי...', 'חסום כי...'). מסמן תקוע ומתעד את החסם.",
+        input_schema: {
+          type: "object",
+          properties: { blocker: { type: "string", description: "מה חוסם" } },
+          required: ["blocker"],
+        },
+        run: (i) => runLoop(`🚧 ${label} — תקוע`, () => replyBlocked(user, c, String(i.blocker))),
+      },
+      {
+        name: "reply_await_manager",
+        description:
+          "העובד דיווח שהוא ממתין להחלטה של מנהל ('מחכה שמוטי יחליט', 'צריך אישור מלמעלה'). מתעד על המשימה ומעדכן את מוטי שהעובד ממתין להחלטתו.",
+        input_schema: {
+          type: "object",
+          properties: { question: { type: "string", description: "על מה בדיוק מחכים להחלטה" } },
+          required: ["question"],
+        },
+        run: (i) => runLoop(`🧑‍⚖️ ${label} — הועבר למוטי`, () => replyAwaitManager(user, c, String(i.question))),
+      },
+      {
+        name: "reply_not_relevant",
+        description: "העובד דיווח שהמשימה כבר לא רלוונטית / בוטלה / לא צריך אותה יותר. מעדכן סטטוס ומתעד וסוגר את הממצא.",
+        input_schema: {
+          type: "object",
+          properties: { reason: { type: "string", description: "למה כבר לא רלוונטי" } },
+        },
+        run: (i) => runLoop(`🚫 ${label} — לא רלוונטי`, () => replyNotRelevant(user, c, i.reason ? String(i.reason) : undefined)),
+      },
+    );
+  }
+
   // ---- שינוי אחראי/ת — למי שמנהל משימות/לידים/פרויקטים ----
   if (userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")) {
     tools.push({
@@ -601,7 +740,7 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
   const buildLoop = () => {
     capturedBriefing = null; // איפוס לפני כל ניסיון — כדי שה-fallback ל-SMART יאסוף תדריך מחדש
     return {
-      system: systemPrompt(user),
+      system: systemPrompt(user, opts.about),
       maxTokens: 1024,
       maxTurns: MAX_TURNS,
       messages: history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
@@ -621,7 +760,8 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
       finalizeText: (modelText: string) => {
         // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא, עם ברכה קצרה,
         // במקום הניסוח החופשי של המודל (שנוטה לאבד את מבנה 'עכשיו:' לכל פרויקט).
-        if (capturedBriefing && actions.length === 0) {
+        // לא רלוונטי בתשובה לפנייה יזומה — שם רוצים את התשובה של הכלי.
+        if (capturedBriefing && actions.length === 0 && !opts.about) {
           const hour = now.hour;
           const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
           return `${greet} ${user.name} ☀️\n\n${capturedBriefing}\n\nעל מה מתחילים?`;
@@ -636,6 +776,8 @@ export async function runOpsChat(user: IdentifiedUser, history: ChatMessage[]): 
     latestMessage: history[history.length - 1]?.content ?? "",
     historyLength: history.length,
     canSeeAllWork: userCan(user, "view:all_work"),
+    // תשובה לפנייה יזומה → SMART: הבנת הכוונה + הפעולה הנכונה ב-Monday חשובה מהעלות.
+    forceTier: opts.about ? "smart" : undefined,
     buildLoop,
     // ל-ops chat "תופעת לוואי" = כתיבה ל-Monday/DB (actions), לא סתם קריאת מידע
     sideEffectCount: () => actions.length,

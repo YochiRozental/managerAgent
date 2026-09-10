@@ -47,6 +47,47 @@ export const DONE_LABEL: Record<OpsTaskSource, string> = {
   project_stage: "הושלם",
 };
 
+/** עמודת תאריך היעד לכל מקור (get_board_info 2026-09-02). */
+const DUE_DATE_COLUMN: Record<OpsTaskSource, string> = {
+  general: "date4",
+  project_stage: "date__1",
+};
+
+/**
+ * תווית "ממתין ל..." לפי מקור וסוג ההמתנה. בבורד המשימות הכללי אין תוויות ספציפיות ליועץ/לקוח,
+ * אז נופלים ל"ממתין להתייחסות" (וההסבר נכנס להערה).
+ */
+export function waitingLabel(source: OpsTaskSource, reason: "client" | "consultant" | "manager" | "other"): string {
+  if (source === "project_stage") {
+    if (reason === "client") return "ממתין ללקוח";
+    return "מתתין ליועץ/ספק/אחר";
+  }
+  return "ממתין להתייחסות";
+}
+
+/** תווית "לא רלוונטי / מושהה" לפי מקור. */
+export const PARKED_LABEL: Record<OpsTaskSource, string> = {
+  general: "מושהה",
+  project_stage: "לא רלוונטי",
+};
+
+/** קובע תאריך יעד למשימה. dateISO = YYYY-MM-DD. */
+export async function setTaskDueDate(source: OpsTaskSource, itemId: string, dateISO: string): Promise<void> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateISO)) throw new Error(`תאריך לא תקין: "${dateISO}" (צריך YYYY-MM-DD)`);
+  const cfg = STATUS_CONFIG[source];
+  await mondayRequest(
+    `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) { id }
+    }`,
+    {
+      boardId: cfg.boardId,
+      itemId,
+      columnId: DUE_DATE_COLUMN[source],
+      value: JSON.stringify({ date: dateISO }),
+    },
+  );
+}
+
 /** מאמת שהמשתמש הוא אחד האחראים על הפריט. זורק אם לא. */
 export async function assertUserOwnsItem(itemId: string, mondayUserId: string): Promise<void> {
   const res = await mondayRequest<{

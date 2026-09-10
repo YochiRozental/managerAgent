@@ -22,6 +22,7 @@
     "test:control": "tsx scripts/test-control.ts",
     "test:cycle": "tsx scripts/test-cycle.ts",
     "test:health": "tsx scripts/test-health.ts",
+    "test:loop": "tsx scripts/test-loop.ts",
     "test:crm": "tsx scripts/test-crm.ts",
     "test:weekly": "tsx scripts/test-weekly.ts"
   },

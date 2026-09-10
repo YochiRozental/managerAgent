@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS control_findings (
   headline TEXT NOT NULL,
   detail TEXT NOT NULL,
   url TEXT,
+  item_id TEXT,
+  item_source TEXT,
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL,
   escalation_level INTEGER NOT NULL DEFAULT 0,
@@ -26,16 +28,32 @@ CREATE TABLE IF NOT EXISTS control_findings (
 );
 
 -- הודעות/תזכורות שממתינות למשתמש עד שייכנס לחלונית.
+-- item_id/item_source/context_json — לפניות יזומות של מנוע הבקרה ("דוב, המשימה X מאחרת, מה קורה?"):
+-- קושרים את ההודעה למשימת Monday ספציפית כדי שהתשובה של העובד תדע על מה מדובר.
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_key TEXT NOT NULL,
-  kind TEXT NOT NULL,
+  kind TEXT NOT NULL,               -- reminder | escalation | briefing | weekly | nudge | awaiting_decision
   body TEXT NOT NULL,
   finding_key TEXT,
+  item_id TEXT,
+  item_source TEXT,                 -- general | project_stage
+  context_json TEXT,                -- {taskName, project, ...} לתצוגה
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   seen_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_key, seen_at);
+
+-- אירועים על ממצא בקרה — מה קרה איתו מעבר לסריקה עצמה: העובד הגיב, נדחה לתאריך, נסגר בעקבות
+-- תשובה, המנהל עודכן. escalation.ts קורא מכאן כדי לעצור/לאפס את שעון ההסלמה.
+CREATE TABLE IF NOT EXISTS finding_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_key TEXT NOT NULL,
+  event TEXT NOT NULL,              -- nudge_sent | employee_responded | snoozed | resolved_by_reply | manager_pinged
+  payload_json TEXT,               -- {snoozeUntil?, note?, byUser?, action?}
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_finding_events_key ON finding_events (finding_key, id);
 
 -- היסטוריית שיחות — כל הודעה נשמרת בשרת (לא רק ב-localStorage של הדפדפן).
 CREATE TABLE IF NOT EXISTS chat_messages (

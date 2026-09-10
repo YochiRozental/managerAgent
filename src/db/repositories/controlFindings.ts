@@ -9,6 +9,8 @@ export interface StoredFinding {
   headline: string;
   detail: string;
   url: string | null;
+  itemId: string | null;
+  itemSource: string | null;
   firstSeen: string;
   lastSeen: string;
   escalationLevel: number;
@@ -25,6 +27,8 @@ interface Row {
   headline: string;
   detail: string;
   url: string | null;
+  item_id: string | null;
+  item_source: string | null;
   first_seen: string;
   last_seen: string;
   escalation_level: number;
@@ -42,6 +46,8 @@ function fromRow(r: Row): StoredFinding {
     headline: r.headline,
     detail: r.detail,
     url: r.url,
+    itemId: r.item_id,
+    itemSource: r.item_source,
     firstSeen: r.first_seen,
     lastSeen: r.last_seen,
     escalationLevel: r.escalation_level,
@@ -53,8 +59,8 @@ function fromRow(r: Row): StoredFinding {
 const getStmt = db.prepare(`SELECT * FROM control_findings WHERE finding_key = ?`);
 const insertStmt = db.prepare(
   `INSERT INTO control_findings
-     (finding_key, kind, severity, who, project, headline, detail, url, first_seen, last_seen)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     (finding_key, kind, severity, who, project, headline, detail, url, item_id, item_source, first_seen, last_seen)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const touchStmt = db.prepare(
   `UPDATE control_findings
@@ -79,6 +85,8 @@ export function upsertFinding(f: {
   headline: string;
   detail: string;
   url?: string;
+  itemId?: string;
+  itemSource?: string;
   now: string;
 }): StoredFinding {
   const existing = getStmt.get(f.findingKey) as unknown as Row | undefined;
@@ -94,6 +102,8 @@ export function upsertFinding(f: {
       f.headline,
       f.detail,
       f.url ?? null,
+      f.itemId ?? null,
+      f.itemSource ?? null,
       f.now,
       f.now,
     );

@@ -17,7 +17,14 @@ const schema = fs.readFileSync(new URL("./schema.sql", import.meta.url), "utf-8"
 db.exec(schema);
 
 // מיגרציות קלות למסדי נתונים קיימים (ALTER ... IF NOT EXISTS לא נתמך ב-sqlite)
-for (const stmt of ["ALTER TABLE chat_messages ADD COLUMN session_id TEXT"]) {
+for (const stmt of [
+  "ALTER TABLE chat_messages ADD COLUMN session_id TEXT",
+  "ALTER TABLE notifications ADD COLUMN item_id TEXT",
+  "ALTER TABLE notifications ADD COLUMN item_source TEXT",
+  "ALTER TABLE notifications ADD COLUMN context_json TEXT",
+  "ALTER TABLE control_findings ADD COLUMN item_id TEXT",
+  "ALTER TABLE control_findings ADD COLUMN item_source TEXT",
+]) {
   try {
     db.exec(stmt);
   } catch {

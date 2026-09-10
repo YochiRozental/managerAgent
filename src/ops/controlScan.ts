@@ -37,6 +37,9 @@ export interface Finding {
   who: string;
   project?: string;
   url?: string;
+  /** משימת Monday שהממצא נוגע לה — לפנייה יזומה ולסגירת הלולאה (רק בממצאי משימה) */
+  itemId?: string;
+  itemSource?: "general" | "project_stage";
 }
 
 export interface ControlScanReport {
@@ -74,6 +77,9 @@ export async function runControlScan(): Promise<ControlScanReport> {
     const who = ownerOf(t, projectOwnerByName.get(t.context));
     const where = t.stageName ? `${t.context} › ${t.stageName}` : t.context;
     const f = t.flags;
+    // כל ממצא ברמת משימה נושא את מזהה המשימה ומקורה — כדי שהפנייה היזומה תוכל לקשר אליה,
+    // והתשובה של העובד תוכל לעדכן אותה ולסגור את הממצא.
+    const taskRef = { itemId: t.itemId, itemSource: t.source };
 
     if (f.stuck) {
       const blocks = f.blocking.length;
@@ -88,6 +94,7 @@ export async function runControlScan(): Promise<ControlScanReport> {
         who,
         project: t.context,
         url: t.url,
+        ...taskRef,
       });
       continue; // תקוע מכסה גם את האיחור
     }
@@ -106,6 +113,7 @@ export async function runControlScan(): Promise<ControlScanReport> {
         who,
         project: t.context,
         url: t.url,
+        ...taskRef,
       });
       continue;
     }
@@ -225,6 +233,8 @@ export async function runControlScan(): Promise<ControlScanReport> {
       who: ownerOf(t, projectOwnerByName.get(t.context)),
       project: t.context,
       url: t.url,
+      itemId: t.itemId,
+      itemSource: t.source,
     });
   }
 

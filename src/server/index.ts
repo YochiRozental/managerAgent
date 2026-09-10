@@ -27,11 +27,14 @@ import {
 import { listOpenCommitments, listUserCommitments } from "../db/repositories/commitments.js";
 import {
   listUnseenNotifications,
+  listUnseenNudges,
   markNotificationsSeen,
 } from "../db/repositories/notifications.js";
+import { subscribeNudges } from "../ops/nudgeBus.js";
 import { recordHeartbeat } from "../db/repositories/systemHealth.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
+import type { LoopContext } from "../ops/loopReply.js";
 import { getControlScan } from "../ops/controlScan.js";
 import { runCrmScan } from "../ops/crmScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
@@ -175,7 +178,23 @@ const server = createServer(async (req, res) => {
         return send(res, 400, { error: "אין הודעה" });
       }
       const session = typeof body.session === "string" && body.session ? body.session : newSessionId();
-      const result = await runOpsChat(user, messages);
+      // תשובה לפנייה יזומה של הבקרה — ה-UI שולח את הקשר המשימה כדי שהצ'אט ידע על מה מדובר.
+      let about: LoopContext | undefined;
+      const a = body.about as Record<string, unknown> | undefined;
+      if (
+        a &&
+        typeof a.itemId === "string" &&
+        typeof a.findingKey === "string" &&
+        (a.source === "general" || a.source === "project_stage")
+      ) {
+        about = {
+          itemId: a.itemId,
+          source: a.source,
+          findingKey: a.findingKey,
+          taskName: typeof a.taskName === "string" ? a.taskName : undefined,
+        };
+      }
+      const result = await runOpsChat(user, messages, about ? { about } : {});
       if (result.actions.length) {
         logger.info({ user: user.key, actions: result.actions }, "עדכוני משימה מהצ'אט");
       }
@@ -306,6 +325,46 @@ const server = createServer(async (req, res) => {
       if (!user) return send(res, 401, { error: "לא מחובר" });
       markNotificationsSeen(user.key);
       return send(res, 200, { ok: true });
+    }
+
+    // פניות יזומות פתוחות של העובד — ה-UI מרנדר אותן כבועות צ'אט של העוזר.
+    if (req.method === "GET" && path === "/api/nudges") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      return send(res, 200, {
+        nudges: listUnseenNudges(user.key).map((n) => ({
+          id: n.id,
+          body: n.body,
+          findingKey: n.findingKey,
+          itemId: n.itemId,
+          source: n.itemSource,
+          taskName: (n.context as { taskName?: string } | null)?.taskName ?? null,
+          createdAt: n.createdAt,
+        })),
+      });
+    }
+
+    // SSE — דחיפת פנייה יזומה בזמן אמת כשהחלון פתוח.
+    if (req.method === "GET" && path === "/api/events") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.write(": connected\n\n");
+      const unsub = subscribeNudges((n) => {
+        if (n.userKey !== user.key) return;
+        res.write(`event: nudge\ndata: ${JSON.stringify(n)}\n\n`);
+      });
+      const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+      req.on("close", () => {
+        clearInterval(ping);
+        unsub();
+      });
+      return; // התגובה נשארת פתוחה
     }
 
     return send(res, 404, { error: "לא נמצא" });

@@ -20,7 +20,14 @@ import {
   type StoredFinding,
 } from "../db/repositories/controlFindings.js";
 import { addNotification, supersedeKind } from "../db/repositories/notifications.js";
+import {
+  isResolvedByReply,
+  lastResponseAt,
+  recordFindingEvent,
+  snoozedUntil,
+} from "../db/repositories/findingEvents.js";
 import { enqueueWhatsapp } from "../db/repositories/whatsappOutbox.js";
+import { publishNudge } from "./nudgeBus.js";
 import { resolveUserByKey, resolveUsersByAssigneeText } from "../identity/index.js";
 import { listCalendarEvents } from "../integrations/google/calendar.js";
 import { logger } from "../utils/logger.js";
@@ -46,6 +53,46 @@ function targetLevel(severity: Severity, businessDaysStale: number): number {
   if (businessDaysStale >= 2) return 2;
   if (businessDaysStale >= 1) return 1;
   return 0;
+}
+
+export interface EscalationDecision {
+  /** דלג לגמרי (העובד סגר / נדחה) */
+  skip: boolean;
+  skipReason?: "resolved_by_reply" | "snoozed";
+  /** רמת ההסלמה שאליה צריך להגיע כרגע (0 = לא צריך) */
+  target: number;
+  /** ימי עבודה "בלי תזוזה" — מהתגובה האחרונה, לא מ-first_seen */
+  stale: number;
+}
+
+/**
+ * מה לעשות עם ממצא פעיל, בהתחשב באירועי ה-finding_events (תגובות עובד, דחיות, סגירות).
+ * טהורה מבחינת Monday — קוראת רק DB. מופרדת כדי שאפשר לבדוק את לוגיקת הלולאה בלי סריקה.
+ */
+export function escalationDecision(
+  finding: Pick<StoredFinding, "findingKey" | "severity" | "firstSeen" | "escalationLevel">,
+  now: DateTime,
+  deps: {
+    isResolvedByReply: (k: string) => boolean;
+    snoozedUntil: (k: string) => string | null;
+    lastResponseAt: (k: string) => string | null;
+  } = { isResolvedByReply, snoozedUntil, lastResponseAt },
+): EscalationDecision {
+  if (deps.isResolvedByReply(finding.findingKey)) {
+    return { skip: true, skipReason: "resolved_by_reply", target: 0, stale: 0 };
+  }
+  const snooze = deps.snoozedUntil(finding.findingKey);
+  if (snooze && DateTime.fromISO(snooze, { zone: env.TIMEZONE }).startOf("day") >= now.startOf("day")) {
+    return { skip: true, skipReason: "snoozed", target: 0, stale: 0 };
+  }
+  const respondedAt = deps.lastResponseAt(finding.findingKey);
+  const clockStart =
+    respondedAt && respondedAt > finding.firstSeen
+      ? DateTime.fromISO(respondedAt)
+      : DateTime.fromISO(finding.firstSeen);
+  const stale = businessDaysBetween(clockStart, now);
+  const target = targetLevel(finding.severity, stale);
+  return { skip: false, target, stale };
 }
 
 const SEV_ICON: Record<Severity, string> = { critical: "🔴", high: "🟠", normal: "⚪" };
@@ -110,6 +157,31 @@ function briefingText(b: BriefingInput): string {
   return `${head}\n\n${sections.join("\n\n")}\n\n(הפירוט המלא בחלונית → "בקרה")`;
 }
 
+/**
+ * נוסח הפנייה היזומה לעובד — קונקרטי, מדבר על המשימה הספציפית, מסתיים בשאלה פתוחה.
+ * דוגמה: "דוב, המשימה 'תוכנית חשמל' (פרויקט כהן) — באיחור 3 ימים. מה המצב?"
+ */
+export function buildNudgeText(
+  finding: Pick<StoredFinding, "who" | "headline" | "kind" | "project">,
+  ageWord: string,
+): string {
+  const firstName = finding.who.split(/\s+/)[0] ?? finding.who;
+  // ה-headline של ממצא משימה הוא בסגנון "באיחור N ימים: <שם>" — מפרקים לשם + מצב.
+  const m = finding.headline.match(/^(.*?):\s*(.+)$/);
+  const state = m ? m[1]!.trim() : ageWord;
+  const taskName = m ? m[2]!.trim() : finding.headline;
+  const where = finding.project && finding.project !== "מכירות" && finding.project !== "לידים" && finding.project !== "גבייה"
+    ? ` (פרויקט ${finding.project})`
+    : "";
+  const opener =
+    finding.kind === "stuck"
+      ? `${firstName}, המשימה "${taskName}"${where} מסומנת תקועה`
+      : finding.kind === "client_waiting"
+        ? `${firstName}, "${taskName}"${where} — ${state}`
+        : `${firstName}, המשימה "${taskName}"${where} — ${state}`;
+  return `${opener}. מה המצב? אפשר לענות לי כאן בחופשיות (סיימתי / עוד יומיים / מחכה ליועץ / תקוע כי…).`;
+}
+
 export interface CycleResult {
   ranAt: string;
   findings: number;
@@ -139,6 +211,8 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
       headline: f.headline,
       detail: f.detail,
       url: f.url,
+      itemId: "itemId" in f ? (f as { itemId?: string }).itemId : undefined,
+      itemSource: "itemSource" in f ? (f as { itemSource?: string }).itemSource : undefined,
       now: nowIso,
     });
   }
@@ -148,8 +222,9 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
   // 3. הסלמה
   const escalations: CycleResult["escalations"] = [];
   for (const finding of listActiveFindings()) {
-    const stale = businessDaysBetween(DateTime.fromISO(finding.firstSeen), now);
-    const target = targetLevel(finding.severity, stale);
+    const decision = escalationDecision(finding, now);
+    if (decision.skip) continue; // העובד סגר / נדחה — הבקרה שקטה
+    const { target, stale } = decision;
     if (target <= finding.escalationLevel) continue;
 
     const ageWord =
@@ -159,13 +234,24 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
 
     for (let level = finding.escalationLevel + 1; level <= target; level++) {
       if (level === 1) {
+        const nudgeBody = buildNudgeText(finding, ageWord);
         for (const u of resolveUsersByAssigneeText(finding.who)) {
-          addNotification(
-            u.key,
-            "reminder",
-            `תזכורת מהבקרה על משימה שלך (${ageWord}):\n"${finding.headline}"\n${finding.detail}\nמה קורה עם זה? אפשר לעדכן אותי כאן.`,
-            finding.findingKey,
-          );
+          addNotification(u.key, "nudge", nudgeBody, finding.findingKey, {
+            itemId: finding.itemId ?? undefined,
+            itemSource: finding.itemSource ?? undefined,
+            context: { taskName: finding.headline, project: finding.project ?? undefined },
+          });
+          recordFindingEvent(finding.findingKey, "nudge_sent", { byUser: u.key });
+          publishNudge({
+            userKey: u.key,
+            findingKey: finding.findingKey,
+            itemId: finding.itemId,
+            itemSource: finding.itemSource,
+            body: nudgeBody,
+            taskName: finding.headline,
+            project: finding.project,
+            createdAt: nowIso,
+          });
         }
       } else if (level === 2) {
         const owner = finding.project ? ownerByProject.get(finding.project) : undefined;

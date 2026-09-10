@@ -62,6 +62,13 @@
   .msg.me{align-self:flex-start;background:var(--bubble-me);color:#fff;border-bottom-right-radius:4px}
   .msg.bot{align-self:flex-end;background:var(--bubble-bot);border:1px solid var(--line);border-bottom-left-radius:4px}
   .msg.bot.intro{border-style:dashed}
+  /* פנייה יזומה של הבקרה — בולטת, עם פס צד */
+  .msg.bot.nudge{align-self:flex-end;border-right:3px solid var(--accent);background:var(--surface-alt)}
+  .msg.bot.nudge .nudge-tag{display:block;font-size:.7rem;letter-spacing:.04em;color:var(--accent);margin-bottom:.3rem}
+  #toast{position:fixed;inset-block-start:.8rem;inset-inline:0;margin:auto;width:max-content;max-width:90vw;
+    background:var(--accent);color:#fff;padding:.5rem 1rem;border-radius:999px;font-size:.85rem;box-shadow:var(--shadow);
+    z-index:50;opacity:0;transform:translateY(-8px);transition:opacity .2s,transform .2s;pointer-events:none}
+  #toast.show{opacity:1;transform:translateY(0)}
   .acts{align-self:flex-end;max-width:80%;display:flex;flex-direction:column;gap:.25rem}
   .act-note{font-size:.78rem;color:var(--ok);background:var(--surface-alt);border-radius:8px;padding:.2rem .6rem}
   .typing{align-self:flex-end;color:var(--ink-faint);font-size:.85rem;padding:.3rem .5rem}
@@ -174,7 +181,36 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(d.error || ("שגיאה " + r.status));
   return d;
 }
-const state = { user: null, session: null, thread: [], busy: false };
+const state = { user: null, session: null, thread: [], busy: false, nudges: [], es: null };
+
+/* ---------- פניות יזומות של הבקרה ---------- */
+let toastEl = null;
+function toast(msg) {
+  if (!toastEl) { toastEl = el("div"); toastEl.id = "toast"; document.body.appendChild(toastEl); }
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toastEl.classList.remove("show"), 4000);
+}
+async function loadNudges() {
+  try {
+    const { nudges } = await api("/api/nudges");
+    state.nudges = nudges || [];
+  } catch { state.nudges = []; }
+}
+function addNudge(n) {
+  if (state.nudges.some(x => x.id === n.id)) return;
+  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.source || n.itemSource, taskName: n.taskName });
+  renderChat();
+  toast("📌 פנייה חדשה מהבקרה");
+}
+function openEventStream() {
+  try { state.es?.close(); } catch {}
+  const es = new EventSource("/api/events");
+  state.es = es;
+  es.addEventListener("nudge", (e) => { try { addNudge(JSON.parse(e.data)); } catch {} });
+  es.onerror = () => { /* EventSource מתחבר מחדש לבד */ };
+}
 const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
 
 /* ---------- login ---------- */
@@ -228,8 +264,10 @@ async function startApp() {
     const { latest } = await api("/api/chat/sessions");
     if (latest) await loadSession(latest);
   } catch {}
+  await loadNudges();
   renderChat();
   loadNotifications();
+  openEventStream();
 }
 
 async function renderHistory() {
@@ -334,7 +372,14 @@ function renderChat() {
     }
     bubble(m.role, m.content);
   }
-  if (state.thread.length === 0) {
+  // פניות יזומות של הבקרה — בועות עוזר בסוף הצ'אט
+  for (const n of state.nudges) {
+    const b = el("div", "msg bot nudge");
+    b.appendChild(el("span", "nudge-tag", "📌 פנייה מהבקרה"));
+    b.appendChild(document.createTextNode(n.body));
+    c.appendChild(b);
+  }
+  if (state.thread.length === 0 && state.nudges.length === 0) {
     const chips = el("div", "chips");
     for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
       const ch = el("button", "chip", q);
@@ -342,6 +387,10 @@ function renderChat() {
       chips.appendChild(ch);
     }
     c.appendChild(chips);
+  } else if (state.nudges.length) {
+    const hint = el("div", "chips");
+    hint.appendChild(el("small", "role", "אפשר לענות כאן: סיימתי · צריך עוד יומיים · מחכה ליועץ · תקוע כי…"));
+    c.appendChild(hint);
   }
   scrollDown();
 }
@@ -362,7 +411,12 @@ async function sendMessage(text) {
 
   try {
     const ctx = [...activeContext()];
-    const { reply, actions, session } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx, session: state.session }) });
+    // אם יש פנייה יזומה פתוחה — ההודעה הזו כנראה תשובה עליה. שולחים את הקשר המשימה האחרונה.
+    const openNudge = state.nudges[state.nudges.length - 1];
+    const about = openNudge && openNudge.itemId && openNudge.findingKey
+      ? { itemId: openNudge.itemId, source: openNudge.source, findingKey: openNudge.findingKey, taskName: openNudge.taskName }
+      : undefined;
+    const { reply, actions, session } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx, session: state.session, about }) });
     state.session = session;
     typing.remove();
     if (actions && actions.length) {
@@ -372,6 +426,8 @@ async function sendMessage(text) {
     }
     bubble("assistant", reply);
     state.thread.push({ role: "assistant", content: reply, actions: actions || [] });
+    // הפנייה אולי טופלה בשרת (סומנה כנקראה) — נרענן את הרשימה ואת התצוגה.
+    if (state.nudges.length) { await loadNudges(); renderChat(); }
   } catch (e) {
     typing.remove();
     bubble("assistant", "משהו השתבש: " + e.message);

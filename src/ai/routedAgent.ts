@@ -35,6 +35,8 @@ export interface RoutedAgentParams {
    * runOpsChat דורס את זה עם מספר הכתיבות ל-Monday (actions.length).
    */
   sideEffectCount?: (outcome: AgentLoopResult) => number;
+  /** לכפות tier ולעקוף את ה-router — למשל תשובה לפנייה יזומה, ששם דיוק חשוב מעלות. */
+  forceTier?: ModelTier;
   /** לבדיקות — תצורת tiers חלופית */
   _config?: AiConfig;
   /** לבדיקות — פונקציית קריאה למודל מזויפת */
@@ -52,12 +54,14 @@ export interface RoutedAgentResult {
 
 export async function runRoutedAgent(p: RoutedAgentParams): Promise<RoutedAgentResult> {
   const cfg = p._config ?? aiConfig;
-  const route = chooseModelForTask({
-    useCase: p.useCase,
-    latestMessage: p.latestMessage,
-    historyLength: p.historyLength,
-    canSeeAllWork: p.canSeeAllWork,
-  });
+  const route = p.forceTier
+    ? { tier: p.forceTier, reason: `forced:${p.forceTier}` }
+    : chooseModelForTask({
+        useCase: p.useCase,
+        latestMessage: p.latestMessage,
+        historyLength: p.historyLength,
+        canSeeAllWork: p.canSeeAllWork,
+      });
   const sideEffectOf = p.sideEffectCount ?? ((o: AgentLoopResult) => o.sideEffects);
 
   const runTier = (tier: ModelTier) => {

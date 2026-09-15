@@ -15,13 +15,28 @@ export type FindingEvent =
   | "employee_responded"
   | "snoozed"
   | "resolved_by_reply"
-  | "manager_pinged";
+  | "manager_pinged"
+  /** Policy Engine קבע שהפעולה שהעובד ביקש דורשת אישור מוטי — לא בוצע שינוי ב-Monday. */
+  | "manager_approval_required"
+  /** מוטי אישר בקשה שהמתינה לאישור (approvalActions.ts) — הפעולה בוצעה בפועל ב-Monday. */
+  | "manager_approval_approved"
+  /** מוטי דחה בקשה שהמתינה לאישור — שום שינוי ב-Monday, הממצא נשאר פתוח. */
+  | "manager_approval_rejected";
 
 export interface FindingEventPayload {
   snoozeUntil?: string; // YYYY-MM-DD
   note?: string;
   byUser?: string;
   action?: string;
+  /** ל-manager_approval_required — payload מובנה מה-Policy Engine להמשך טיפול (ManagerApprovalPayload). */
+  details?: unknown;
+  /** ל-snoozed שעבר דרך Policy Engine (replyDefer) — תיעוד מלא של בקשת הדחייה. */
+  itemId?: string;
+  itemSource?: string;
+  oldDueDate?: string | null;
+  wasOverdue?: boolean;
+  /** מקשר בין אירוע הממצא לבקשת האישור ב-manager_approvals. */
+  approvalId?: number;
 }
 
 interface Row {
@@ -61,7 +76,9 @@ const allForKeyStmt = db.prepare(
 );
 const lastResponseStmt = db.prepare(
   `SELECT * FROM finding_events
-   WHERE finding_key = ? AND event IN ('employee_responded','manager_pinged','snoozed')
+   WHERE finding_key = ? AND event IN
+     ('employee_responded','manager_pinged','snoozed','manager_approval_required',
+      'manager_approval_approved','manager_approval_rejected')
    ORDER BY id DESC LIMIT 1`,
 );
 

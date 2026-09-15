@@ -12,6 +12,8 @@ export interface NudgePayload {
   body: string;
   taskName: string | null;
   project: string | null;
+  /** תאריך היעד הנוכחי של המשימה כפי שידוע מהסריקה — ל-Policy Engine כש-העובד יענה. */
+  currentDueDateISO: string | null;
   createdAt: string;
 }
 

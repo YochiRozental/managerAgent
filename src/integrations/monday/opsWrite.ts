@@ -114,6 +114,41 @@ export async function assertUserOwnsItem(itemId: string, mondayUserId: string): 
   }
 }
 
+/**
+ * קורא את תווית הסטטוס הנוכחית של משימה מ-Monday (לא מ-cache שלנו) — למשל ל-commitment_check
+ * שצריך לדעת אם המשימה כבר נסגרה לפני שפונים לעובד. null אם הפריט לא נמצא.
+ */
+export async function getTaskStatusLabel(source: OpsTaskSource, itemId: string): Promise<string | null> {
+  const cfg = STATUS_CONFIG[source];
+  const res = await mondayRequest<{ items: { id: string; column_values: { text: string | null }[] }[] }>(
+    `query ($id: [ID!], $col: [String!]) {
+      items(ids: $id) { id column_values(ids: $col) { text } }
+    }`,
+    { id: [itemId], col: [cfg.columnId] },
+  );
+  const item = res.items[0];
+  return item?.column_values[0]?.text ?? null;
+}
+
+/**
+ * האם תווית הסטטוס אומרת "המשימה באמת הסתיימה" — רק DONE_LABEL (בוצע/הושלם).
+ * (Audit 2026-09-15): בעבר isClosedStatusLabel חיבר לזה גם PARKED_LABEL — זו טעות. "מושהה"
+ * (general) הוא paused/on-hold לפי מפת הבורדים ב-CLAUDE.md, לא סיום; "לא רלוונטי" (project_stage)
+ * קרוב יותר ל"בוטל", גם הוא לא "הושלם". completion אמיתי = רק זה.
+ */
+export function isDoneStatusLabel(source: OpsTaskSource, label: string | null): boolean {
+  return !!label && label === DONE_LABEL[source];
+}
+
+/**
+ * "מושהה"/"לא רלוונטי" — מושהה/מבוטל, לא בוצע ולא עדיין פעיל באופן רגיל. commitment_check לא
+ * אמור להניח שההתחייבות קוימה (isDoneStatusLabel) ולא אמור לשאול "איפה זה עומד" על משהו שהוקפא —
+ * ראה followups.ts.
+ */
+export function isParkedStatusLabel(source: OpsTaskSource, label: string | null): boolean {
+  return !!label && label === PARKED_LABEL[source];
+}
+
 export async function setTaskStatus(source: OpsTaskSource, itemId: string, label: string): Promise<void> {
   const cfg = STATUS_CONFIG[source];
   if (!cfg.labels.includes(label)) {

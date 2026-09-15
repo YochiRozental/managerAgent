@@ -24,6 +24,9 @@ for (const stmt of [
   "ALTER TABLE notifications ADD COLUMN context_json TEXT",
   "ALTER TABLE control_findings ADD COLUMN item_id TEXT",
   "ALTER TABLE control_findings ADD COLUMN item_source TEXT",
+  "ALTER TABLE control_findings ADD COLUMN due_date TEXT",
+  "ALTER TABLE control_followups ADD COLUMN processing_started_at TEXT",
+  "ALTER TABLE control_followups ADD COLUMN last_error TEXT",
 ]) {
   try {
     db.exec(stmt);

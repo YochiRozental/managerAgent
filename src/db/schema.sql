@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS control_findings (
   url TEXT,
   item_id TEXT,
   item_source TEXT,
+  due_date TEXT,
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL,
   escalation_level INTEGER NOT NULL DEFAULT 0,
@@ -98,6 +99,64 @@ CREATE TABLE IF NOT EXISTS heartbeats (
   pid INTEGER,
   detail TEXT
 );
+
+-- מערכת האישורים למוטי (שלב 2 של הלולאה): כשה-Policy Engine מחזיר manager_approval_required,
+-- הבקשה נשמרת כאן (לא רק כ-notification) — שורדת ריסטרט שרת, ואפשר להכריע בה בכל זמן.
+-- גנרי: kind מאפשר בעתיד גם cancellation/reassignment, לא רק deferral.
+CREATE TABLE IF NOT EXISTS manager_approvals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | pending_instruction | approving | approved | rejected | superseded
+  kind TEXT NOT NULL,                     -- deferral | cancellation | reassignment
+  requested_by TEXT NOT NULL,             -- user_key של העובד שביקש
+  manager_user_key TEXT NOT NULL,         -- מי מחליט (מוטי)
+  finding_key TEXT,
+  item_id TEXT,
+  item_source TEXT,
+  task_name TEXT,
+  payload_json TEXT NOT NULL,             -- לדחייה: oldDueDate, requestedNewDueDate, reason, priorDeferrals, ruleId, wasOverdue
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_at TEXT,
+  decision_by TEXT,
+  decision_note TEXT,                     -- הערת דחייה, או ההנחיה החופשית האחרונה (instruction)
+  execution_status TEXT,                  -- null | executed | failed
+  execution_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_manager_approvals_manager ON manager_approvals (manager_user_key, status, id);
+CREATE INDEX IF NOT EXISTS idx_manager_approvals_finding ON manager_approvals (finding_key, kind, status);
+
+-- היסטוריית שיחה על בקשת אישור (2026-09-14, סגירת פער ה-audit): מוטי שואל/מנחה, העובד עונה.
+-- append-only — לא נדרס שדה יחיד. מאפשר בהמשך יותר מסבב אחד של שאלה/תשובה.
+CREATE TABLE IF NOT EXISTS manager_approval_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  approval_id INTEGER NOT NULL,
+  sender_user_key TEXT NOT NULL,
+  sender_role TEXT NOT NULL,   -- manager | employee
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_approval_messages_approval ON manager_approval_messages (approval_id, id);
+
+-- Follow-up Engine (2026-09-14): "אני צריך לחזור לבדוק את זה בתאריך מסוים" — תשתית זיכרון מעקב
+-- עתידי, גנרית לפי kind. Monday נשאר מקור האמת למשימות; הטבלה הזו רק זוכרת מתי לחזור לבדוק.
+CREATE TABLE IF NOT EXISTS control_followups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_key TEXT,
+  item_id TEXT,
+  item_source TEXT,
+  user_key TEXT NOT NULL,           -- מי צריך את הבדיקה (בד"כ העובד שהתחייב)
+  kind TEXT NOT NULL,                -- commitment_check | external_wait_check | no_response_reminder | end_of_day_check | manager_followup
+  due_at TEXT NOT NULL,              -- ISO datetime ב-UTC (תמיד — ראה followups.ts) — מתי runDueFollowups אמור לטפל בזה
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | processing | triggered | completed | cancelled
+  payload_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  processing_started_at TEXT,       -- Audit 2026-09-15: מתי claimFollowupForProcessing תפס — לשחזור אחרי קריסה
+  last_error TEXT,                  -- שגיאה אחרונה אם חזר ל-pending אחרי כשל (retry metadata)
+  triggered_at TEXT,
+  completed_at TEXT,
+  cancelled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_control_followups_due ON control_followups (status, due_at);
+CREATE INDEX IF NOT EXISTS idx_control_followups_item ON control_followups (item_id, item_source, kind, status);
 
 -- ריצות של עבודות מתוזמנות (הסבב היומי, הדוח השבועי, הגיבוי). מאפשר catch-up אחרי ריסטרט
 -- ("האם הסבב של היום כבר רץ?") ומזין את /health בזמן/הצלחת הריצה האחרונה.

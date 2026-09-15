@@ -65,6 +65,20 @@
   /* פנייה יזומה של הבקרה — בולטת, עם פס צד */
   .msg.bot.nudge{align-self:flex-end;border-right:3px solid var(--accent);background:var(--surface-alt)}
   .msg.bot.nudge .nudge-tag{display:block;font-size:.7rem;letter-spacing:.04em;color:var(--accent);margin-bottom:.3rem}
+  /* בקשת אישור למוטי — בולטת יותר מנודג' רגיל */
+  .msg.bot.approval{align-self:flex-end;max-width:92%;border-right:3px solid var(--warn);background:var(--warn-soft)}
+  .msg.bot.approval .nudge-tag{color:var(--warn)}
+  .appr-btns{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
+  .appr-btns .chip{background:var(--surface)}
+  .appr-btns .appr-ok{border-color:var(--ok);color:var(--ok)}
+  .appr-btns .appr-no{border-color:var(--overdue);color:var(--overdue)}
+  .appr-instr{display:flex;gap:.4rem;margin-top:.5rem}
+  .appr-instr textarea{flex:1;font:inherit;font-size:.85rem;padding:.4rem .6rem;border:1.5px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--ink);resize:vertical;min-height:2.2rem}
+  .appr-err{color:var(--overdue);font-size:.8rem;margin-top:.4rem}
+  .appr-thread{margin-top:.5rem;padding-top:.4rem;border-top:1px dashed var(--line-strong);display:flex;flex-direction:column;gap:.25rem}
+  .appr-msg{font-size:.85rem}
+  .appr-msg-mgr b{color:var(--warn)}
+  .appr-msg-emp b{color:var(--accent)}
   #toast{position:fixed;inset-block-start:.8rem;inset-inline:0;margin:auto;width:max-content;max-width:90vw;
     background:var(--accent);color:#fff;padding:.5rem 1rem;border-radius:999px;font-size:.85rem;box-shadow:var(--shadow);
     z-index:50;opacity:0;transform:translateY(-8px);transition:opacity .2s,transform .2s;pointer-events:none}
@@ -181,7 +195,29 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(d.error || ("שגיאה " + r.status));
   return d;
 }
-const state = { user: null, session: null, thread: [], busy: false, nudges: [], es: null };
+const state = { user: null, session: null, thread: [], busy: false, nudges: [], approvals: [], es: null };
+function fmtDate(iso) {
+  if (!iso) return "?";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}` : iso;
+}
+/* ביפ קצר, Web Audio API בלבד — רק כשמגיע approval חדש בזמן אמת (לא ב-load רגיל). */
+function beep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine"; osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.36);
+    setTimeout(() => { try { ctx.close(); } catch {} }, 500);
+  } catch {}
+}
 
 /* ---------- פניות יזומות של הבקרה ---------- */
 let toastEl = null;
@@ -200,15 +236,135 @@ async function loadNudges() {
 }
 function addNudge(n) {
   if (state.nudges.some(x => x.id === n.id)) return;
-  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.source || n.itemSource, taskName: n.taskName });
+  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.source || n.itemSource, taskName: n.taskName, currentDueDateISO: n.currentDueDateISO ?? null, approvalId: n.approvalId ?? null, missedCommitment: n.missedCommitment === true });
   renderChat();
   toast("📌 פנייה חדשה מהבקרה");
 }
+/** שאלה/הנחיה חיה של מוטי מתוך Approval — מוצגת בדיוק כמו נודג', עם approvalId שממשיך לזרום
+ *  עם about. לא ביפ (זה למוטי, לא לעובד) — רק toast, כמו נודג' רגיל. */
+function addApprovalQuestionNudge(n) {
+  if (state.nudges.some(x => x.id === n.id)) return;
+  const ctx = n.context || {};
+  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource, taskName: null, currentDueDateISO: null, approvalId: ctx.approvalId ?? null });
+  renderChat();
+  toast("🧑‍⚖️ מוטי מבקש פרטים");
+}
+/** תשובת עובד הגיעה חיה למוטי — מרעננים את כל רשימת האישורים (כולל היסטוריית ההודעות) ומרנדרים. */
+function onApprovalReplyLive(n) {
+  loadApprovals().then(() => { renderChat(); beep(); toast(n.body ? ("💬 " + n.body) : "💬 העובד ענה"); });
+}
+/** notification גנרי (או approval_instruction לעובד) שהגיע חי דרך SSE. */
+function onLiveNotification(n) {
+  if (n.kind === "approval_instruction") { addApprovalQuestionNudge(n); return; }
+  loadNotifications();
+  if (n.body) toast(n.body.length > 90 ? n.body.slice(0, 90) + "…" : n.body);
+}
+/* ---------- אישורים למוטי ---------- */
+async function loadApprovals() {
+  if (!state.user || !state.user.canApprove) { state.approvals = []; return; }
+  try {
+    const { approvals } = await api("/api/approvals");
+    state.approvals = (approvals || []).filter(a => a.status === "pending" || a.status === "pending_instruction");
+  } catch { state.approvals = []; }
+}
+/** approval חדש שמגיע חי דרך SSE — לא ב-load הראשוני, ולכן כן משמיע ביפ ומראה toast. */
+function addApprovalLive(n) {
+  const ctx = n.context || {};
+  if (!ctx.approvalId || state.approvals.some(a => a.id === ctx.approvalId)) return;
+  state.approvals.push({
+    id: ctx.approvalId, status: "pending", kind: ctx.kind || "deferral",
+    requestedBy: ctx.requestedBy, requestedByName: ctx.requestedByName, taskName: ctx.taskName,
+    itemId: n.itemId, itemSource: n.itemSource, messages: [],
+    payload: { oldDueDate: ctx.oldDueDate, requestedNewDueDate: ctx.requestedNewDueDate, reason: ctx.reason, priorDeferrals: ctx.priorDeferrals, ruleId: ctx.ruleId },
+  });
+  renderChat();
+  beep();
+  toast("🔔 נדרש אישור חדש");
+}
+function approvalCard(a) {
+  const wrap = el("div", "msg bot approval");
+  wrap.appendChild(el("span", "nudge-tag", "🔔 נדרש אישור"));
+  const p = a.payload || {};
+  wrap.appendChild(document.createTextNode(
+    `${a.requestedByName || a.requestedBy} מבקש/ת לדחות את המשימה "${a.taskName || a.itemId}" מ-${fmtDate(p.oldDueDate)} ל-${fmtDate(p.requestedNewDueDate)}.`,
+  ));
+  if (p.reason) {
+    wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+  }
+  const priorCount = p.priorDeferrals ? (p.priorDeferrals.beforeOverdue || 0) + (p.priorDeferrals.afterOverdue || 0) : 0;
+  wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`דחיות קודמות: ${priorCount}.`));
+
+  // התכתבות קצרה — שאלה/הנחיה של מוטי ותשובת העובד, לפי הסדר. מוטי לא צריך "לחפש את העובד
+  // בצ'אט נפרד" — הכל כאן, בתוך הכרטיס.
+  if (a.messages && a.messages.length) {
+    const thread = el("div", "appr-thread");
+    for (const m of a.messages) {
+      const row = el("div", "appr-msg " + (m.senderRole === "manager" ? "appr-msg-mgr" : "appr-msg-emp"));
+      const who = el("b", null, m.senderRole === "manager" ? "מוטי: " : "העובד: ");
+      row.appendChild(who);
+      row.appendChild(document.createTextNode(m.message));
+      thread.appendChild(row);
+    }
+    wrap.appendChild(thread);
+  }
+
+  const errBox = el("div", "appr-err"); errBox.hidden = true;
+  const showErr = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+
+  const okBtn = el("button", "chip appr-ok", "✓ אשר");
+  const noBtn = el("button", "chip appr-no", "✕ לא");
+  const moreBtn = el("button", "chip appr-more", a.messages && a.messages.length ? "💬 שאל שוב / הנחיה אחרת" : "💬 פרטים / הנחיה אחרת");
+  const instrBox = el("div", "appr-instr"); instrBox.hidden = true;
+  const instrInput = document.createElement("textarea"); instrInput.rows = 2; instrInput.placeholder = "מה ההנחיה?";
+  const instrSend = el("button", "chip", "שלח");
+  instrBox.append(instrInput, instrSend);
+
+  const removeCard = () => { state.approvals = state.approvals.filter(x => x.id !== a.id); renderChat(); };
+  const setBusy = (b) => { okBtn.disabled = noBtn.disabled = moreBtn.disabled = b; };
+
+  okBtn.onclick = async () => {
+    setBusy(true); errBox.hidden = true;
+    try {
+      await api(`/api/approvals/${a.id}/approve`, { method: "POST", body: JSON.stringify({}) });
+      toast("✓ אושר ועודכן ב-Monday");
+      removeCard();
+    } catch (e) { showErr("האישור לא בוצע בפועל: " + e.message); setBusy(false); }
+  };
+  noBtn.onclick = async () => {
+    setBusy(true); errBox.hidden = true;
+    try {
+      await api(`/api/approvals/${a.id}/reject`, { method: "POST", body: JSON.stringify({}) });
+      toast("✕ הבקשה נדחתה");
+      removeCard();
+    } catch (e) { showErr(e.message); setBusy(false); }
+  };
+  moreBtn.onclick = () => { instrBox.hidden = !instrBox.hidden; if (!instrBox.hidden) instrInput.focus(); };
+  instrSend.onclick = async () => {
+    const text = instrInput.value.trim();
+    if (!text) return;
+    instrSend.disabled = true; errBox.hidden = true;
+    try {
+      await api(`/api/approvals/${a.id}/instruction`, { method: "POST", body: JSON.stringify({ instruction: text }) });
+      instrInput.value = "";
+      toast("ההנחיה נשלחה לעובד");
+      await loadApprovals(); renderChat(); // מרענן כדי שההודעה של מוטי עצמו תופיע מיד בהתכתבות
+    } catch (e) { showErr(e.message); instrSend.disabled = false; }
+  };
+
+  const btns = el("div", "appr-btns");
+  btns.append(okBtn, noBtn, moreBtn);
+  wrap.append(btns, instrBox, errBox);
+  return wrap;
+}
+
 function openEventStream() {
   try { state.es?.close(); } catch {}
   const es = new EventSource("/api/events");
   state.es = es;
   es.addEventListener("nudge", (e) => { try { addNudge(JSON.parse(e.data)); } catch {} });
+  es.addEventListener("approval", (e) => { try { addApprovalLive(JSON.parse(e.data)); } catch {} });
+  es.addEventListener("approval_update", (e) => { try { onApprovalReplyLive(JSON.parse(e.data)); } catch {} });
+  es.addEventListener("notification", (e) => { try { onLiveNotification(JSON.parse(e.data)); } catch {} });
   es.onerror = () => { /* EventSource מתחבר מחדש לבד */ };
 }
 const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
@@ -265,6 +421,7 @@ async function startApp() {
     if (latest) await loadSession(latest);
   } catch {}
   await loadNudges();
+  await loadApprovals();
   renderChat();
   loadNotifications();
   openEventStream();
@@ -306,7 +463,7 @@ async function renderHistory() {
 $("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory(); };
 $("#histClose").onclick = () => { $("#history").hidden = true; };
 
-const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי" };
+const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך" };
 // ההתראות לא נכנסות לחלון השיחה — רק כפתור "התראות (N)" בכותרת שפותח overlay נפרד.
 async function loadNotifications() {
   const box = $("#notif"); box.innerHTML = "";
@@ -372,14 +529,16 @@ function renderChat() {
     }
     bubble(m.role, m.content);
   }
-  // פניות יזומות של הבקרה — בועות עוזר בסוף הצ'אט
+  // פניות יזומות של הבקרה, ושאלות/הנחיות ממוטי דרך Approval — בועות עוזר בסוף הצ'אט
   for (const n of state.nudges) {
     const b = el("div", "msg bot nudge");
-    b.appendChild(el("span", "nudge-tag", "📌 פנייה מהבקרה"));
+    b.appendChild(el("span", "nudge-tag", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
     b.appendChild(document.createTextNode(n.body));
     c.appendChild(b);
   }
-  if (state.thread.length === 0 && state.nudges.length === 0) {
+  // בקשות אישור פתוחות (מוטי בלבד) — כרטיס בולט עם כפתורי הכרעה
+  for (const a of state.approvals) c.appendChild(approvalCard(a));
+  if (state.thread.length === 0 && state.nudges.length === 0 && state.approvals.length === 0) {
     const chips = el("div", "chips");
     for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
       const ch = el("button", "chip", q);
@@ -414,7 +573,7 @@ async function sendMessage(text) {
     // אם יש פנייה יזומה פתוחה — ההודעה הזו כנראה תשובה עליה. שולחים את הקשר המשימה האחרונה.
     const openNudge = state.nudges[state.nudges.length - 1];
     const about = openNudge && openNudge.itemId && openNudge.findingKey
-      ? { itemId: openNudge.itemId, source: openNudge.source, findingKey: openNudge.findingKey, taskName: openNudge.taskName }
+      ? { itemId: openNudge.itemId, source: openNudge.source, findingKey: openNudge.findingKey, taskName: openNudge.taskName, currentDueDateISO: openNudge.currentDueDateISO ?? null, approvalId: openNudge.approvalId ?? undefined, missedCommitment: openNudge.missedCommitment === true }
       : undefined;
     const { reply, actions, session } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx, session: state.session, about }) });
     state.session = session;

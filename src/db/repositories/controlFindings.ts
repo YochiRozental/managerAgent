@@ -11,6 +11,8 @@ export interface StoredFinding {
   url: string | null;
   itemId: string | null;
   itemSource: string | null;
+  /** תאריך היעד הנוכחי של המשימה כפי שנקרא מ-Monday ברגע הסריקה האחרונה, אם ידוע. */
+  dueDate: string | null;
   firstSeen: string;
   lastSeen: string;
   escalationLevel: number;
@@ -29,6 +31,7 @@ interface Row {
   url: string | null;
   item_id: string | null;
   item_source: string | null;
+  due_date: string | null;
   first_seen: string;
   last_seen: string;
   escalation_level: number;
@@ -48,6 +51,7 @@ function fromRow(r: Row): StoredFinding {
     url: r.url,
     itemId: r.item_id,
     itemSource: r.item_source,
+    dueDate: r.due_date,
     firstSeen: r.first_seen,
     lastSeen: r.last_seen,
     escalationLevel: r.escalation_level,
@@ -59,12 +63,12 @@ function fromRow(r: Row): StoredFinding {
 const getStmt = db.prepare(`SELECT * FROM control_findings WHERE finding_key = ?`);
 const insertStmt = db.prepare(
   `INSERT INTO control_findings
-     (finding_key, kind, severity, who, project, headline, detail, url, item_id, item_source, first_seen, last_seen)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     (finding_key, kind, severity, who, project, headline, detail, url, item_id, item_source, due_date, first_seen, last_seen)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const touchStmt = db.prepare(
   `UPDATE control_findings
-     SET last_seen = ?, severity = ?, who = ?, headline = ?, detail = ?, url = ?, resolved_at = NULL
+     SET last_seen = ?, severity = ?, who = ?, headline = ?, detail = ?, url = ?, due_date = ?, resolved_at = NULL
    WHERE finding_key = ?`,
 );
 const listActiveStmt = db.prepare(`SELECT * FROM control_findings WHERE resolved_at IS NULL`);
@@ -87,11 +91,13 @@ export function upsertFinding(f: {
   url?: string;
   itemId?: string;
   itemSource?: string;
+  /** תאריך היעד הנוכחי של המשימה, אם ידוע מהסריקה — מתעדכן בכל upsert, לא רק ביצירה. */
+  dueDate?: string;
   now: string;
 }): StoredFinding {
   const existing = getStmt.get(f.findingKey) as unknown as Row | undefined;
   if (existing) {
-    touchStmt.run(f.now, f.severity, f.who, f.headline, f.detail, f.url ?? null, f.findingKey);
+    touchStmt.run(f.now, f.severity, f.who, f.headline, f.detail, f.url ?? null, f.dueDate ?? null, f.findingKey);
   } else {
     insertStmt.run(
       f.findingKey,
@@ -104,6 +110,7 @@ export function upsertFinding(f: {
       f.url ?? null,
       f.itemId ?? null,
       f.itemSource ?? null,
+      f.dueDate ?? null,
       f.now,
       f.now,
     );

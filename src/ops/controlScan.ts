@@ -40,6 +40,12 @@ export interface Finding {
   /** משימת Monday שהממצא נוגע לה — לפנייה יזומה ולסגירת הלולאה (רק בממצאי משימה) */
   itemId?: string;
   itemSource?: "general" | "project_stage";
+  /**
+   * תאריך היעד הנוכחי של המשימה, כפי שנקרא מ-Monday ברגע הסריקה (רק בממצאי משימה). מוזרם עד
+   * ל-Policy Engine (replyDefer) כדי שלא יצטרך לנחש/לקרוא שוב ל-Monday בכל תשובה — ראה
+   * escalation.ts (בניית הפנייה היזומה) ו-loopReply.LoopContext.currentDueDateISO.
+   */
+  dueDate?: string;
 }
 
 export interface ControlScanReport {
@@ -79,7 +85,7 @@ export async function runControlScan(): Promise<ControlScanReport> {
     const f = t.flags;
     // כל ממצא ברמת משימה נושא את מזהה המשימה ומקורה — כדי שהפנייה היזומה תוכל לקשר אליה,
     // והתשובה של העובד תוכל לעדכן אותה ולסגור את הממצא.
-    const taskRef = { itemId: t.itemId, itemSource: t.source };
+    const taskRef = { itemId: t.itemId, itemSource: t.source, dueDate: t.dueDate };
 
     if (f.stuck) {
       const blocks = f.blocking.length;
@@ -237,6 +243,7 @@ export async function runControlScan(): Promise<ControlScanReport> {
       url: t.url,
       itemId: t.itemId,
       itemSource: t.source,
+      dueDate: t.dueDate,
     });
   }
 

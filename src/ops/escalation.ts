@@ -220,6 +220,7 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
       url: f.url,
       itemId: "itemId" in f ? (f as { itemId?: string }).itemId : undefined,
       itemSource: "itemSource" in f ? (f as { itemSource?: string }).itemSource : undefined,
+      dueDate: "dueDate" in f ? (f as { dueDate?: string }).dueDate : undefined,
       now: nowIso,
     });
   }
@@ -246,7 +247,13 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
           addNotification(u.key, "nudge", nudgeBody, finding.findingKey, {
             itemId: finding.itemId ?? undefined,
             itemSource: finding.itemSource ?? undefined,
-            context: { taskName: finding.headline, project: finding.project ?? undefined },
+            context: {
+              taskName: finding.headline,
+              project: finding.project ?? undefined,
+              // תאריך היעד הידוע מרגע הסריקה — כדי ש-Policy Engine (replyDefer) לא יצטרך לנחש
+              // או לקרוא שוב ל-Monday כשהעובד יענה על הפנייה. ראה LoopContext.currentDueDateISO.
+              currentDueDateISO: finding.dueDate ?? null,
+            },
           });
           recordFindingEvent(finding.findingKey, "nudge_sent", { byUser: u.key });
           publishNudge({
@@ -257,6 +264,7 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
             body: nudgeBody,
             taskName: finding.headline,
             project: finding.project,
+            currentDueDateISO: finding.dueDate ?? null,
             createdAt: nowIso,
           });
         }

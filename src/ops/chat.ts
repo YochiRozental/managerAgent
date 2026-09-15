@@ -28,11 +28,14 @@ import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
 import { addUpdateToItem, reassignItem, updateTask } from "./actions.js";
+import { getApproval } from "../db/repositories/managerApprovals.js";
+import { replyToApprovalInstruction } from "./approvalActions.js";
 import {
   replyAwaitManager,
   replyBlocked,
   replyDefer,
   replyDone,
+  replyFinishingToday,
   replyNotRelevant,
   replyProgress,
   replyWaiting,
@@ -75,7 +78,8 @@ function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
           'מיפוי (הצד הימני = הכלי לקרוא):',
           '  "סיימתי" / "הגשתי" / "בוצע" / "גמרתי"            → reply_done',
           '  "עדיין עובד" / "באמצע" / "כמעט" / "מתקדם"        → reply_progress(note)',
-          '  "צריך עוד X ימים" / "עד יום ___" / "תן לי ארכה"  → reply_defer(newDate=YYYY-MM-DD, reason)',
+          '  "אסיים היום" / "יהיה מוכן עד הערב" (בלי תאריך אחר) → reply_finishing_today',
+          '  "צריך עוד X ימים" / "עד יום ___" / "תן לי ארכה"  → reply_defer(newDate=YYYY-MM-DD, reason, reasonJudgedPlausible)',
           '  "מחכה ללקוח" / "הכדור אצל הלקוח"                 → reply_waiting(on="client", reason)',
           '  "מחכה ליועץ/לספק/לקונסטרוקטור/למהנדס"           → reply_waiting(on="consultant", reason)',
           '  "מחכה שמוטי/שהמנהל יחליט" / "צריך אישור מלמעלה"  → reply_await_manager(question)',
@@ -84,6 +88,16 @@ function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
           "",
           "אם העובד נתן גם מסגרת זמן קונקרטית וגם למי הוא מחכה ('צריך יומיים, מחכה לקונסטרוקטור') —",
           "reply_defer מנצח (המסגרת זמן היא הדבר המעשי), והסיבה ('מחכה לקונסטרוקטור') נכנסת ל-reason.",
+          "",
+          "לגבי reasonJudgedPlausible ב-reply_defer: **אתה לא מאשר דחייה ולא מחליט אם היא סבירה מבחינה",
+          "ניהולית** — אתה רק מפרש את מה שהעובד אמר ומעריך אם הוא נתן הסבר קונקרטי. ההחלטה בפועל (האם",
+          "לאשר אוטומטית, לשאול עוד, או להעביר למוטי) מתקבלת אחר-כך, בקוד, לא על ידך. תן לפרמטר את הערך:",
+          '  true  — ניתן הסבר קונקרטי שבאמת מסביר למה צריך את הזמן הנוסף.',
+          '           לדוגמה: "צריך עוד חמישה ימים כי קיבלנו היום שינוי מהלקוח שדורש תכנון מחדש" → true',
+          '  false — "הסבר" ניתן, אבל הוא לא באמת מסביר כלום.',
+          '           לדוגמה: "צריך עוד חמישה ימים, ככה" → false',
+          '  (השמט את הפרמטר) — לא ניתן שום הסבר בכלל.',
+          '           לדוגמה: "צריך עוד חמישה ימים" (בלי שום הסבר) → אל תמלא את reasonJudgedPlausible',
           "אחרי שהכלי חזר — אמור לעובד במשפט אחד את ה-message ואת ה-tracking שקיבלת. אל תקרא עוד כלים.",
           "רק אם ההודעה ברור שאינה תשובה לפנייה (שאלה כללית, נושא אחר) — התעלם מהבלוק הזה וטפל רגיל.",
           "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -234,6 +248,27 @@ export async function runOpsChat(
 ): Promise<OpsChatResult> {
   if (!user.mondayUserId) {
     return { reply: "אין לך חשבון Monday מקושר, אז אין לי גישה למשימות שלך. פנה/י ליוכי.", actions: [] };
+  }
+
+  // תשובה לשאלה/הנחיה של מוטי מתוך Approval (audit 2026-09-14, סגירת פער pending_instruction):
+  // אם יש approvalId וה-Approval עדיין ממתין לתשובה — כל ההודעה היא התשובה, נקודה. לא עובר דרך
+  // ה-AI/reply_* tools בכלל (בכוונה — "אל תבצע אוטומטית פעולה חדשה מתוך אותו מסר").
+  if (opts.about?.approvalId) {
+    const approval = getApproval(opts.about.approvalId);
+    if (approval && approval.status === "pending_instruction" && approval.requestedBy === user.key) {
+      const lastUserMsg = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+      const result = await replyToApprovalInstruction(user, opts.about.approvalId, lastUserMsg);
+      if (result.ok) {
+        return {
+          reply: "העברתי את התשובה שלך למוטי. אני אעדכן אותך כשהוא יחליט.",
+          actions: [`💬 תשובה למוטי על "${approval.taskName ?? approval.itemId}"`],
+        };
+      }
+      // כבר הוכרע/לא ממתין בינתיים — לא שגיאה למשתמש, ממשיכים כשיחה רגילה במקום לתקוע אותו.
+      logger.info({ user: user.key, approvalId: opts.about.approvalId, code: result.code }, "תשובת approval הגיעה באיחור — ממשיך כשיחה רגילה");
+    }
+    // approval לא נמצא / לא שייך למשתמש / כבר לא pending_instruction → ממשיכים בזרימה הרגילה,
+    // בלי לחשוף מידע על approval של מישהו אחר.
   }
 
   const now = DateTime.now().setZone(env.TIMEZONE);
@@ -497,21 +532,54 @@ export async function runOpsChat(
         run: (i) => runLoop(`🔄 ${label} — עדכון התקדמות`, () => replyProgress(user, c, String(i.note))),
       },
       {
+        name: "reply_finishing_today",
+        description:
+          "העובד דיווח שהוא עדיין עובד אבל בטוח שיסיים היום ('אני עובד על זה ואסיים היום', 'יהיה מוכן עד הערב'). " +
+          "לא משנה תאריך יעד ולא דוחה — רק מתעד ומפסיק להטריד עד סוף היום. אם העובד ביקש בפירוש עוד ימים/תאריך אחר — זה reply_defer, לא זה.",
+        input_schema: { type: "object", properties: {} },
+        run: () => runLoop(`🕓 ${label} — מסיים היום`, () => replyFinishingToday(user, c)),
+      },
+      {
         name: "reply_defer",
         description:
-          "העובד ביקש דחייה ('צריך עוד יומיים', 'עד יום חמישי', 'תדחה לשבוע הבא'). מעדכן את תאריך היעד ב-Monday, מתעד את בקשת הדחייה, ומשהה את הבקרה עד התאריך החדש.",
+          "העובד ביקש דחייה ('צריך עוד יומיים', 'עד יום חמישי', 'תדחה לשבוע הבא'). מעדכן את תאריך היעד ב-Monday, מתעד את בקשת הדחייה, ומשהה את הבקרה עד התאריך החדש. " +
+          "אתה לא מאשר את הדחייה — אתה רק מפרש ומעריך אם ההסבר שניתן (אם ניתן) הגיוני, דרך reasonJudgedPlausible.",
         input_schema: {
           type: "object",
           properties: {
             newDate: { type: "string", description: "תאריך היעד החדש, YYYY-MM-DD — חשב לפי התאריך היום שבמערכת" },
-            reason: { type: "string", description: "סיבת הדחייה אם נאמרה" },
+            reason: { type: "string", description: "סיבת הדחייה כפי שהעובד ניסח אותה, אם ניסח" },
+            reasonJudgedPlausible: {
+              type: "boolean",
+              description:
+                "שיפוט שלך על הסיבה שהעובד נתן — לא אישור, רק פרשנות: true אם ההסבר קונקרטי וסביר " +
+                "(מסביר בפועל למה צריך את הזמן), false אם 'הסבר' ניתן אבל לא באמת מצדיק כלום. " +
+                "השמט את הפרמטר הזה כליל אם העובד לא נתן שום הסבר.",
+            },
           },
           required: ["newDate"],
         },
-        run: (i) =>
-          runLoop(`📅 ${label} — נדחה ל-${String(i.newDate)}`, () =>
-            replyDefer(user, c, String(i.newDate), i.reason ? String(i.reason) : undefined),
-          ),
+        // replyDefer עובר עכשיו תמיד דרך ה-Policy Engine (planDeferralReply) — יכול להחזיר
+        // executed / needs_clarification / manager_approval_required. לא ניתן לדעת מראש איזה
+        // תג לרשום ל-actions (בניגוד לשאר reply_*), אז לא משתמשים כאן ב-runLoop הגנרי.
+        run: async (i) => {
+          const result = await replyDefer(
+            user,
+            c,
+            String(i.newDate),
+            i.reason ? String(i.reason) : undefined,
+            typeof i.reasonJudgedPlausible === "boolean" ? i.reasonJudgedPlausible : null,
+          );
+          const tag =
+            result.status === "executed"
+              ? `📅 ${label} — נדחה ל-${String(i.newDate)}`
+              : result.status === "needs_clarification"
+                ? `❓ ${label} — צריך הבהרה לפני דחייה`
+                : `⏸️ ${label} — דחייה ממתינה לאישור מוטי`;
+          actions.push(tag);
+          await refresh();
+          return result;
+        },
       },
       {
         name: "reply_waiting",
@@ -553,12 +621,13 @@ export async function runOpsChat(
       },
       {
         name: "reply_not_relevant",
-        description: "העובד דיווח שהמשימה כבר לא רלוונטית / בוטלה / לא צריך אותה יותר. מעדכן סטטוס ומתעד וסוגר את הממצא.",
+        description:
+          "העובד דיווח שהמשימה כבר לא רלוונטית / בוטלה / לא צריך אותה יותר. לפי מדיניות המערכת ביטול תמיד דורש אישור מוטי — הכלי הזה לא משנה סטטוס ולא סוגר ב-Monday, רק מתעד ומעביר להחלטת מוטי.",
         input_schema: {
           type: "object",
           properties: { reason: { type: "string", description: "למה כבר לא רלוונטי" } },
         },
-        run: (i) => runLoop(`🚫 ${label} — לא רלוונטי`, () => replyNotRelevant(user, c, i.reason ? String(i.reason) : undefined)),
+        run: (i) => runLoop(`⏸️ ${label} — ממתין לאישור מוטי (לא רלוונטי)`, () => replyNotRelevant(user, c, i.reason ? String(i.reason) : undefined)),
       },
     );
   }

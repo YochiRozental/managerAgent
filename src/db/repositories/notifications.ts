@@ -45,26 +45,31 @@ const insertStmt = db.prepare(
   `INSERT INTO notifications (user_key, kind, body, finding_key, item_id, item_source, context_json)
    VALUES (?, ?, ?, ?, ?, ?, ?)`,
 );
-// הפנייה היזומה ("nudge") מוצגת כבועת צ'אט, לא בחלונית ההתראות — כדי לא להציג פעמיים.
+// nudge / approval_request / approval_instruction מוצגים ככרטיסים ייעודיים (צ'אט/כרטיס אישור),
+// לא בחלונית ההתראות הגנרית — כדי לא להציג פעמיים.
+const SPECIAL_KINDS = `('nudge','approval_request','approval_instruction')`;
 const listUnseenStmt = db.prepare(
-  `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NULL AND kind != 'nudge' ORDER BY id ASC`,
+  `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NULL AND kind NOT IN ${SPECIAL_KINDS} ORDER BY id ASC`,
 );
+// approval_instruction — שאלה/הנחיה של מוטי לעובד — מוצגת לעובד בדיוק כמו נודג': בועה ייעודית
+// שנשארת פתוחה עד שהוא עונה, ומזינה about (עם approvalId) להודעה הבאה שלו.
 const listUnseenNudgesStmt = db.prepare(
-  `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NULL AND kind = 'nudge' ORDER BY id ASC`,
+  `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NULL AND kind IN ('nudge','approval_instruction') ORDER BY id ASC`,
 );
 const markSeenStmt = db.prepare(
-  `UPDATE notifications SET seen_at = datetime('now') WHERE user_key = ? AND seen_at IS NULL AND kind != 'nudge'`,
+  `UPDATE notifications SET seen_at = datetime('now') WHERE user_key = ? AND seen_at IS NULL AND kind NOT IN ${SPECIAL_KINDS}`,
 );
 const markNudgeSeenStmt = db.prepare(
   `UPDATE notifications SET seen_at = datetime('now') WHERE id = ? AND seen_at IS NULL`,
 );
 const markNudgesForFindingStmt = db.prepare(
   `UPDATE notifications SET seen_at = datetime('now')
-   WHERE user_key = ? AND finding_key = ? AND kind = 'nudge' AND seen_at IS NULL`,
+   WHERE user_key = ? AND finding_key = ? AND kind IN ('nudge','approval_instruction') AND seen_at IS NULL`,
 );
-// דה-דופ: אותה תזכורת על אותו ממצא לאותו אדם, שעדיין לא נראתה — לא לשכפל.
+// דה-דופ: אותה תזכורת על אותו ממצא לאותו אדם, שעדיין לא נראתה — לא לשכפל. מחזיר את ה-id של
+// השורה הקיימת (לא רק 1/0) כדי ש-addNotification יוכל להחזיר תמיד מזהה שמיוצג בפועל ב-DB.
 const existsUnseenStmt = db.prepare(
-  `SELECT 1 FROM notifications WHERE user_key = ? AND finding_key = ? AND kind = ? AND seen_at IS NULL LIMIT 1`,
+  `SELECT id FROM notifications WHERE user_key = ? AND finding_key = ? AND kind = ? AND seen_at IS NULL LIMIT 1`,
 );
 
 export interface NotificationContext {
@@ -73,15 +78,19 @@ export interface NotificationContext {
   context?: Record<string, unknown>;
 }
 
+/** מחזיר את ה-id של הרשומה (חדשה, או קיימת אם דודופ תפס) — לשימוש כ-context.approvalId וכו'. */
 export function addNotification(
   userKey: string,
   kind: string,
   body: string,
   findingKey?: string,
   ctx: NotificationContext = {},
-): void {
-  if (findingKey && existsUnseenStmt.get(userKey, findingKey, kind)) return;
-  insertStmt.run(
+): number {
+  if (findingKey) {
+    const existing = existsUnseenStmt.get(userKey, findingKey, kind) as { id: number } | undefined;
+    if (existing) return existing.id;
+  }
+  const info = insertStmt.run(
     userKey,
     kind,
     body,
@@ -90,6 +99,7 @@ export function addNotification(
     ctx.itemSource ?? null,
     ctx.context ? JSON.stringify(ctx.context) : null,
   );
+  return Number(info.lastInsertRowid);
 }
 
 export function listUnseenNotifications(userKey: string): Notification[] {

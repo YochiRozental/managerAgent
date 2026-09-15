@@ -31,6 +31,11 @@ import {
   markNotificationsSeen,
 } from "../db/repositories/notifications.js";
 import { subscribeNudges } from "../ops/nudgeBus.js";
+import { subscribeNotifications } from "../ops/notificationBus.js";
+import { approveApproval, giveApprovalInstruction, rejectApproval } from "../ops/approvalActions.js";
+import { listApprovalsForManager, recoverStuckApprovals } from "../db/repositories/managerApprovals.js";
+import { listApprovalMessages } from "../db/repositories/approvalMessages.js";
+import { listFollowups, recoverStuckFollowups } from "../db/repositories/controlFollowups.js";
 import { recordHeartbeat } from "../db/repositories/systemHealth.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
@@ -192,6 +197,15 @@ const server = createServer(async (req, res) => {
           source: a.source,
           findingKey: a.findingKey,
           taskName: typeof a.taskName === "string" ? a.taskName : undefined,
+          // תאריך היעד הידוע מרגע יצירת הפנייה — לא קריאת Monday נוספת. ה-UI מעביר אותו כמו שקיבל
+          // מ-/api/nudges. חסר/לא מחרוזת → null (Policy Engine מטפל כ"לא ידוע", לא מנחש).
+          currentDueDateISO: typeof a.currentDueDateISO === "string" ? a.currentDueDateISO : null,
+          // אם ההודעה היא תשובה לשאלה/הנחיה של מוטי מתוך Approval — אותו about קיים, לא מנגנון
+          // מקביל. runOpsChat בודק את זה לפני הכל (audit 2026-09-14).
+          approvalId: typeof a.approvalId === "number" ? a.approvalId : undefined,
+          // Rule 4 (EOD Engine, 2026-09-16): מגיע מ-/api/nudges (context.missedCommitment שנקבע
+          // ב-followups.ts) — לא מנוחש כאן ולא מטקסט העובד. חסר/לא true → false, לא undefined.
+          missedCommitment: a.missedCommitment === true,
         };
       }
       const result = await runOpsChat(user, messages, about ? { about } : {});
@@ -273,6 +287,21 @@ const server = createServer(async (req, res) => {
       return send(res, 200, await getControlScan(user));
     }
 
+    // debug/admin — לראות מה ה-Follow-up Engine "זוכר לעשות בהמשך". לא UI לעובדים.
+    if (req.method === "GET" && path === "/api/control/followups") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (!user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "למוטי בלבד" });
+      }
+      const status = url.searchParams.get("status");
+      const validStatus =
+        status === "pending" || status === "processing" || status === "triggered" || status === "completed" || status === "cancelled"
+          ? status
+          : undefined;
+      return send(res, 200, { followups: listFollowups({ status: validStatus }) });
+    }
+
     if (req.method === "GET" && path === "/api/crm") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
@@ -339,12 +368,65 @@ const server = createServer(async (req, res) => {
           itemId: n.itemId,
           source: n.itemSource,
           taskName: (n.context as { taskName?: string } | null)?.taskName ?? null,
+          currentDueDateISO: (n.context as { currentDueDateISO?: string | null } | null)?.currentDueDateISO ?? null,
+          // אם זו שאלה/הנחיה של מוטי (kind=approval_instruction) — approvalId מגיע דרך about,
+          // בדיוק כמו itemId/findingKey. n.itemId/n.findingKey כבר קיימים למעלה מהשורה עצמה.
+          approvalId: (n.context as { approvalId?: number } | null)?.approvalId ?? null,
+          // Rule 4 (EOD Engine, 2026-09-16) — נקבע ב-followups.ts (processEndOfDayCheck/
+          // processNoResponseReminder), לא כאן. ה-UI מעביר את זה חזרה כמו שהוא ב-about.
+          missedCommitment: (n.context as { missedCommitment?: boolean } | null)?.missedCommitment === true,
           createdAt: n.createdAt,
         })),
       });
     }
 
-    // SSE — דחיפת פנייה יזומה בזמן אמת כשהחלון פתוח.
+    // מערכת האישורים למוטי — persistent (manager_approvals), לא רק notification.
+    // גנרי לפי kind, אבל רק "deferral" ממומש כרגע (approvalActions.ts).
+    if (req.method === "GET" && path === "/api/approvals") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (!user.permissions.includes("approve:sensitive")) {
+        return send(res, 403, { error: "רק מוטי יכול לראות בקשות אישור" });
+      }
+      // כרטיס מוטי צריך גם את היסטוריית ההודעות (שאלה/תשובה) — לא רק את שדות ה-Approval עצמו.
+      const approvals = listApprovalsForManager(user.key).map((a) => ({ ...a, messages: listApprovalMessages(a.id) }));
+      return send(res, 200, { approvals });
+    }
+
+    const approvalMatch = path.match(/^\/api\/approvals\/(\d+)\/(approve|reject|instruction)$/);
+    if (approvalMatch && req.method === "POST") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const id = Number(approvalMatch[1]);
+      const action = approvalMatch[2];
+      const body = await readJsonBody(req);
+      const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
+
+      const result =
+        action === "approve"
+          ? await approveApproval(user, id, note)
+          : action === "reject"
+            ? await rejectApproval(user, id, note)
+            : await giveApprovalInstruction(user, id, String(body.instruction ?? ""));
+
+      logger.info({ user: user.key, approvalId: id, action, ok: result.ok }, "הכרעת אישור");
+      if (!result.ok) {
+        const httpStatus: Record<string, number> = {
+          not_found: 404,
+          forbidden: 403,
+          self_approval: 403,
+          already_decided: 409,
+          not_awaiting_reply: 409,
+          unsupported_kind: 400,
+          execution_failed: 502,
+          bad_request: 400,
+        };
+        return send(res, httpStatus[result.code] ?? 400, { error: result.message, code: result.code, approval: result.approval ?? null });
+      }
+      return send(res, 200, { ok: true, approval: result.approval });
+    }
+
+    // SSE — דחיפת פנייה יזומה / בקשת אישור / החלטה, בזמן אמת כשהחלון פתוח.
     if (req.method === "GET" && path === "/api/events") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
@@ -355,14 +437,22 @@ const server = createServer(async (req, res) => {
         "X-Accel-Buffering": "no",
       });
       res.write(": connected\n\n");
-      const unsub = subscribeNudges((n) => {
+      const unsubNudge = subscribeNudges((n) => {
         if (n.userKey !== user.key) return;
         res.write(`event: nudge\ndata: ${JSON.stringify(n)}\n\n`);
+      });
+      // approval_request → כרטיס "נדרש אישור" חדש למוטי; approval_reply → תשובת עובד על כרטיס
+      // קיים (מעדכן במקום, לא כרטיס נוסף); כל קינד אחר → רענון שקט של באנר ההתראות.
+      const unsubNotif = subscribeNotifications((n) => {
+        if (n.userKey !== user.key) return;
+        const eventName = n.kind === "approval_request" ? "approval" : n.kind === "approval_reply" ? "approval_update" : "notification";
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(n)}\n\n`);
       });
       const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
       req.on("close", () => {
         clearInterval(ping);
-        unsub();
+        unsubNudge();
+        unsubNotif();
       });
       return; // התגובה נשארת פתוחה
     }
@@ -382,6 +472,7 @@ function publicUser(user: IdentifiedUser) {
     roleDescription: user.roleDescription,
     canOversee: user.permissions.includes("view:all_work"),
     canFinance: user.permissions.includes("view:finance"),
+    canApprove: user.permissions.includes("approve:sensitive"),
     canUpdate: user.permissions.includes("task:update_own") && !!user.mondayUserId,
     hasMondayTasks: !!user.mondayUserId,
   };
@@ -406,6 +497,18 @@ setInterval(() => {
     logger.error(err, "כתיבת heartbeat נכשלה");
   }
 }, 60_000).unref();
+
+// שחזור חד-פעמי אחרי קריסה/ריסטרט — לא scheduler, רק תיקון מצבי-ביניים תקועים (Audit 2026-09-14/15).
+{
+  const recovered = recoverStuckApprovals();
+  if (recovered > 0) {
+    logger.warn(`אישורים ששוחזרו אחרי הפעלה מחדש (היו תקועים ב-'approving'): ${recovered}`);
+  }
+  const recoveredFollowups = recoverStuckFollowups();
+  if (recoveredFollowups > 0) {
+    logger.warn(`follow-ups ששוחזרו אחרי הפעלה מחדש (היו תקועים ב-'processing'): ${recoveredFollowups}`);
+  }
+}
 
 startScheduler();
 

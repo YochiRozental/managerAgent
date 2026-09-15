@@ -128,8 +128,10 @@
   #notifBtn.has{color:var(--overdue);font-weight:700}
   .nt{background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:.6rem .8rem;font-size:.9rem;white-space:pre-wrap}
   .nt.briefing{background:var(--accent-soft);border-color:var(--accent)}
+  .nt.nudge{background:var(--accent-soft);border-color:var(--accent)}
   .nt-head{font-weight:700;font-size:.8rem;margin-bottom:.2rem}
   #notif .dismiss{align-self:flex-start;font:inherit;font-size:.8rem;background:none;border:none;color:var(--accent);cursor:pointer;padding:0}
+  .nt.nudge .dismiss{margin-top:.4rem;font-weight:600}
 </style>
 </head>
 <body>
@@ -195,7 +197,9 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(d.error || ("שגיאה " + r.status));
   return d;
 }
-const state = { user: null, session: null, thread: [], busy: false, nudges: [], approvals: [], es: null };
+// activeNudge = הפנייה (אם יש) שהמשתמש בחר במפורש לטפל בה בשיחה הנוכחית — היחידה שמוצגת בגוף
+// הצ'אט. state.nudges (כל הפניות הפתוחות) מוצג רק באזור "התראות", לא בתוך שום שיחה.
+const state = { user: null, session: null, thread: [], busy: false, nudges: [], activeNudge: null, approvals: [], es: null };
 function fmtDate(iso) {
   if (!iso) return "?";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
@@ -237,7 +241,8 @@ async function loadNudges() {
 function addNudge(n) {
   if (state.nudges.some(x => x.id === n.id)) return;
   state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.source || n.itemSource, taskName: n.taskName, currentDueDateISO: n.currentDueDateISO ?? null, approvalId: n.approvalId ?? null, missedCommitment: n.missedCommitment === true });
-  renderChat();
+  // לא מוזרק לגוף השיחה — רק מעדכן את הבאדג'/overlay של "התראות". ר' loadNotifications.
+  loadNotifications();
   toast("📌 פנייה חדשה מהבקרה");
 }
 /** שאלה/הנחיה חיה של מוטי מתוך Approval — מוצגת בדיוק כמו נודג', עם approvalId שממשיך לזרום
@@ -246,7 +251,7 @@ function addApprovalQuestionNudge(n) {
   if (state.nudges.some(x => x.id === n.id)) return;
   const ctx = n.context || {};
   state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource, taskName: null, currentDueDateISO: null, approvalId: ctx.approvalId ?? null });
-  renderChat();
+  loadNotifications();
   toast("🧑‍⚖️ מוטי מבקש פרטים");
 }
 /** תשובת עובד הגיעה חיה למוטי — מרעננים את כל רשימת האישורים (כולל היסטוריית ההודעות) ומרנדרים. */
@@ -420,10 +425,9 @@ async function startApp() {
     const { latest } = await api("/api/chat/sessions");
     if (latest) await loadSession(latest);
   } catch {}
-  await loadNudges();
   await loadApprovals();
   renderChat();
-  loadNotifications();
+  loadNotifications(); // טוען גם את הפניות הפתוחות (state.nudges) — לבאדג'/overlay בלבד, לא לגוף השיחה
   openEventStream();
 }
 
@@ -442,6 +446,7 @@ async function renderHistory() {
       main.appendChild(el("div", "hist-meta", d.toLocaleString("he-IL", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" }) + ` · ${s.count} הודעות`));
       main.onclick = async () => {
         await loadSession(s.id);
+        state.activeNudge = null;
         $("#history").hidden = true;
         renderChat();
       };
@@ -451,7 +456,7 @@ async function renderHistory() {
         if (!confirm(`למחוק את השיחה "${s.title}"? אי אפשר לשחזר.`)) return;
         try {
           await api("/api/chat/session/delete", { method: "POST", body: JSON.stringify({ id: s.id }) });
-          if (s.id === state.session) { state.session = null; state.thread = []; renderChat(); }
+          if (s.id === state.session) { state.session = null; state.thread = []; state.activeNudge = null; renderChat(); }
           renderHistory();
         } catch (e) { alert(e.message); }
       };
@@ -464,21 +469,47 @@ $("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory()
 $("#histClose").onclick = () => { $("#history").hidden = true; };
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך" };
-// ההתראות לא נכנסות לחלון השיחה — רק כפתור "התראות (N)" בכותרת שפותח overlay נפרד.
+/** כרטיס פנייה פתוחה בתוך overlay ה"התראות" — עם כפתור מפורש לפתיחה בשיחה נקייה. הפנייה
+ *  עצמה לא נמחקת/נעלמת כאן; היא נשארת "פתוחה" עד שנפתרת בפועל (תשובה בשיחה). */
+function nudgeCard(n) {
+  const d = el("div", "nt nudge");
+  d.appendChild(el("div", "nt-head", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
+  d.appendChild(document.createTextNode(n.body));
+  d.appendChild(el("br"));
+  const btn = el("button", "dismiss", "טיפול בשיחה ←");
+  btn.onclick = () => openNudgeInChat(n);
+  d.appendChild(btn);
+  return d;
+}
+/** בחירה מפורשת של המשתמש בפנייה מהבקרה — פותחת שיחה נקייה חדשה עם ההקשר הזה בלבד,
+ *  שומרת את ה-context (itemId/source/findingKey/...) לשליחה הבאה דרך state.activeNudge. */
+function openNudgeInChat(n) {
+  state.session = null;
+  state.thread = [];
+  state.activeNudge = n;
+  $("#notifOverlay").hidden = true;
+  renderChat();
+  $("#input").focus();
+}
+// ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות (N)" בכותרת
+// שפותח overlay נפרד (nudgeCard מאפשר לעבור משם לשיחה במפורש).
 async function loadNotifications() {
+  await loadNudges();
   const box = $("#notif"); box.innerHTML = "";
   const btnTop = $("#notifBtn");
   let list;
   try { ({ notifications: list } = await api("/api/notifications")); }
-  catch { btnTop.hidden = true; return; }
-  if (!list.length) {
+  catch { list = []; }
+  const total = list.length + state.nudges.length;
+  if (!total) {
     btnTop.hidden = true;
     box.appendChild(el("p", "empty", "אין התראות חדשות 👌"));
     return;
   }
   btnTop.hidden = false;
-  btnTop.textContent = `התראות (${list.length})`;
+  btnTop.textContent = `התראות (${total})`;
   btnTop.classList.add("has");
+  for (const n of state.nudges) box.appendChild(nudgeCard(n));
   for (const n of list) {
     const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : ""));
     d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
@@ -499,6 +530,7 @@ $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST"
 $("#resetBtn").onclick = () => {
   state.session = null;
   state.thread = [];
+  state.activeNudge = null;
   renderChat();
   $("#input").focus();
 };
@@ -529,8 +561,10 @@ function renderChat() {
     }
     bubble(m.role, m.content);
   }
-  // פניות יזומות של הבקרה, ושאלות/הנחיות ממוטי דרך Approval — בועות עוזר בסוף הצ'אט
-  for (const n of state.nudges) {
+  // הפנייה שהמשתמש בחר במפורש לטפל בה (מתוך "התראות") — היחידה שמוצגת כבועת עוזר בשיחה.
+  // שאר הפניות הפתוחות לא מוזרקות לכאן בכלל, ר' loadNotifications/nudgeCard.
+  if (state.activeNudge) {
+    const n = state.activeNudge;
     const b = el("div", "msg bot nudge");
     b.appendChild(el("span", "nudge-tag", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
     b.appendChild(document.createTextNode(n.body));
@@ -538,7 +572,7 @@ function renderChat() {
   }
   // בקשות אישור פתוחות (מוטי בלבד) — כרטיס בולט עם כפתורי הכרעה
   for (const a of state.approvals) c.appendChild(approvalCard(a));
-  if (state.thread.length === 0 && state.nudges.length === 0 && state.approvals.length === 0) {
+  if (state.thread.length === 0 && !state.activeNudge && state.approvals.length === 0) {
     const chips = el("div", "chips");
     for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
       const ch = el("button", "chip", q);
@@ -546,7 +580,7 @@ function renderChat() {
       chips.appendChild(ch);
     }
     c.appendChild(chips);
-  } else if (state.nudges.length) {
+  } else if (state.activeNudge) {
     const hint = el("div", "chips");
     hint.appendChild(el("small", "role", "אפשר לענות כאן: סיימתי · צריך עוד יומיים · מחכה ליועץ · תקוע כי…"));
     c.appendChild(hint);
@@ -570,8 +604,9 @@ async function sendMessage(text) {
 
   try {
     const ctx = [...activeContext()];
-    // אם יש פנייה יזומה פתוחה — ההודעה הזו כנראה תשובה עליה. שולחים את הקשר המשימה האחרונה.
-    const openNudge = state.nudges[state.nudges.length - 1];
+    // רק פנייה שהמשתמש בחר במפורש לטפל בה (activeNudge) נשלחת כ-about — לא "הפנייה
+    // הפתוחה האחרונה בעולם", כדי לא לערבב הקשר של פנייה שלא נבחרה בשיחה הזו.
+    const openNudge = state.activeNudge;
     const about = openNudge && openNudge.itemId && openNudge.findingKey
       ? { itemId: openNudge.itemId, source: openNudge.source, findingKey: openNudge.findingKey, taskName: openNudge.taskName, currentDueDateISO: openNudge.currentDueDateISO ?? null, approvalId: openNudge.approvalId ?? undefined, missedCommitment: openNudge.missedCommitment === true }
       : undefined;
@@ -585,8 +620,13 @@ async function sendMessage(text) {
     }
     bubble("assistant", reply);
     state.thread.push({ role: "assistant", content: reply, actions: actions || [] });
-    // הפנייה אולי טופלה בשרת (סומנה כנקראה) — נרענן את הרשימה ואת התצוגה.
-    if (state.nudges.length) { await loadNudges(); renderChat(); }
+    // הפנייה הפעילה אולי נפתרה בשרת (תשובה סגרה את ה-finding) — מרעננים ובודקים אם היא
+    // עדיין ברשימת הפתוחות; אם לא, מסירים אותה מהשיחה (state.activeNudge בלבד, לא נמחקת בשרת).
+    if (state.activeNudge) {
+      await loadNotifications();
+      if (!state.nudges.some(x => x.id === state.activeNudge.id)) state.activeNudge = null;
+      renderChat();
+    }
   } catch (e) {
     typing.remove();
     bubble("assistant", "משהו השתבש: " + e.message);

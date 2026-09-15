@@ -59,6 +59,23 @@ function targetLevel(severity: Severity, businessDaysStale: number): number {
   return 0;
 }
 
+/**
+ * ctx מובנה להתראת escalation (רמה 2/3) — אותה צורה בדיוק כמו ה-nudge ברמה 1 (למעלה), כדי
+ * שה-UI יוכל לפתוח שיחה עם ה-context הנכון (ר' openNudgeInChat/ACTIONABLE_NOTIF_KINDS ב-ui.html).
+ * רק שדות שכבר קיימים על ה-finding עצמו (מ-upsertFinding) — בלי קריאה חדשה ל-Monday ובלי ניחוש.
+ */
+export function escalationNotifContext(finding: StoredFinding) {
+  return {
+    itemId: finding.itemId ?? undefined,
+    itemSource: finding.itemSource ?? undefined,
+    context: {
+      taskName: finding.headline,
+      project: finding.project ?? undefined,
+      currentDueDateISO: finding.dueDate ?? null,
+    },
+  };
+}
+
 export interface EscalationDecision {
   /** דלג לגמרי (העובד סגר / נדחה) */
   skip: boolean;
@@ -277,6 +294,7 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
             "escalation",
             `הסלמה בפרויקט שלך (${finding.project}):\n"${finding.headline}" — ${ageWord}. אחראי: ${finding.who}.`,
             finding.findingKey,
+            escalationNotifContext(finding),
           );
         }
       } else if (level === 3) {
@@ -287,6 +305,7 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
             "escalation",
             `⚠️ ${ageWord}: "${finding.headline}" (${finding.who}).\n${finding.detail}`,
             finding.findingKey,
+            escalationNotifContext(finding),
           );
         }
       }

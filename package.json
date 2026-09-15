@@ -33,7 +33,9 @@
     "test:followup-scheduler": "tsx scripts/test-followup-scheduler.ts",
     "test:eod-engine": "tsx scripts/test-eod-engine.ts",
     "test:crm": "tsx scripts/test-crm.ts",
-    "test:weekly": "tsx scripts/test-weekly.ts"
+    "test:weekly": "tsx scripts/test-weekly.ts",
+    "test:escalation-context": "tsx scripts/test-escalation-context.ts",
+    "test:finding-identity": "tsx scripts/test-finding-identity-healing.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

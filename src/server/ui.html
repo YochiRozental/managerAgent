@@ -131,7 +131,7 @@
   .nt.nudge{background:var(--accent-soft);border-color:var(--accent)}
   .nt-head{font-weight:700;font-size:.8rem;margin-bottom:.2rem}
   #notif .dismiss{align-self:flex-start;font:inherit;font-size:.8rem;background:none;border:none;color:var(--accent);cursor:pointer;padding:0}
-  .nt.nudge .dismiss{margin-top:.4rem;font-weight:600}
+  .nt .dismiss{margin-top:.4rem;font-weight:600}
 </style>
 </head>
 <body>
@@ -469,6 +469,21 @@ $("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory()
 $("#histClose").onclick = () => { $("#history").hidden = true; };
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך" };
+// kinds שיכולים לשאת itemId+itemSource+findingKey אמיתיים (לא מומצא) — הכפתור עצמו מותנה בבדיקה
+// נוספת בזמן רינדור (n.itemId && n.itemSource && n.findingKey), כי גם בתוך kind actionable ייתכנו
+// שורות ישנות/חלקיות (למשל escalation שנוצרה לפני 2026-09-15, לפני שה-backend צירף context — ר'
+// escalationNotifContext ב-escalation.ts). briefing/weekly נשארים בחוץ: סיכום כללי, לא פריט בודד.
+const ACTIONABLE_NOTIF_KINDS = new Set(["manager_decision", "awaiting_decision", "escalation"]);
+/** ממיר notification גנרי (מ-/api/notifications) לאותה צורת אובייקט ש-openNudgeInChat/sendMessage
+ *  כבר יודעים לצרוך (זהה למה ש-/api/nudges מחזיר) — בלי להמציא שדה שלא קיים בפועל. */
+function notificationToLoopContext(n) {
+  const ctx = n.context || {};
+  return {
+    id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource,
+    taskName: ctx.taskName ?? null, currentDueDateISO: ctx.currentDueDateISO ?? null,
+    approvalId: ctx.approvalId ?? null, missedCommitment: ctx.missedCommitment === true,
+  };
+}
 /** כרטיס פנייה פתוחה בתוך overlay ה"התראות" — עם כפתור מפורש לפתיחה בשיחה נקייה. הפנייה
  *  עצמה לא נמחקת/נעלמת כאן; היא נשארת "פתוחה" עד שנפתרת בפועל (תשובה בשיחה). */
 function nudgeCard(n) {
@@ -492,7 +507,7 @@ function openNudgeInChat(n) {
   $("#input").focus();
 }
 // ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות (N)" בכותרת
-// שפותח overlay נפרד (nudgeCard מאפשר לעבור משם לשיחה במפורש).
+// שפותח overlay נפרד (nudgeCard/הכפתור בכרטיס מאפשרים לעבור משם לשיחה במפורש).
 async function loadNotifications() {
   await loadNudges();
   const box = $("#notif"); box.innerHTML = "";
@@ -514,6 +529,14 @@ async function loadNotifications() {
     const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : ""));
     d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
     d.appendChild(document.createTextNode(n.body));
+    // כפתור "טיפול בשיחה" רק כשיש בפועל itemId+itemSource+findingKey על ההתראה הזו (לא מומצא) —
+    // ר' ACTIONABLE_NOTIF_KINDS למעלה.
+    if (ACTIONABLE_NOTIF_KINDS.has(n.kind) && n.itemId && n.itemSource && n.findingKey) {
+      d.appendChild(el("br"));
+      const openBtn = el("button", "dismiss", "טיפול בשיחה ←");
+      openBtn.onclick = () => openNudgeInChat(notificationToLoopContext(n));
+      d.appendChild(openBtn);
+    }
     box.appendChild(d);
   }
   const btn = el("button", "dismiss", "סמן הכל כנקרא");

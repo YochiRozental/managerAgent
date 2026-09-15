@@ -66,9 +66,16 @@ const insertStmt = db.prepare(
      (finding_key, kind, severity, who, project, headline, detail, url, item_id, item_source, due_date, first_seen, last_seen)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
+// item_id/item_source: COALESCE(new, existing) — לא due_date (שם הכוונה היא "הערך הנוכחי מהסריקה
+// האחרונה", כולל התאפסות ל-NULL אם המשימה כבר לא ב-Monday). זהות פריט היא ההפך: פעם שהיא ידועה
+// היא לא אמורה "להיעלם" רק כי upsert מאוחר הגיע בלי itemId (למשל ממצא CRM/פרויקט שלגיטימית לא
+// נושא זהות) — ר' audit ב-2026-09-15. COALESCE נותן גם "ריפוי" (NULL ישן ← ערך חדש) וגם "עדכון"
+// (ערך ישן ← ערך חדש שונה), בלי לדרוס ערך תקין קיים בערך חדש שחסר.
 const touchStmt = db.prepare(
   `UPDATE control_findings
-     SET last_seen = ?, severity = ?, who = ?, headline = ?, detail = ?, url = ?, due_date = ?, resolved_at = NULL
+     SET last_seen = ?, severity = ?, who = ?, headline = ?, detail = ?, url = ?, due_date = ?,
+         item_id = COALESCE(?, item_id), item_source = COALESCE(?, item_source),
+         resolved_at = NULL
    WHERE finding_key = ?`,
 );
 const listActiveStmt = db.prepare(`SELECT * FROM control_findings WHERE resolved_at IS NULL`);
@@ -97,7 +104,18 @@ export function upsertFinding(f: {
 }): StoredFinding {
   const existing = getStmt.get(f.findingKey) as unknown as Row | undefined;
   if (existing) {
-    touchStmt.run(f.now, f.severity, f.who, f.headline, f.detail, f.url ?? null, f.dueDate ?? null, f.findingKey);
+    touchStmt.run(
+      f.now,
+      f.severity,
+      f.who,
+      f.headline,
+      f.detail,
+      f.url ?? null,
+      f.dueDate ?? null,
+      f.itemId ?? null,
+      f.itemSource ?? null,
+      f.findingKey,
+    );
   } else {
     insertStmt.run(
       f.findingKey,

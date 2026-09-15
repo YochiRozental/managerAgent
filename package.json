@@ -35,7 +35,10 @@
     "test:crm": "tsx scripts/test-crm.ts",
     "test:weekly": "tsx scripts/test-weekly.ts",
     "test:escalation-context": "tsx scripts/test-escalation-context.ts",
-    "test:finding-identity": "tsx scripts/test-finding-identity-healing.ts"
+    "test:finding-identity": "tsx scripts/test-finding-identity-healing.ts",
+    "test:backfill-escalations": "tsx scripts/test-backfill-escalation-identity.ts",
+    "maintenance:backfill-escalations": "tsx scripts/maintenance/backfill-escalation-identity.ts",
+    "maintenance:backfill-escalations:apply": "tsx scripts/maintenance/backfill-escalation-identity.ts --apply"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

@@ -607,6 +607,31 @@ async function processEndOfDayNoResponse(f: StoredFollowup, now: DateTime, deps:
     return "completed_already_responded";
   }
 
+  // Scenario B (audit 2026-09-17/18): "אין תשובה בצ'אט" לא אומר "המשימה עדיין פתוחה" — לפני
+  // שמתריעים למוטי, בודקים את המצב האמיתי ב-Monday (אותו dependency/pattern בדיוק כמו
+  // processCommitmentCheck/processEndOfDayCheck למעלה) כדי לא להסלים false positive על משימה
+  // שהעובד סיים ישירות ב-Monday בלי לענות בצ'אט.
+  const label = await deps.getTaskStatusLabel(f.itemSource as OpsTaskSource, f.itemId);
+
+  if (isDoneStatusLabel(f.itemSource as OpsTaskSource, label)) {
+    completeFollowup(f.id);
+    // אותו vocabulary כמו processEndOfDayCheck ה-DONE-branch — "בוצע, מאומת מול Monday" בלי תלות
+    // בערוץ שגילה את זה (תגובה בצ'אט מול בדיקה יזומה כאן).
+    try {
+      recordFindingEvent(f.findingKey, "resolved_by_reply", { action: "eod_no_response_confirmed_done" });
+      markNudgesSeenForFinding(f.userKey, f.findingKey);
+    } catch (err) {
+      logger.error({ followupId: f.id, err }, "סגירת finding אחרי EOD-no-response-done נכשלה — ה-follow-up עצמו כבר הושלם");
+    }
+    return "completed_done";
+  }
+  if (isParkedStatusLabel(f.itemSource as OpsTaskSource, label)) {
+    revertFollowupToPending(f.id, `המשימה במצב "${label}" בזמן בדיקת EOD (אין תשובה בצ'אט) — לא נשלחה התראה למוטי`);
+    return "skipped_parked";
+  }
+
+  // רק כאן — אחרי שהמצב "עדיין פתוח" אומת מול Monday בפועל, לא רק ניחוש מהיעדר תשובה — זו באמת
+  // התחייבות שלא קוימה עד סוף היום.
   const moti = resolveUserByKey("moti");
   if (!moti) {
     // אין את מי להתריע — לא "נבלע": חוזר ל-pending (נתפס למעלה כ-throw), ינסה שוב בהרצה הבאה.
@@ -639,6 +664,10 @@ async function processEndOfDayNoResponse(f: StoredFollowup, now: DateTime, deps:
       firstNudgeAt: payload.nudgeSentAtISO ?? null,
       reminderSent,
       hoursPassed,
+      // מסמן במפורש שזו התחייבות-לסיים-היום שהוחמצה, מאומת מול Monday בסוף היום (לא commitment_check
+      // של 10:30 — זה אף פעם לא מגיע לכאן, ר' audit). אותו שדה/מקום כמו context.missedCommitment
+      // בנודג'ים אחרים.
+      missedCommitment: true,
     },
   });
 

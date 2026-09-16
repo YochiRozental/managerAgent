@@ -104,16 +104,26 @@ function scopedNotifSpy(itemId: string): { count: () => number; addNotification:
   };
 }
 
-function scopedMotiSpy(itemId: string): { lastBody: () => string | null; count: () => number; addNotification: FollowupRunnerDeps["addNotification"] } {
+function scopedMotiSpy(
+  itemId: string,
+): {
+  lastBody: () => string | null;
+  lastContext: () => Record<string, unknown> | null;
+  count: () => number;
+  addNotification: FollowupRunnerDeps["addNotification"];
+} {
   let n = 0;
   let body: string | null = null;
+  let context: Record<string, unknown> | null = null;
   return {
     count: () => n,
     lastBody: () => body,
+    lastContext: () => context,
     addNotification: (userKey, _kind, b, _findingKey, ctx) => {
       if (userKey === "moti" && ctx?.itemId === itemId) {
         n++;
         body = b;
+        context = (ctx?.context as Record<string, unknown> | undefined) ?? null;
       }
       return 1;
     },
@@ -407,7 +417,7 @@ logger.info("── 8. אין תשובה עד 13:30 → תזכורת אחת בד
   check("הרצה נוספת לא שולחת תזכורת שנייה (triggered, לא pending)", spy2.count() === 0, `processed2=${JSON.stringify(r2.processed)}`);
 }
 
-logger.info("── 9. אין תשובה עד 17:00 → notification אחת למוטי ──");
+logger.info("── 9. אין תשובה עד 17:00, Monday מאשר עדיין פתוח → notification אחת למוטי, missedCommitment=true ──");
 {
   const itemId = "__eod_escalate_to_moti__";
   const t1030 = DateTime.fromObject({ year: 2026, month: 9, day: 17, hour: 10, minute: 30 }, { zone: "Asia/Jerusalem" });
@@ -425,14 +435,83 @@ logger.info("── 9. אין תשובה עד 17:00 → notification אחת למ
 
   const t1700 = t1030.set({ hour: 17, minute: 0 });
   const motiSpy = scopedMotiSpy(itemId);
-  const result = await runDueFollowups(t1700, { getTaskStatusLabel: async () => "בעבודה", addNotification: motiSpy.addNotification, publishNudge: () => {} });
+  // ממוקד ל-itemId (כמו scopedNotifSpy/scopedMotiSpy למעלה) — הקובץ הזה כותב ל-DB אמיתי משותף בין
+  // הבלוקים, וייתכנו שורות pending "ממתינות" מבלוקים קודמים (למשל test 8) שנסחפות לאותו
+  // runDueFollowups אם ה-due_at שלהן כבר עבר — ספירה גלובלית הייתה נותנת false positive.
+  let mondayCallsForThisItem = 0;
+  const result = await runDueFollowups(t1700, {
+    getTaskStatusLabel: async (source, id) => {
+      if (id === itemId) mondayCallsForThisItem++;
+      return "בעבודה"; // Monday מאשר: עדיין פתוח
+    },
+    addNotification: motiSpy.addNotification,
+    publishNudge: () => {},
+  });
+  check("Scenario B (fix): Monday נבדק בפועל לפני ההסלמה (לא רק 'אין תשובה')", mondayCallsForThisItem === 1);
   check("נשלחה בדיוק התראה אחת למוטי", motiSpy.count() === 1);
   check(
     "ההתראה כוללת עובד ומשימה",
     !!motiSpy.lastBody() && motiSpy.lastBody()!.includes("דוב") && motiSpy.lastBody()!.includes(itemId),
     motiSpy.lastBody() ?? "",
   );
+  check(
+    "ה-context מזהה שזו התחייבות-שהוחמצה-בסוף-היום (missedCommitment: true), מאומת מול Monday",
+    motiSpy.lastContext()?.missedCommitment === true,
+    JSON.stringify(motiSpy.lastContext()),
+  );
   check("outcome escalated_no_response, follow-up completed", result.processed.some((p) => p.id === eodNoResponse.id && p.outcome === "escalated_no_response") && getFollowup(eodNoResponse.id)!.status === "completed");
+}
+
+logger.info("── 9b. [Scenario B fix] אין תשובה עד 17:00, אבל Monday מאשר שהמשימה כבר בוצעה → אין escalation למוטי ──");
+{
+  const itemId = "__eod_no_response_but_done__";
+  const t1030 = DateTime.fromObject({ year: 2026, month: 9, day: 17, hour: 10, minute: 30 }, { zone: "Asia/Jerusalem" });
+  const findingKey = seedFinding(itemId, t1030);
+  const f = scheduleCommitmentCheck({ itemId, itemSource: "general", findingKey, userKey: "dov", commitmentDateISO: t1030.toISODate()! });
+  forceDue(f.id, t1030.minus({ minutes: 1 }).toUTC().toISO()!);
+  await runDueFollowups(t1030, okRunnerDeps("בעבודה"));
+  const reminder = listFollowups().find((x) => x.itemId === itemId && x.kind === "no_response_reminder")!;
+  forceDue(reminder.id, t1030.set({ hour: 13, minute: 30 }).minus({ minutes: 1 }).toUTC().toISO()!);
+  await runDueFollowups(t1030.set({ hour: 13, minute: 30 }), okRunnerDeps("בעבודה"));
+  const eodNoResponse = listFollowups().find((x) => x.itemId === itemId && x.kind === "end_of_day_no_response")!;
+  check("הכנה: נוצר end_of_day_no_response", !!eodNoResponse);
+
+  const t1700 = t1030.set({ hour: 17, minute: 0 });
+  const motiSpy = scopedMotiSpy(itemId);
+  // העובד לא ענה בצ'אט בכלל (בדיוק Scenario B) — אבל סיים את המשימה ישירות ב-Monday.
+  const result = await runDueFollowups(t1700, { getTaskStatusLabel: async () => "בוצע", addNotification: motiSpy.addNotification, publishNudge: () => {} });
+  check("אין שום התראה למוטי — false positive נמנע", motiSpy.count() === 0);
+  check("outcome completed_done", result.processed.some((p) => p.id === eodNoResponse.id && p.outcome === "completed_done"));
+  check("ה-follow-up completed", getFollowup(eodNoResponse.id)!.status === "completed");
+  check(
+    "ה-finding נסגר (resolved_by_reply) — אותו pattern כמו processEndOfDayCheck DONE-branch",
+    isResolvedByReply(findingKey),
+  );
+}
+
+logger.info("── 9c. [Scenario B fix] אין תשובה עד 17:00, Monday מאשר שהמשימה מושהה/לא רלוונטית → אין escalation שגוי ──");
+{
+  const itemId = "__eod_no_response_but_parked__";
+  const t1030 = DateTime.fromObject({ year: 2026, month: 9, day: 17, hour: 10, minute: 30 }, { zone: "Asia/Jerusalem" });
+  const findingKey = seedFinding(itemId, t1030);
+  const f = scheduleCommitmentCheck({ itemId, itemSource: "general", findingKey, userKey: "dov", commitmentDateISO: t1030.toISODate()! });
+  forceDue(f.id, t1030.minus({ minutes: 1 }).toUTC().toISO()!);
+  await runDueFollowups(t1030, okRunnerDeps("בעבודה"));
+  const reminder = listFollowups().find((x) => x.itemId === itemId && x.kind === "no_response_reminder")!;
+  forceDue(reminder.id, t1030.set({ hour: 13, minute: 30 }).minus({ minutes: 1 }).toUTC().toISO()!);
+  await runDueFollowups(t1030.set({ hour: 13, minute: 30 }), okRunnerDeps("בעבודה"));
+  const eodNoResponse = listFollowups().find((x) => x.itemId === itemId && x.kind === "end_of_day_no_response")!;
+  check("הכנה: נוצר end_of_day_no_response", !!eodNoResponse);
+
+  const t1700 = t1030.set({ hour: 17, minute: 0 });
+  const motiSpy = scopedMotiSpy(itemId);
+  const result = await runDueFollowups(t1700, { getTaskStatusLabel: async () => "מושהה", addNotification: motiSpy.addNotification, publishNudge: () => {} });
+  check("אין שום התראה שגויה למוטי על משימה מושהית", motiSpy.count() === 0);
+  check("outcome skipped_parked", result.processed.some((p) => p.id === eodNoResponse.id && p.outcome === "skipped_parked"));
+  check(
+    "ה-follow-up חוזר ל-pending (לא completed) — אותו pattern כמו processCommitmentCheck/processEndOfDayCheck — ייבדק שוב",
+    getFollowup(eodNoResponse.id)!.status === "pending",
+  );
 }
 
 logger.info("── 10. תשובה אחרי reminder ולפני 17:00 → אין escalation ──");

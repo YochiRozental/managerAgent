@@ -172,7 +172,7 @@ function extractMissedCommitment(f: Pick<StoredFollowup, "payload">): boolean {
   return !!(f.payload as { missedCommitment?: boolean } | null)?.missedCommitment;
 }
 
-interface ScheduleNoResponseInput {
+export interface ScheduleNoResponseInput {
   itemId: string;
   itemSource: OpsTaskSource;
   findingKey?: string;
@@ -243,6 +243,73 @@ function scheduleNoResponseSafetyNetBestEffort(f: StoredFollowup, now: DateTime)
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rule 1 (פנייה ראשונית — audit 2026-09-17): תזמון נפרד מ-scheduleNoResponseFollowup למעלה, כדי
+// שלא לגעת ב-flow הקיים של commitment_check/end_of_day_check. ההבדל היחיד מהמנגנון הגלובלי:
+// אם אין ~3 שעות עבודה אמיתיות נותרות עד EOD היום — לא מסלימים היום בכלל, מחכים ליום העסקים הבא
+// (חלון מלא מתחילת יום העבודה, לא "שארית" של שעות). ברגע שה-reminder בפועל נדלק, הוא kind נפרד
+// (initial_nudge_reminder/initial_nudge_eod, למטה) — לא חוזר למסלול הגלובלי.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// מראה בכוונה את FOLLOWUP_SCHEDULE_CONFIG.workdayStart / isWorkday ב-scheduler.ts — כפילות קטנה
+// כדי לא ליצור תלות מעגלית (scheduler.ts כבר מייבא runDueFollowups מ-followups.ts). אם הערכים שם
+// משתנים, לעדכן גם כאן.
+const INITIAL_NUDGE_WORKDAY_START = { hour: 8, minute: 30 };
+function isWorkdayLocal(weekday: number): boolean {
+  return weekday !== 5 && weekday !== 6; // 5=Fri, 6=Sat — אותו קריטריון כמו scheduler.ts/businessDaysBetween
+}
+
+/** יום העסקים הבא (לא היום), בתחילת חלון העבודה — DST-safe: luxon פותר את ה-offset לפי התאריך
+ *  של היעד עצמו, לא לפי "עכשיו", כך שמעבר קיץ/חורף בין הקריאה למועד בפועל מטופל נכון. */
+function nextWorkdayMorning(from: DateTime): DateTime {
+  let d = from.setZone(env.TIMEZONE).plus({ days: 1 }).startOf("day");
+  while (!isWorkdayLocal(d.weekday)) d = d.plus({ days: 1 });
+  return d.set({
+    hour: INITIAL_NUDGE_WORKDAY_START.hour,
+    minute: INITIAL_NUDGE_WORKDAY_START.minute,
+    second: 0,
+    millisecond: 0,
+  });
+}
+
+/**
+ * תזמון ה-follow-up הראשון (initial_nudge_reminder) לפנייה הראשונית של Rule 1 בלבד — לא נוגע
+ * ב-scheduleNoResponseFollowup/no_response_reminder/end_of_day_no_response הגלובליים. נקראת מיד
+ * אחרי ששליחת הפנייה הראשונית הצליחה בפועל (escalation.ts). סעיף 11: אם nudgeSentAt מוקדם
+ * מתחילת חלון העבודה (למשל cycle ידני לפני 08:30) — התזכורת לא נקבעת לפני 08:30 באותו יום.
+ */
+export function scheduleInitialNudgeFollowup(input: ScheduleNoResponseInput, nudgeSentAt: DateTime): StoredFollowup {
+  const local = nudgeSentAt.setZone(env.TIMEZONE);
+  const workdayStartToday = local.set({
+    hour: INITIAL_NUDGE_WORKDAY_START.hour,
+    minute: INITIAL_NUDGE_WORKDAY_START.minute,
+    second: 0,
+    millisecond: 0,
+  });
+  const todayEod = local.set({ hour: FOLLOWUP_CONFIG.endOfDay.hour, minute: FOLLOWUP_CONFIG.endOfDay.minute, second: 0, millisecond: 0 });
+  const candidateReminder = local.plus({ hours: FOLLOWUP_CONFIG.noResponseReminderHours });
+  const flooredReminder = candidateReminder < workdayStartToday ? workdayStartToday : candidateReminder;
+
+  const reminderAt =
+    flooredReminder <= todayEod
+      ? flooredReminder
+      : nextWorkdayMorning(local).plus({ hours: FOLLOWUP_CONFIG.noResponseReminderHours });
+
+  return createOrReplaceFollowupForKind("initial_nudge_reminder", {
+    findingKey: input.findingKey,
+    itemId: input.itemId,
+    itemSource: input.itemSource,
+    userKey: input.userKey,
+    kind: "initial_nudge_reminder",
+    dueAtISO: toStoredUtcIso(reminderAt),
+    payload: {
+      taskName: input.taskName,
+      currentDueDateISO: input.currentDueDateISO ?? null,
+      nudgeSentAtISO: toStoredUtcIso(local),
+    },
+  });
+}
+
 /** האם יש תגובה (finding_events) לאחר nudgeSentAtUtcIso — לא רק שעון, state אמיתי מה-DB. */
 function hasRespondedSince(findingKey: string, nudgeSentAtUtcIso: string): boolean {
   const last = lastResponseAt(findingKey);
@@ -272,6 +339,8 @@ const HANDLED_KINDS: ReadonlySet<FollowupKind> = new Set([
   "end_of_day_check",
   "no_response_reminder",
   "end_of_day_no_response",
+  "initial_nudge_reminder",
+  "initial_nudge_eod",
 ] satisfies FollowupKind[]);
 
 /**
@@ -325,6 +394,10 @@ function processFollowupByKind(f: StoredFollowup, now: DateTime, deps: Required<
       return processNoResponseReminder(f, now, deps);
     case "end_of_day_no_response":
       return processEndOfDayNoResponse(f, now, deps);
+    case "initial_nudge_reminder":
+      return processInitialNudgeReminder(f, now, deps);
+    case "initial_nudge_eod":
+      return processInitialNudgeEod(f, now, deps);
     default: {
       // לא אמור לקרות — HANDLED_KINDS כבר סינן. הגנה בלבד, לא מפיל את הסבב.
       completeFollowup(f.id);
@@ -570,6 +643,167 @@ async function processEndOfDayNoResponse(f: StoredFollowup, now: DateTime, deps:
   });
 
   // רק אחרי שההתראה נוצרה בהצלחה — אחרת נתפס למעלה, חוזר ל-pending, ניתן ל-retry (דרישה #10).
+  completeFollowup(f.id);
+  return "escalated_no_response";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rule 1 (פנייה ראשונית — audit 2026-09-17): שני מעבדים מבודדים לגמרי מ-processNoResponseReminder/
+// processEndOfDayNoResponse למעלה (kind נפרד — initial_nudge_reminder/initial_nudge_eod) כדי
+// שלא לגעת ב-flow הגלובלי (commitment_check/end_of_day_check). בשונה מהמקבילים הגלובליים — גם
+// בודקים סטטוס טרי ב-Monday (done/parked), כי הפנייה הראשונית לא עברה קודם דרך שום בדיקה כזו
+// (escalation.ts שולח אותה ישירות, לא דרך commitment_check/end_of_day_check).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Rule 1, שלב תזכורת: אחרי הפנייה הראשונית, אם עדיין אין תשובה. */
+async function processInitialNudgeReminder(
+  f: StoredFollowup,
+  now: DateTime,
+  deps: Required<FollowupRunnerDeps>,
+): Promise<string> {
+  if (!f.itemId || !f.itemSource || !f.findingKey) {
+    completeFollowup(f.id);
+    return "completed_missing_item";
+  }
+
+  const payload = (f.payload ?? {}) as { taskName?: string; currentDueDateISO?: string | null; nudgeSentAtISO?: string };
+  if (payload.nudgeSentAtISO && hasRespondedSince(f.findingKey, payload.nudgeSentAtISO)) {
+    completeFollowup(f.id);
+    return "completed_already_responded";
+  }
+
+  const label = await deps.getTaskStatusLabel(f.itemSource as OpsTaskSource, f.itemId);
+  if (isDoneStatusLabel(f.itemSource as OpsTaskSource, label)) {
+    completeFollowup(f.id);
+    try {
+      recordFindingEvent(f.findingKey, "resolved_by_reply", { action: "initial_nudge_reminder_confirmed_done" });
+      markNudgesSeenForFinding(f.userKey, f.findingKey);
+    } catch (err) {
+      logger.error({ followupId: f.id, err }, "סגירת finding אחרי initial_nudge_reminder-done נכשלה — ה-follow-up עצמו כבר הושלם");
+    }
+    return "completed_done";
+  }
+  if (isParkedStatusLabel(f.itemSource as OpsTaskSource, label)) {
+    revertFollowupToPending(f.id, `המשימה במצב "${label}" בזמן בדיקת תזכורת ראשונית — לא נשלחה תזכורת`);
+    return "skipped_parked";
+  }
+
+  const taskName = payload.taskName ?? f.itemId;
+  const body = `תזכורת לגבי המשימה "${taskName}" — עדיין לא קיבלתי ממך עדכון.`;
+
+  deps.addNotification(f.userKey, "nudge", body, f.findingKey, {
+    itemId: f.itemId,
+    itemSource: f.itemSource,
+    context: {
+      taskName,
+      followupId: f.id,
+      followupKind: "initial_nudge_reminder",
+      currentDueDateISO: payload.currentDueDateISO ?? null,
+      missedCommitment: false,
+    },
+  });
+  deps.publishNudge({
+    userKey: f.userKey,
+    findingKey: f.findingKey,
+    itemId: f.itemId,
+    itemSource: f.itemSource,
+    body,
+    taskName,
+    project: null,
+    currentDueDateISO: payload.currentDueDateISO ?? null,
+    createdAt: now.toISO()!,
+  });
+
+  markFollowupTriggered(f.id);
+
+  // best-effort: EOD מחושב fresh מול "now" בפועל (לא מ-nudgeSentAt המקורי) — אם גלגלנו ליום העסקים
+  // הבא (scheduleInitialNudgeFollowup), "now" כאן כבר יהיה אותו יום, אז ה-EOD יוצא נכון אוטומטית.
+  try {
+    const local = now.setZone(env.TIMEZONE);
+    const todayEod = local.set({ hour: FOLLOWUP_CONFIG.endOfDay.hour, minute: FOLLOWUP_CONFIG.endOfDay.minute, second: 0, millisecond: 0 });
+    createOrReplaceFollowupForKind("initial_nudge_eod", {
+      findingKey: f.findingKey,
+      itemId: f.itemId,
+      itemSource: f.itemSource,
+      userKey: f.userKey,
+      kind: "initial_nudge_eod",
+      dueAtISO: toStoredUtcIso(todayEod),
+      payload: { ...payload, reminderSentAtISO: toStoredUtcIso(local) },
+    });
+  } catch (err) {
+    logger.error({ followupId: f.id, err }, "תזמון initial_nudge_eod נכשל — התזכורת עצמה נשלחה בהצלחה");
+  }
+
+  return "reminder_sent";
+}
+
+/** Rule 1, שלב EOD: אין תשובה עד סוף היום שבו נשלחה התזכורת — התראה ניהולית למוטי (לא Approval). */
+async function processInitialNudgeEod(
+  f: StoredFollowup,
+  now: DateTime,
+  deps: Required<FollowupRunnerDeps>,
+): Promise<string> {
+  if (!f.itemId || !f.itemSource || !f.findingKey) {
+    completeFollowup(f.id);
+    return "completed_missing_item";
+  }
+
+  const payload = (f.payload ?? {}) as { taskName?: string; nudgeSentAtISO?: string; reminderSentAtISO?: string | null };
+  if (payload.nudgeSentAtISO && hasRespondedSince(f.findingKey, payload.nudgeSentAtISO)) {
+    completeFollowup(f.id);
+    return "completed_already_responded";
+  }
+
+  const label = await deps.getTaskStatusLabel(f.itemSource as OpsTaskSource, f.itemId);
+  if (isDoneStatusLabel(f.itemSource as OpsTaskSource, label)) {
+    completeFollowup(f.id);
+    try {
+      recordFindingEvent(f.findingKey, "resolved_by_reply", { action: "initial_nudge_eod_confirmed_done" });
+      markNudgesSeenForFinding(f.userKey, f.findingKey);
+    } catch (err) {
+      logger.error({ followupId: f.id, err }, "סגירת finding אחרי initial_nudge_eod-done נכשלה — ה-follow-up עצמו כבר הושלם");
+    }
+    return "completed_done";
+  }
+  if (isParkedStatusLabel(f.itemSource as OpsTaskSource, label)) {
+    revertFollowupToPending(f.id, `המשימה במצב "${label}" בזמן בדיקת EOD (פנייה ראשונית) — לא נשלחה התראה`);
+    return "skipped_parked";
+  }
+
+  const moti = resolveUserByKey("moti");
+  if (!moti) {
+    throw new Error("אין משתמש moti מוגדר — לא ניתן ליצור התראה ניהולית על אי-מענה");
+  }
+
+  const employee = resolveUserByKey(f.userKey);
+  const employeeName = employee?.name ?? f.userKey;
+  const taskName = payload.taskName ?? f.itemId;
+  const sentAt = payload.nudgeSentAtISO ? DateTime.fromISO(payload.nudgeSentAtISO, { zone: "utc" }).setZone(env.TIMEZONE) : null;
+  const hoursPassed = sentAt ? Math.round(now.diff(sentAt, "hours").hours) : null;
+  const reminderSent = !!payload.reminderSentAtISO;
+
+  const body =
+    `${employeeName} לא הגיב/ה לפנייה הראשונית של הבקרה לגבי המשימה "${taskName}".` +
+    (sentAt ? `\nהפנייה נשלחה ב-${sentAt.toFormat("dd/MM HH:mm")}.` : "") +
+    `\nתזכורת: ${reminderSent ? "נשלחה" : "לא נשלחה"}.` +
+    (hoursPassed !== null ? `\nעברו כ-${hoursPassed} שעות בלי תשובה.` : "");
+
+  // notification רגילה — לא Approval: מוטי רק רואה, לא צריך ללחוץ כן/לא.
+  deps.addNotification(moti.key, "awaiting_decision", body, f.findingKey, {
+    itemId: f.itemId,
+    itemSource: f.itemSource,
+    context: {
+      employee: f.userKey,
+      employeeName,
+      taskName,
+      findingKey: f.findingKey,
+      itemId: f.itemId,
+      firstNudgeAt: payload.nudgeSentAtISO ?? null,
+      reminderSent,
+      hoursPassed,
+    },
+  });
+
   completeFollowup(f.id);
   return "escalated_no_response";
 }

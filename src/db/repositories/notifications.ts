@@ -71,6 +71,12 @@ const markNudgesForFindingStmt = db.prepare(
 const existsUnseenStmt = db.prepare(
   `SELECT id FROM notifications WHERE user_key = ? AND finding_key = ? AND kind = ? AND seen_at IS NULL LIMIT 1`,
 );
+// אותה שאילתה, כ-boolean — לשימוש כ-idempotency guard *מפורש* לפני שמנסים לשלוח (audit 2026-09-17,
+// פנייה ראשונית ב-escalation.ts): אם קריסה/restart קרו בין addNotification ל-setEscalation
+// בהרצה קודמת, ההרצה הבאה צריכה לדעת שכבר נשלח בפועל בלי להסתמך רק על escalationLevel.
+const hasUnseenForKindStmt = db.prepare(
+  `SELECT 1 FROM notifications WHERE user_key = ? AND finding_key = ? AND kind = ? AND seen_at IS NULL LIMIT 1`,
+);
 
 export interface NotificationContext {
   itemId?: string;
@@ -104,6 +110,11 @@ export function addNotification(
 
 export function listUnseenNotifications(userKey: string): Notification[] {
   return (listUnseenStmt.all(userKey) as unknown as Row[]).map(fromRow);
+}
+
+/** ר' hasUnseenForKindStmt למעלה — idempotency guard מפורש, לא רק הדה-דופ הפנימי של addNotification. */
+export function hasUnseenNotificationForKind(userKey: string, findingKey: string, kind: string): boolean {
+  return hasUnseenForKindStmt.get(userKey, findingKey, kind) !== undefined;
 }
 
 export function markNotificationsSeen(userKey: string): void {

@@ -19,7 +19,7 @@ import {
   upsertFinding,
   type StoredFinding,
 } from "../db/repositories/controlFindings.js";
-import { addNotification, supersedeKind } from "../db/repositories/notifications.js";
+import { addNotification, hasUnseenNotificationForKind, supersedeKind } from "../db/repositories/notifications.js";
 import {
   isResolvedByReply,
   lastResponseAt,
@@ -34,6 +34,8 @@ import { logger } from "../utils/logger.js";
 import { runControlScan, type Severity } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
 import { getOfficeState } from "./officeState.js";
+import { scheduleInitialNudgeFollowup, type ScheduleNoResponseInput } from "./followups.js";
+import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 
 /**
  * ימי עבודה (א׳–ה׳) שחלפו בין שני מועדים, לא כולל היום של `from`.
@@ -206,12 +208,109 @@ export function buildNudgeText(
   return `${opener}. מה המצב? אפשר לענות לי כאן בחופשיות (סיימתי / עוד יומיים / מחכה ליועץ / תקוע כי…).`;
 }
 
+/**
+ * Rule 1 (פנייה ראשונית, audit 2026-09-17): findings ברמת-משימה שכבר עברו תאריך יעד ביום שבו
+ * מתגלים לראשונה — לא מחכים ליום עבודה נוסף (ר' targetLevel/businessDaysBetween שלא משתנים).
+ * רק overdue_stale/blocking_stale/very_stale, ורק כשיש itemId+itemSource אמיתיים (ר' OVERDUE_TASK_KINDS
+ * ולולאת השלב החדש ב-runDailyControlCycle) — stuck/CRM/גבייה/project-level נשארים בחוץ.
+ */
+const OVERDUE_TASK_KINDS = new Set(["overdue_stale", "blocking_stale", "very_stale"]);
+
+/**
+ * ניסוח ניטרלי, לא מסגור-הסלמה (בלי "X ימי עבודה בלי תזוזה") — זו הפנייה הראשונה על המשימה,
+ * לא תזכורת חוזרת. דוגמה: "יוכי, המשימה 'הגשת תכניות' (פרויקט X) עברה את מועד היעד. מה המצב איתה?"
+ */
+export function buildInitialOverdueNudgeText(finding: Pick<StoredFinding, "who" | "headline" | "project">): string {
+  const firstName = finding.who.split(/\s+/)[0] ?? finding.who;
+  const m = finding.headline.match(/^(.*?):\s*(.+)$/); // אותה פריסה כמו buildNudgeText
+  const taskName = m ? m[2]!.trim() : finding.headline;
+  const NON_PROJECT = new Set(["מכירות", "לידים", "גבייה", "משימת משרד", "פרויקט לא מקושר", ""]);
+  const where = finding.project && !NON_PROJECT.has(finding.project) ? ` (פרויקט ${finding.project})` : "";
+  return (
+    `${firstName}, המשימה "${taskName}"${where} עברה את מועד היעד. מה המצב איתה? ` +
+    `אפשר לענות לי כאן בחופשיות (סיימתי / עוד יומיים / מחכה ליועץ / תקוע כי…).`
+  );
+}
+
 export interface CycleResult {
   ranAt: string;
   findings: number;
   forManager: number;
   escalations: { level: number; who: string; headline: string }[];
   briefingQueued: boolean;
+}
+
+/**
+ * Rule 1 (פנייה ראשונית, audit 2026-09-17): findings ברמת-משימה שכבר עברו תאריך יעד ביום הגילוי
+ * הראשון — לא מחכים ליום עבודה נוסף. פועלת מעל control_findings שכבר נשמרו (upsertFinding, שלב 1
+ * ב-runDailyControlCycle) — לא קוראת ל-Monday בעצמה, לא נוגעת ב-escalationDecision/targetLevel/
+ * businessDaysBetween (רק קוראת ל-escalationDecision, לא משנה אותה). מופרדת מ-runDailyControlCycle
+ * כדי שאפשר לבדוק אותה בלי scan אמיתי (מקביל ל-escalationDecision).
+ *
+ * דילוגים (בכוונה, לפי עיצוב מאושר):
+ *   - kind לא ב-OVERDUE_TASK_KINDS (stuck/CRM/גבייה/project-level) — לא בסקופ.
+ *   - בלי itemId+itemSource — לא ממציאים זהות.
+ *   - escalationLevel>0 — כבר טופל (על-ידי הפונקציה הזו או על-ידי ההסלמה הרגילה).
+ *   - decision.skip (resolved_by_reply/snoozed) — מכבד סיגנלים קיימים.
+ *   - decision.target>0 — המנגנון הקיים כבר יפעל היום (בעיקר critical); לא לשכפל.
+ *   - אין assignee מזוהה — לא שולחים, לא מקדמים level (retry-eligible בהרצה הבאה).
+ * idempotency ברמת DB (לא רק escalationLevel): hasUnseenNotificationForKind נבדק *לכל משתמש
+ * בנפרד* לפני שליחה — קריסה/restart בין addNotification ל-setEscalation לא יכולים ליצור שתי
+ * פניות לאותו (user,finding).
+ */
+export function runInitialOverdueNudgePass(now: DateTime): void {
+  const nowIso = now.toISO()!;
+  for (const finding of listActiveFindings()) {
+    if (!OVERDUE_TASK_KINDS.has(finding.kind)) continue;
+    if (!finding.itemId || !finding.itemSource) continue;
+    if (finding.escalationLevel > 0) continue;
+
+    const decision = escalationDecision(finding, now);
+    if (decision.skip) continue;
+    if (decision.target > 0) continue;
+
+    const users = resolveUsersByAssigneeText(finding.who);
+    if (users.length === 0) continue;
+
+    const ctx = escalationNotifContext(finding);
+    const body = buildInitialOverdueNudgeText(finding);
+    let sentToAtLeastOne = false;
+    for (const u of users) {
+      if (hasUnseenNotificationForKind(u.key, finding.findingKey, "nudge")) {
+        sentToAtLeastOne = true;
+        continue;
+      }
+      addNotification(u.key, "nudge", body, finding.findingKey, ctx);
+      recordFindingEvent(finding.findingKey, "nudge_sent", { byUser: u.key });
+      publishNudge({
+        userKey: u.key,
+        findingKey: finding.findingKey,
+        itemId: finding.itemId,
+        itemSource: finding.itemSource,
+        body,
+        taskName: finding.headline,
+        project: finding.project,
+        currentDueDateISO: finding.dueDate ?? null,
+        createdAt: nowIso,
+      });
+      try {
+        const followupInput: ScheduleNoResponseInput = {
+          itemId: finding.itemId,
+          itemSource: finding.itemSource as OpsTaskSource,
+          findingKey: finding.findingKey,
+          userKey: u.key,
+          taskName: finding.headline,
+          currentDueDateISO: finding.dueDate ?? null,
+          missedCommitment: false,
+        };
+        scheduleInitialNudgeFollowup(followupInput, now);
+      } catch (err) {
+        logger.error({ err, findingKey: finding.findingKey }, "תזמון initial_nudge_reminder נכשל — הפנייה הראשונית עצמה כבר נשלחה");
+      }
+      sentToAtLeastOne = true;
+    }
+    if (sentToAtLeastOne) setEscalation(finding.findingKey, 1, nowIso);
+  }
 }
 
 export async function runDailyControlCycle(): Promise<CycleResult> {
@@ -243,6 +342,10 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
   }
   // 2. כל מה שלא נראה בסריקה הזו → נפתר
   resolveStaleFindings(nowIso, nowIso);
+
+  // 2.5 פנייה ראשונית מיידית (Rule 1) — מופרדת לפונקציה משלה כדי שאפשר לבדוק את הלוגיקה בלי
+  // סריקה אמיתית (אותו טעם כמו escalationDecision למעלה).
+  runInitialOverdueNudgePass(now);
 
   // 3. הסלמה
   const escalations: CycleResult["escalations"] = [];

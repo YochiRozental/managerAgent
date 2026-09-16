@@ -20,7 +20,15 @@ export type FollowupKind =
   | "end_of_day_check"
   /** Rule 18 (EOD Engine, 2026-09-16): אין תשובה עד סוף היום — התראה ניהולית למוטי, לא Approval. */
   | "end_of_day_no_response"
-  | "manager_followup";
+  | "manager_followup"
+  /**
+   * Rule 1 (פנייה ראשונית, audit 2026-09-17): תזמון נפרד לגמרי מ-no_response_reminder/
+   * end_of_day_no_response הגלובליים (commitment_check/end_of_day_check) — כדי שגלגול ליום
+   * העסקים הבא (כשאין ~3 שעות עבודה נותרות היום) לא ישפיע על ה-flow הקיים. ר' escalation.ts
+   * (buildInitialOverdueNudgeText, השלב בין upsert ל-הסלמה) ו-followups.ts (scheduleInitialNudgeFollowup).
+   */
+  | "initial_nudge_reminder"
+  | "initial_nudge_eod";
 
 export type FollowupStatus = "pending" | "processing" | "triggered" | "completed" | "cancelled";
 

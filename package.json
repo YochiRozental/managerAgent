@@ -37,6 +37,7 @@
     "test:escalation-context": "tsx scripts/test-escalation-context.ts",
     "test:finding-identity": "tsx scripts/test-finding-identity-healing.ts",
     "test:backfill-escalations": "tsx scripts/test-backfill-escalation-identity.ts",
+    "test:initial-overdue-nudge": "tsx scripts/test-initial-overdue-nudge.ts",
     "maintenance:backfill-escalations": "tsx scripts/maintenance/backfill-escalation-identity.ts",
     "maintenance:backfill-escalations:apply": "tsx scripts/maintenance/backfill-escalation-identity.ts --apply"
   },

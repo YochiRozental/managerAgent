@@ -17,6 +17,7 @@ import { loadDeferralHistoryForItem } from "../src/db/repositories/deferralHisto
 import type { CreateApprovalInput, StoredApproval } from "../src/db/repositories/managerApprovals.js";
 import { resolveUserByKey } from "../src/identity/index.js";
 import { replyDefer, type LoopContext, type ReplyDeferDeps } from "../src/ops/loopReply.js";
+import { countDeferrals } from "../src/ops/policy.js";
 import { logger } from "../src/utils/logger.js";
 
 let failed = 0;
@@ -341,6 +342,146 @@ logger.info("── 5. היסטוריה אמיתית אחרי executed ──");
     "בקשת דחייה שנייה לאותה משימה → manager_approval_required (ההיסטוריה האמיתית נספרה)",
     r2.status === "manager_approval_required",
     r2.status,
+  );
+
+  db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);
+  db.exec(`DELETE FROM control_findings WHERE item_id = '${ITEM}'`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5b/5c. Gap #1 (audit 2026-09-18): loadDeferralHistoryForItem הקשיח wasOverdue=true לכל שורה —
+// עכשיו קורא payload.wasOverdue האמיתי (כבר נשמר ב-loopReply.ts/approvalActions.ts). הבדיקות
+// האלה מוכיחות שדחיות-לפני-יעד נספרות כ-beforeOverdue (לא afterOverdue), ושהמדיניות הקיימת
+// beforeDue.autoApproveCount=2 עובדת בפועל: דחייה 1/2 לפני יעד מותרות, דחייה 3 דורשת מוטי.
+// ─────────────────────────────────────────────────────────────────────────────
+
+logger.info("── 5b. היסטוריה אמיתית — דחיות לפני יעד: 1/2 מותרות אוטומטית, 3 דורשת מוטי ──");
+{
+  const ITEM = "__rd_history_before__";
+  db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);
+  db.exec(`DELETE FROM control_findings WHERE item_id = '${ITEM}'`);
+
+  const futureDue = now.plus({ days: 14 }).toISODate()!; // עדיין רחוק — כל שלוש הבקשות "לפני יעד"
+  upsertFinding({
+    findingKey: `overdue:${ITEM}`,
+    kind: "stuck",
+    severity: "high",
+    who: "דוב שפירא",
+    headline: "בדיקת היסטוריה — לפני יעד",
+    detail: "בדיקה",
+    itemId: ITEM,
+    itemSource: "general",
+    dueDate: futureDue,
+    now: now.toISO()!,
+  });
+
+  const c = baseCtx(ITEM, futureDue);
+  const deps: ReplyDeferDeps = {
+    setTaskDueDate: async () => {},
+    updateTask: async () => undefined as never,
+    addTaskNote: async () => {},
+    recordFindingEvent: realRecordFindingEvent,
+    addNotification: () => 1,
+    markNudgesSeenForFinding: () => {},
+    createApproval: makeCreateApprovalMock().fn,
+  };
+
+  check("לפני הדחייה — אין היסטוריה", loadDeferralHistoryForItem(ITEM, "general").length === 0);
+
+  // ReplyDeferResult לא חושף ruleId (רק status/message/tracking) — מזהים את הכלל הספציפי
+  // (before-due-ok / before-due-too-many) לפי טקסט ה-reasonHe הייחודי שמגיע דרך tracking/message
+  // (policy.ts), לא רק status — כדי להוכיח שזה הכלל הנכון, לא סתם "executed" ממקור אחר.
+  const r1 = await replyDefer(dov, c, now.plus({ days: 16 }).toISODate()!, undefined, null, deps);
+  check(
+    "A/D: דחייה 1 לפני יעד → executed (before-due-ok, 'דחייה מספר 1')",
+    r1.status === "executed" && r1.tracking.includes("דחייה מספר 1 לפני שתאריך היעד עבר"),
+    JSON.stringify(r1),
+  );
+  const h1 = loadDeferralHistoryForItem(ITEM, "general");
+  check("B: הדחייה נספרת עם wasOverdue=false (לא afterOverdue)", h1.length === 1 && h1[0]!.wasOverdue === false, JSON.stringify(h1));
+
+  const r2 = await replyDefer(dov, c, now.plus({ days: 18 }).toISODate()!, undefined, null, deps);
+  check(
+    "A/D: דחייה 2 לפני יעד → עדיין executed (before-due-ok, 'דחייה מספר 2')",
+    r2.status === "executed" && r2.tracking.includes("דחייה מספר 2 לפני שתאריך היעד עבר"),
+    JSON.stringify(r2),
+  );
+  const h2 = loadDeferralHistoryForItem(ITEM, "general");
+  const counts2 = countDeferrals(h2);
+  check(
+    "B: אחרי 2 דחיות לפני יעד — beforeOverdue=2, afterOverdue=0",
+    counts2.beforeOverdue === 2 && counts2.afterOverdue === 0,
+    JSON.stringify(counts2),
+  );
+
+  const r3 = await replyDefer(dov, c, now.plus({ days: 20 }).toISODate()!, undefined, null, deps);
+  check(
+    "A: דחייה 3 לפני יעד → manager_approval_required (before-due-too-many, 'הדחייה ה-3')",
+    r3.status === "manager_approval_required" && r3.message.includes("זו הדחייה ה-3 לפני שתאריך היעד עבר"),
+    JSON.stringify(r3),
+  );
+
+  db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);
+  db.exec(`DELETE FROM control_findings WHERE item_id = '${ITEM}'`);
+}
+
+logger.info("── 5c. דחייה לפני-יעד לא מנפחת afterOverdue — דחייה ראשונה אמיתית אחרי-יעד עדיין מקבלת מדיניות רגילה ──");
+{
+  const ITEM = "__rd_history_mixed__";
+  db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);
+  db.exec(`DELETE FROM control_findings WHERE item_id = '${ITEM}'`);
+
+  upsertFinding({
+    findingKey: `overdue:${ITEM}`,
+    kind: "stuck",
+    severity: "high",
+    who: "דוב שפירא",
+    headline: "בדיקת היסטוריה — מעורב",
+    detail: "בדיקה",
+    itemId: ITEM,
+    itemSource: "general",
+    dueDate: now.plus({ days: 10 }).toISODate()!,
+    now: now.toISO()!,
+  });
+
+  const deps: ReplyDeferDeps = {
+    setTaskDueDate: async () => {},
+    updateTask: async () => undefined as never,
+    addTaskNote: async () => {},
+    recordFindingEvent: realRecordFindingEvent,
+    addNotification: () => 1,
+    markNudgesSeenForFinding: () => {},
+    createApproval: makeCreateApprovalMock().fn,
+  };
+
+  // דחייה 1: עדיין לפני יעד.
+  const cBefore = baseCtx(ITEM, now.plus({ days: 10 }).toISODate()!);
+  const r1 = await replyDefer(dov, cBefore, now.plus({ days: 12 }).toISODate()!, undefined, null, deps);
+  check("הכנה: דחייה לפני-יעד בוצעה", r1.status === "executed", JSON.stringify(r1));
+  const countsAfter1 = countDeferrals(loadDeferralHistoryForItem(ITEM, "general"));
+  check("אחרי דחייה 1 (לפני יעד): beforeOverdue=1, afterOverdue=0", countsAfter1.beforeOverdue === 1 && countsAfter1.afterOverdue === 0, JSON.stringify(countsAfter1));
+
+  // דחייה 2: עכשיו המשימה באמת באיחור (currentDueDateISO אחר, מדמה שהזמן עבר) — הראשונה-אמיתית-אחרי-יעד.
+  const cAfter = baseCtx(ITEM, now.minus({ days: 2 }).toISODate()!);
+  const r2 = await replyDefer(dov, cAfter, now.plus({ days: 2 }).toISODate()!, "סיבה", true, deps);
+  check(
+    "C: דחייה ראשונה-אמיתית-אחרי-יעד → מדיניות רגילה (after-overdue-short: 'אין צורך באישור'), *לא* manager_approval_required — מוכיח שהדחייה-לפני-יעד לא נספרה כ-afterOverdue",
+    r2.status === "executed" && r2.tracking.includes("אין צורך באישור"),
+    JSON.stringify(r2),
+  );
+  const countsAfter2 = countDeferrals(loadDeferralHistoryForItem(ITEM, "general"));
+  check(
+    "C: אחרי שתי הדחיות — beforeOverdue=1 (לא השתנה), afterOverdue=1 (רק החדשה)",
+    countsAfter2.beforeOverdue === 1 && countsAfter2.afterOverdue === 1,
+    JSON.stringify(countsAfter2),
+  );
+
+  // דחייה 3: עוד דחייה אחרי-יעד — afterOverdue כבר 1, newCommitmentsAllowed=1 → מוטי.
+  const r3 = await replyDefer(dov, cAfter, now.plus({ days: 3 }).toISODate()!, undefined, null, deps);
+  check(
+    "בונוס: דחייה שנייה-אמיתית-אחרי-יעד → manager_approval_required (afterOverdue=1 כבר, 'העובד כבר קיבל 1 דחיה')",
+    r3.status === "manager_approval_required" && r3.message.includes("העובד כבר קיבל 1 דחיה"),
+    JSON.stringify(r3),
   );
 
   db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);

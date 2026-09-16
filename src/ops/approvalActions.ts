@@ -76,6 +76,8 @@ interface DeferralApprovalPayload {
   priorDeferrals?: unknown;
   ruleId: string;
   wasOverdue: boolean;
+  /** scope change (audit 2026-09-18/19): metadata לתיעוד בלבד, מועבר הלאה ל-snoozed. ר' policy.ts. */
+  scopeChange?: boolean;
 }
 
 function pretty(dateISO: string): string {
@@ -158,6 +160,7 @@ const deferralExecutor: KindExecutor = {
       itemSource: approval.itemSource ?? undefined,
       oldDueDate: payload.oldDueDate,
       wasOverdue: payload.wasOverdue,
+      scopeChange: payload.scopeChange,
     });
     deps.markNudgesSeenForFinding(approval.requestedBy, approval.findingKey);
 

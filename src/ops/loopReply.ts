@@ -242,6 +242,14 @@ export async function replyDefer(
   reason?: string,
   reasonJudgedPlausible: boolean | null = null,
   deps: ReplyDeferDeps = {},
+  /**
+   * scope change (audit 2026-09-18/19): מידע לתיעוד/audit בלבד — לא משפיע על שום החלטה ב-
+   * Policy Engine (ר' policy.ts). מגיע מ-chat.ts כפרמטר לקריאת ה-tool עצמה (לא מ-LoopContext,
+   * בניגוד ל-missedCommitment — זה נקבע ע"י המודל לפי ההודעה הנוכחית, לא ע"י מנוע הבקרה מראש).
+   * ממוקם *אחרי* deps בכוונה — כדי לא לשבור את שאר קריאות ה-replyDefer הקיימות (מבחנים/chat.ts)
+   * שכבר מעבירות deps כפרמטר חמישי.
+   */
+  scopeChange = false,
 ): Promise<ReplyDeferResult> {
   const doSetTaskDueDate = deps.setTaskDueDate ?? setTaskDueDate;
   const doUpdateTask = deps.updateTask ?? updateTask;
@@ -263,6 +271,7 @@ export async function replyDefer(
     reasonText: reason,
     reasonJudgedPlausible,
     missedCommitment: c.missedCommitment,
+    scopeChange,
   });
 
   if (plan.status === "needs_clarification") {
@@ -293,6 +302,9 @@ export async function replyDefer(
     // Rule 4 (EOD Engine): מגיע מ-Policy Engine (plan), לא נגזר כאן מ-c/reason — כך שהאישור עצמו
     // נושא context מפורש שמבדיל "התחייבות שהוחמצה" מ-"משימה overdue רגילה" (audit request 2026-09-16).
     const missedCommitment = !!(plan.approvalPayload.details as Record<string, unknown>).missedCommitment;
+    // scope change (audit 2026-09-18/19): אותו pattern בדיוק — מגיע דרך plan.approvalPayload.details
+    // (מה ש-Policy Engine בפועל תיעד), לא ישירות מהפרמטר, כדי שמקור-האמת יהיה אחיד עם missedCommitment.
+    const scopeChangeFlag = !!(plan.approvalPayload.details as Record<string, unknown>).scopeChange;
 
     // ה-payload הנשמר ב-Approval — persistent, לא רק notification (שורד ריסטרט שרת).
     const approvalPayload = {
@@ -303,6 +315,7 @@ export async function replyDefer(
       ruleId: plan.ruleId,
       wasOverdue: plan.wasOverdue,
       missedCommitment,
+      scopeChange: scopeChangeFlag,
     };
 
     const createInput: CreateApprovalInput = {
@@ -345,6 +358,7 @@ export async function replyDefer(
         priorDeferrals,
         ruleId: plan.ruleId,
         missedCommitment,
+        scopeChange: scopeChangeFlag,
       };
       const notifId = doAddNotification(moti.key, "approval_request", body, c.findingKey, {
         itemId: c.itemId,
@@ -402,6 +416,8 @@ export async function replyDefer(
     itemSource: c.source,
     oldDueDate: c.currentDueDateISO ?? null,
     wasOverdue: plan.wasOverdue,
+    // metadata בלבד (audit 2026-09-18/19) — לא משפיע על שום דבר, ר' docstring על הפרמטר למעלה.
+    scopeChange,
   });
   doMarkNudgesSeenForFinding(user.key, c.findingKey);
 

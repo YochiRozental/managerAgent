@@ -37,6 +37,11 @@ export interface FindingEventPayload {
   wasOverdue?: boolean;
   /** מקשר בין אירוע הממצא לבקשת האישור ב-manager_approvals. */
   approvalId?: number;
+  /**
+   * scope change (audit 2026-09-18/19): metadata לתיעוד/audit בלבד — מסמן שהדחייה (snoozed) נבעה
+   * משינוי/הרחבת היקף העבודה. לא נקרא בשום מקום שמשפיע על החלטה — רק נשמר. ר' loopReply.replyDefer.
+   */
+  scopeChange?: boolean;
 }
 
 interface Row {

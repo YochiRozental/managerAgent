@@ -33,6 +33,12 @@ export interface DeferralReplyInput {
   reasonJudgedPlausible: boolean | null;
   /** ר' policy.ts — מגיע מ-c.missedCommitment (LoopContext), לא מנוחש כאן. */
   missedCommitment?: boolean;
+  /**
+   * scope change (audit 2026-09-18/19): metadata לתיעוד/audit בלבד, ר' policy.ts. בניגוד ל-
+   * missedCommitment, לא מגיע מ-LoopContext — chat.ts מעביר אותו כפרמטר ל-replyDefer עצמו,
+   * כי זה נקבע לפי ההודעה הנוכחית של העובד, לא לפי הנודג' שפתח את השיחה.
+   */
+  scopeChange?: boolean;
 }
 
 export type DeferralReplyPlan =
@@ -87,6 +93,7 @@ export function planDeferralReply(
     reasonText: input.reasonText,
     reasonJudgedPlausible: input.reasonJudgedPlausible,
     missedCommitment: input.missedCommitment,
+    scopeChange: input.scopeChange,
   });
 
   const wasOverdue = !!decision.wasOverdue;

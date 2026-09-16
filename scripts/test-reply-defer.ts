@@ -10,6 +10,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { DateTime } from "luxon";
+import { env } from "../src/config/env.js";
 import { db } from "../src/db/db.js";
 import { upsertFinding } from "../src/db/repositories/controlFindings.js";
 import { recordFindingEvent as realRecordFindingEvent } from "../src/db/repositories/findingEvents.js";
@@ -18,6 +19,8 @@ import type { CreateApprovalInput, StoredApproval } from "../src/db/repositories
 import { resolveUserByKey } from "../src/identity/index.js";
 import { replyDefer, type LoopContext, type ReplyDeferDeps } from "../src/ops/loopReply.js";
 import { countDeferrals } from "../src/ops/policy.js";
+import { createApproval as realCreateApproval } from "../src/db/repositories/managerApprovals.js";
+import { approveApproval, type ApprovalDecisionDeps } from "../src/ops/approvalActions.js";
 import { logger } from "../src/utils/logger.js";
 
 let failed = 0;
@@ -29,7 +32,12 @@ const check = (label: string, cond: boolean, extra = "") => {
   }
 };
 
-const now = DateTime.fromISO("2026-09-14T10:00:00", { zone: "Asia/Jerusalem" });
+// דינמי בכוונה (audit 2026-09-20): replyDefer מחשב "today" בעצמו מ-DateTime.now().setZone(env.TIMEZONE)
+// (loopReply.ts) — הוא לא מקבל now כפרמטר מבחוץ. תאריך מעוגן קבוע כאן ("2026-09-14" בעבר) התיישן עם
+// חלוף הימים וגרם לבחירת ענף Policy שונה מהמצופה (למשל executed במקום needs_clarification), שהפעיל
+// dependency אמיתי שלא היה מזוייף בכל מקום → קריאת Monday אמיתית. לכן ה-"now" של הבדיקות עצמו חייב
+// לעקוב אחרי הזמן האמיתי (כמו replyDefer), לא תאריך קפוא — כל שאר החישובים בקובץ יחסיים אליו.
+const now = DateTime.now().setZone(env.TIMEZONE);
 const dov = resolveUserByKey("dov")!;
 
 /** ספיר גנרי: סופר קריאות, שומר ארגומנטים, אפשר להזריק שגיאה. */
@@ -159,13 +167,18 @@ logger.info("── 2. needs_clarification ──");
 {
   const setTaskDueDateSpy = makeSpy();
   const updateTaskSpy = makeSpy();
+  const addTaskNoteSpy = makeSpy();
   const recordFindingEventSpy = makeSpy();
   const addNotificationSpy = makeSpy();
   const markSeenSpy = makeSpy();
 
+  // כל dependency שיכול לכתוב ל-Monday מוזרק כאן במפורש — גם אם הענף הצפוי (needs_clarification)
+  // לא אמור לגעת בהם, כדי שאם ה-Policy Engine (שמחשב "today" מהשעון האמיתי) יבחר ענף אחר, שום
+  // קריאה לא תזלוג ל-Monday האמיתי (audit 2026-09-20).
   const deps: ReplyDeferDeps = {
     setTaskDueDate: async (...a: unknown[]) => { setTaskDueDateSpy.fn(...(a as [string, string, string])); },
     updateTask: async (...a: unknown[]) => { updateTaskSpy.fn(...(a as [unknown, unknown])); return undefined as never; },
+    addTaskNote: async (...a: unknown[]) => { addTaskNoteSpy.fn(...(a as [string, string])); },
     recordFindingEvent: (...a: unknown[]) => recordFindingEventSpy.fn(...(a as [string, string, unknown])),
     addNotification: (...a: unknown[]) => {
       addNotificationSpy.fn(...(a as [string, string, string]));
@@ -182,6 +195,7 @@ logger.info("── 2. needs_clarification ──");
   check("מוחזרת שאלת ההבהרה", result.status === "needs_clarification" && !!result.question && result.message === result.question);
   check("setTaskDueDate לא נקרא", setTaskDueDateSpy.calls.length === 0);
   check("updateTask לא נקרא", updateTaskSpy.calls.length === 0);
+  check("addTaskNote לא נקרא", addTaskNoteSpy.calls.length === 0);
   check("לא נרשם finding_event בכלל", recordFindingEventSpy.calls.length === 0);
   check("לא נוצרה notification למוטי", addNotificationSpy.calls.length === 0);
   check("ה-nudge לא סומן seen (העובד עוד יענה על ההבהרה)", markSeenSpy.calls.length === 0);
@@ -195,14 +209,17 @@ logger.info("── 3. manager_approval_required ──");
 {
   const setTaskDueDateSpy = makeSpy();
   const updateTaskSpy = makeSpy();
+  const addTaskNoteSpy = makeSpy();
   const recordFindingEventSpy = makeSpy<[string, string, Record<string, unknown>]>();
   const addNotificationSpy = makeSpy<[string, string, string, string, { itemId: string; itemSource: string; context: Record<string, unknown> }]>();
   const markSeenSpy = makeSpy();
   const createApprovalMock = makeCreateApprovalMock();
 
+  // כל dependency שיכול לכתוב ל-Monday מוזרק כאן במפורש (ר' הערה בסעיף 2 — אותו טעם).
   const deps: ReplyDeferDeps = {
     setTaskDueDate: async (...a: unknown[]) => { setTaskDueDateSpy.fn(...(a as [string, string, string])); },
     updateTask: async (...a: unknown[]) => { updateTaskSpy.fn(...(a as [unknown, unknown])); return undefined as never; },
+    addTaskNote: async (...a: unknown[]) => { addTaskNoteSpy.fn(...(a as [string, string])); },
     recordFindingEvent: (...a: unknown[]) => recordFindingEventSpy.fn(...(a as [string, string, Record<string, unknown>])),
     addNotification: (...a: unknown[]) => {
       addNotificationSpy.fn(...(a as [string, string, string, string, { itemId: string; itemSource: string; context: Record<string, unknown> }]));
@@ -220,6 +237,7 @@ logger.info("── 3. manager_approval_required ──");
   check("הניסוח לעובד לא אומר שהדחייה אושרה", !result.message.includes("עדכנתי") && result.message.includes("דורשת אישור") && result.message.includes("לא שיניתי"));
   check("setTaskDueDate לא נקרא", setTaskDueDateSpy.calls.length === 0);
   check("updateTask לא נקרא", updateTaskSpy.calls.length === 0);
+  check("addTaskNote לא נקרא", addTaskNoteSpy.calls.length === 0);
   check("לא נרשם snoozed", recordFindingEventSpy.calls.every((c2) => c2[1] !== "snoozed"));
   check("כן נרשם manager_approval_required", recordFindingEventSpy.calls.some((c2) => c2[1] === "manager_approval_required"));
   check("ה-nudge לא סומן seen (עדיין ממתין למוטי)", markSeenSpy.calls.length === 0);
@@ -256,12 +274,16 @@ logger.info("── 4. כשל Monday ──");
   const recordFindingEventSpy = makeSpy();
   const markSeenSpy = makeSpy();
   const updateTaskSpy = makeSpy();
+  const addTaskNoteSpy = makeSpy();
 
+  // setTaskDueDate נכשל כאן תמיד — אבל addTaskNote מוזרק גם הוא במפורש (ר' הערה בסעיף 2): אם
+  // עדכון תאריך היה בהצלחה, הענף היה קורא לו בפועל, ואסור שזה יזלוג ל-Monday האמיתי.
   const deps: ReplyDeferDeps = {
     setTaskDueDate: async () => {
       throw new Error("Monday API timeout (מדומה)");
     },
     updateTask: async (...a: unknown[]) => { updateTaskSpy.fn(...(a as [unknown, unknown])); return undefined as never; },
+    addTaskNote: async (...a: unknown[]) => { addTaskNoteSpy.fn(...(a as [string, string])); },
     recordFindingEvent: (...a: unknown[]) => recordFindingEventSpy.fn(...(a as [string, string, unknown])),
     markNudgesSeenForFinding: (...a: unknown[]) => markSeenSpy.fn(...(a as [string, string])),
   };
@@ -280,6 +302,7 @@ logger.info("── 4. כשל Monday ──");
 
   check("replyDefer זרק שגיאה ברורה כשה-Monday נכשל", threw && errMsg.includes("Monday"), errMsg);
   check("updateTask (סטטוס) לא נקרא — נכשלנו לפני זה", updateTaskSpy.calls.length === 0);
+  check("addTaskNote לא נקרא — נכשלנו לפני זה", addTaskNoteSpy.calls.length === 0);
   check("שום finding_event לא נרשם (בטח לא snoozed)", recordFindingEventSpy.calls.length === 0);
   check("ה-nudge לא סומן seen", markSeenSpy.calls.length === 0);
 }
@@ -388,24 +411,18 @@ logger.info("── 5b. היסטוריה אמיתית — דחיות לפני י
 
   check("לפני הדחייה — אין היסטוריה", loadDeferralHistoryForItem(ITEM, "general").length === 0);
 
-  // ReplyDeferResult לא חושף ruleId (רק status/message/tracking) — מזהים את הכלל הספציפי
-  // (before-due-ok / before-due-too-many) לפי טקסט ה-reasonHe הייחודי שמגיע דרך tracking/message
-  // (policy.ts), לא רק status — כדי להוכיח שזה הכלל הנכון, לא סתם "executed" ממקור אחר.
+  // ReplyDeferResult לא חושף ruleId, וה-message/tracking של executed/manager_approval_required הם
+  // תבנית קבועה וגנרית ב-loopReply.ts (לא מוטמע בהם decision.reasonHe/ruleId מ-policy.ts בכלל) —
+  // תוקן 2026-09-20: הבדיקות כאן חיפשו בעבר טקסט שה-API הציבורי הזה אף פעם לא יכול להכיל (הנחה
+  // שגויה מלכתחילה, לא תלוית תאריך). מזהים את הכלל הספציפי שפעל לפי status + ספירת ההיסטוריה
+  // האמיתית מה-DB (loadDeferralHistoryForItem/countDeferrals) מיד אחרי — זו ההוכחה האמיתית.
   const r1 = await replyDefer(dov, c, now.plus({ days: 16 }).toISODate()!, undefined, null, deps);
-  check(
-    "A/D: דחייה 1 לפני יעד → executed (before-due-ok, 'דחייה מספר 1')",
-    r1.status === "executed" && r1.tracking.includes("דחייה מספר 1 לפני שתאריך היעד עבר"),
-    JSON.stringify(r1),
-  );
+  check("A/D: דחייה 1 לפני יעד → executed (before-due-ok)", r1.status === "executed", JSON.stringify(r1));
   const h1 = loadDeferralHistoryForItem(ITEM, "general");
   check("B: הדחייה נספרת עם wasOverdue=false (לא afterOverdue)", h1.length === 1 && h1[0]!.wasOverdue === false, JSON.stringify(h1));
 
   const r2 = await replyDefer(dov, c, now.plus({ days: 18 }).toISODate()!, undefined, null, deps);
-  check(
-    "A/D: דחייה 2 לפני יעד → עדיין executed (before-due-ok, 'דחייה מספר 2')",
-    r2.status === "executed" && r2.tracking.includes("דחייה מספר 2 לפני שתאריך היעד עבר"),
-    JSON.stringify(r2),
-  );
+  check("A/D: דחייה 2 לפני יעד → עדיין executed (before-due-ok)", r2.status === "executed", JSON.stringify(r2));
   const h2 = loadDeferralHistoryForItem(ITEM, "general");
   const counts2 = countDeferrals(h2);
   check(
@@ -416,8 +433,8 @@ logger.info("── 5b. היסטוריה אמיתית — דחיות לפני י
 
   const r3 = await replyDefer(dov, c, now.plus({ days: 20 }).toISODate()!, undefined, null, deps);
   check(
-    "A: דחייה 3 לפני יעד → manager_approval_required (before-due-too-many, 'הדחייה ה-3')",
-    r3.status === "manager_approval_required" && r3.message.includes("זו הדחייה ה-3 לפני שתאריך היעד עבר"),
+    "A: דחייה 3 לפני יעד → manager_approval_required (before-due-too-many — beforeOverdue כבר היה 2 = autoApproveCount)",
+    r3.status === "manager_approval_required",
     JSON.stringify(r3),
   );
 
@@ -465,8 +482,8 @@ logger.info("── 5c. דחייה לפני-יעד לא מנפחת afterOverdue 
   const cAfter = baseCtx(ITEM, now.minus({ days: 2 }).toISODate()!);
   const r2 = await replyDefer(dov, cAfter, now.plus({ days: 2 }).toISODate()!, "סיבה", true, deps);
   check(
-    "C: דחייה ראשונה-אמיתית-אחרי-יעד → מדיניות רגילה (after-overdue-short: 'אין צורך באישור'), *לא* manager_approval_required — מוכיח שהדחייה-לפני-יעד לא נספרה כ-afterOverdue",
-    r2.status === "executed" && r2.tracking.includes("אין צורך באישור"),
+    "C: דחייה ראשונה-אמיתית-אחרי-יעד → מדיניות רגילה (after-overdue-short), *לא* manager_approval_required — מוכיח שהדחייה-לפני-יעד לא נספרה כ-afterOverdue",
+    r2.status === "executed",
     JSON.stringify(r2),
   );
   const countsAfter2 = countDeferrals(loadDeferralHistoryForItem(ITEM, "general"));
@@ -479,8 +496,8 @@ logger.info("── 5c. דחייה לפני-יעד לא מנפחת afterOverdue 
   // דחייה 3: עוד דחייה אחרי-יעד — afterOverdue כבר 1, newCommitmentsAllowed=1 → מוטי.
   const r3 = await replyDefer(dov, cAfter, now.plus({ days: 3 }).toISODate()!, undefined, null, deps);
   check(
-    "בונוס: דחייה שנייה-אמיתית-אחרי-יעד → manager_approval_required (afterOverdue=1 כבר, 'העובד כבר קיבל 1 דחיה')",
-    r3.status === "manager_approval_required" && r3.message.includes("העובד כבר קיבל 1 דחיה"),
+    "בונוס: דחייה שנייה-אמיתית-אחרי-יעד → manager_approval_required (afterOverdue=1 כבר = newCommitmentsAllowed)",
+    r3.status === "manager_approval_required",
     JSON.stringify(r3),
   );
 
@@ -524,6 +541,199 @@ logger.info("── 6. reasonJudgedPlausible מקצה לקצה ──");
   check(
     "ה-run handler של reply_defer מעביר i.reasonJudgedPlausible ל-replyDefer",
     /replyDefer\(\s*user,\s*c,\s*String\(i\.newDate\),[\s\S]{0,200}i\.reasonJudgedPlausible/.test(chatSrc),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. scope change (audit 2026-09-18/19) — metadata בלבד: לא משנה שום החלטה של Policy Engine,
+//    זורם דרך replyDefer → planDeferralReply/policy.details → snoozed payload (גם כשמוטי מאשר).
+//    A/B/ג (שיחת ה-AI: לזהות scope change, לשאול "כמה זמן אתה צריך?", ולא לשאול שוב כשכבר ניתן
+//    זמן באותה הודעה) הן התנהגות מודל בזמן ריצה ולא ניתנות ל-unit test ישיר — נבדקות כאן structurally
+//    מול chat.ts (System prompt + tool schema + run handler), בדיוק כמו הבדיקה המבנית ל-reasonJudgedPlausible
+//    למעלה (סעיף 6). את מנגנון ה-reply_defer(scopeChange=true) עצמו — הליבה של ב'/ג' — כן בודקים ישירות.
+// ─────────────────────────────────────────────────────────────────────────────
+
+logger.info("── 7א. בדיקה מבנית: chat.ts (א/ב/ג — זיהוי scope change + tool schema) ──");
+{
+  const chatSrc = fs.readFileSync(new URL("../src/ops/chat.ts", import.meta.url), "utf-8");
+  check(
+    "System prompt כולל הנחיה לזהות שינוי היקף עבודה",
+    chatSrc.includes("שינוי היקף עבודה (scope change)"),
+  );
+  check(
+    "System prompt מנחה לשאול כמה זמן נדרש כשלא ניתן זמן",
+    /אל תקרא reply_defer.*שאל[\s\S]{0,120}כמה זמן אתה צריך עכשיו/.test(chatSrc),
+  );
+  check(
+    "System prompt מנחה לא לשאול שוב כשכבר ניתן גם היקף וגם זמן באותה הודעה",
+    chatSrc.includes("אין צורך") && chatSrc.includes("בשאלת ביניים"),
+  );
+  check(
+    "input_schema של reply_defer מכריז על scopeChange: boolean",
+    /scopeChange:\s*\{[^}]*type:\s*"boolean"/.test(chatSrc),
+  );
+  check(
+    "ה-run handler של reply_defer מעביר i.scopeChange ל-replyDefer",
+    /replyDefer\(\s*user,\s*c,\s*String\(i\.newDate\),[\s\S]{0,400}i\.scopeChange/.test(chatSrc),
+  );
+}
+
+logger.info("── 7ד. D: scopeChange לא משנה את החלטת Policy Engine (executed) ──");
+{
+  function makeNoopDeps(recordFindingEventSpy: ReturnType<typeof makeSpy<[string, string, Record<string, unknown>]>>): ReplyDeferDeps {
+    return {
+      setTaskDueDate: async () => {},
+      updateTask: async () => undefined as never,
+      addTaskNote: async () => {},
+      recordFindingEvent: (...a: unknown[]) => recordFindingEventSpy.fn(...(a as [string, string, Record<string, unknown>])),
+      addNotification: () => 1,
+      markNudgesSeenForFinding: () => {},
+      createApproval: makeCreateApprovalMock().fn,
+    };
+  }
+
+  const newDate = now.plus({ days: 5 }).toISODate()!; // after-overdue-reason-plausible → executed
+  const spyTrue = makeSpy<[string, string, Record<string, unknown>]>();
+  const spyFalse = makeSpy<[string, string, Record<string, unknown>]>();
+
+  const rTrue = await replyDefer(dov, baseCtx("__rd_scope_d_true__", overdue2d), newDate, "הלקוח הוסיף עוד שתי חלופות", true, makeNoopDeps(spyTrue), true);
+  const rFalse = await replyDefer(dov, baseCtx("__rd_scope_d_false__", overdue2d), newDate, "הלקוח הוסיף עוד שתי חלופות", true, makeNoopDeps(spyFalse), false);
+
+  check("D: status זהה (executed) בין scopeChange=true ל-false", rTrue.status === "executed" && rTrue.status === rFalse.status);
+  check(
+    "D: tracking/message זהים בין scopeChange=true ל-false (ההחלטה עצמה לא הושפעה)",
+    rTrue.status === "executed" && rFalse.status === "executed" && rTrue.message === rFalse.message && rTrue.tracking === rFalse.tracking,
+    JSON.stringify({ rTrue, rFalse }),
+  );
+  const payloadTrue = { ...(spyTrue.calls[0]![2]), itemId: undefined, scopeChange: undefined };
+  const payloadFalse = { ...(spyFalse.calls[0]![2]), itemId: undefined, scopeChange: undefined };
+  check(
+    "D: ה-payload של snoozed זהה מלבד itemId (item שונה בכוונה) ו-scopeChange עצמו",
+    JSON.stringify(payloadTrue) === JSON.stringify(payloadFalse),
+    JSON.stringify({ payloadTrue, payloadFalse }),
+  );
+}
+
+logger.info("── 7ד. D: scopeChange לא משנה את החלטת Policy Engine (manager_approval_required) ──");
+{
+  const newDate = now.plus({ days: 10 }).toISODate()!; // after-overdue-long → תמיד מוטי, בלי קשר לסיבה
+  const createMockTrue = makeCreateApprovalMock();
+  const createMockFalse = makeCreateApprovalMock();
+  const noopSpy = () => {};
+
+  const depsTrue: ReplyDeferDeps = {
+    setTaskDueDate: async () => {}, updateTask: async () => undefined as never, addTaskNote: async () => {},
+    recordFindingEvent: noopSpy, addNotification: () => 1, markNudgesSeenForFinding: () => {}, createApproval: createMockTrue.fn,
+  };
+  const depsFalse: ReplyDeferDeps = {
+    setTaskDueDate: async () => {}, updateTask: async () => undefined as never, addTaskNote: async () => {},
+    recordFindingEvent: noopSpy, addNotification: () => 1, markNudgesSeenForFinding: () => {}, createApproval: createMockFalse.fn,
+  };
+
+  const rTrue = await replyDefer(dov, baseCtx("__rd_scope_d2_true__", overdue2d), newDate, "קומה נוספת נוספה", true, depsTrue, true);
+  const rFalse = await replyDefer(dov, baseCtx("__rd_scope_d2_false__", overdue2d), newDate, "קומה נוספת נוספה", true, depsFalse, false);
+
+  check(
+    "D: גם ב-manager_approval_required — status/message/tracking זהים בין scopeChange=true ל-false",
+    rTrue.status === "manager_approval_required" && rTrue.status === rFalse.status && rTrue.message === rFalse.message && rTrue.tracking === rFalse.tracking,
+    JSON.stringify({ rTrue, rFalse }),
+  );
+  const detailsTrue = { ...(createMockTrue.calls[0]!.payload as Record<string, unknown>), scopeChange: undefined };
+  const detailsFalse = { ...(createMockFalse.calls[0]!.payload as Record<string, unknown>), scopeChange: undefined };
+  check(
+    "D: ה-approvalPayload (ruleId/wasOverdue/oldDueDate/requestedNewDueDate/reason/priorDeferrals) זהה מלבד scopeChange",
+    JSON.stringify(detailsTrue) === JSON.stringify(detailsFalse),
+    JSON.stringify({ detailsTrue, detailsFalse }),
+  );
+  check("D: ה-approvalPayload נושא scopeChange=true/false בהתאמה", (createMockTrue.calls[0]!.payload as Record<string, unknown>).scopeChange === true && (createMockFalse.calls[0]!.payload as Record<string, unknown>).scopeChange === false);
+}
+
+logger.info("── 7ה. E: snoozed event אחרי דחייה מבוצעת נושא scopeChange ──");
+{
+  const recordFindingEventSpy = makeSpy<[string, string, Record<string, unknown>]>();
+  const deps: ReplyDeferDeps = {
+    setTaskDueDate: async () => {}, updateTask: async () => undefined as never, addTaskNote: async () => {},
+    recordFindingEvent: (...a: unknown[]) => recordFindingEventSpy.fn(...(a as [string, string, Record<string, unknown>])),
+    addNotification: () => 1, markNudgesSeenForFinding: () => {}, createApproval: makeCreateApprovalMock().fn,
+  };
+  const newDate = now.plus({ days: 2 }).toISODate()!;
+  const r = await replyDefer(dov, baseCtx("__rd_scope_e__", overdue2d), newDate, "נוספה קומה", null, deps, true);
+
+  check("E: הדחייה בוצעה (executed)", r.status === "executed", r.status);
+  const snoozedCall = recordFindingEventSpy.calls.find((c2) => c2[1] === "snoozed");
+  check("E: נרשם finding_event מסוג snoozed", !!snoozedCall);
+  check("E: ה-payload של snoozed נושא scopeChange=true", snoozedCall ? snoozedCall[2].scopeChange === true : false, JSON.stringify(snoozedCall?.[2]));
+}
+
+logger.info("── 7ו. F: אישור מוטי משמר scopeChange=true ב-snoozed הסופי ──");
+{
+  const ITEM = "__rd_scope_f__";
+  db.exec(`DELETE FROM manager_approvals WHERE item_id = '${ITEM}'`);
+  db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);
+
+  const createCalls: { approval: StoredApproval; created: boolean }[] = [];
+  const createApprovalWrapped = (input: CreateApprovalInput) => {
+    const result = realCreateApproval(input);
+    createCalls.push(result);
+    return result;
+  };
+
+  const newDate = now.plus({ days: 10 }).toISODate()!; // after-overdue-long → מוטי, בלי קשר לסיבה
+  const replyDeps: ReplyDeferDeps = {
+    setTaskDueDate: async () => {}, updateTask: async () => undefined as never, addTaskNote: async () => {},
+    recordFindingEvent: realRecordFindingEvent, addNotification: () => 1, markNudgesSeenForFinding: () => {},
+    createApproval: createApprovalWrapped,
+  };
+  const c = baseCtx(ITEM, overdue2d);
+  const r = await replyDefer(dov, c, newDate, "נוספה קומה נוספת לפרויקט", true, replyDeps, true);
+  check("F: הבקשה נכנסה ל-manager_approval_required", r.status === "manager_approval_required", r.status);
+  check("F: נוצרה בקשת אישור אחת אמיתית", createCalls.length === 1);
+
+  const approvalId = createCalls[0]!.approval.id;
+  const moti = resolveUserByKey("moti")!;
+  const approveRecordFindingEventSpy = makeSpy<[string, string, Record<string, unknown>]>();
+  const approveDeps: ApprovalDecisionDeps = {
+    setTaskDueDate: async () => {},
+    addTaskNote: async () => {},
+    updateTask: async () => undefined as never,
+    recordFindingEvent: (...a: unknown[]) => approveRecordFindingEventSpy.fn(...(a as [string, string, Record<string, unknown>])),
+    addNotification: () => 1,
+    markNudgesSeenForFinding: () => {},
+  };
+
+  const approveResult = await approveApproval(moti, approvalId, undefined, approveDeps);
+  check("F: מוטי אישר בהצלחה", approveResult.ok === true, JSON.stringify(approveResult));
+
+  const finalSnoozed = approveRecordFindingEventSpy.calls.find((c2) => c2[1] === "snoozed");
+  check("F: נרשם snoozed סופי אחרי אישור מוטי", !!finalSnoozed);
+  check(
+    "F: ה-snoozed הסופי (אחרי אישור מוטי) נושא scopeChange=true — הבקשה המקורית הייתה scope change",
+    finalSnoozed ? finalSnoozed[2].scopeChange === true : false,
+    JSON.stringify(finalSnoozed?.[2]),
+  );
+
+  db.exec(`DELETE FROM manager_approvals WHERE item_id = '${ITEM}'`);
+  db.exec(`DELETE FROM finding_events WHERE finding_key LIKE '%${ITEM}%'`);
+}
+
+logger.info("── 7ז. G: דחייה רגילה (לא scope change) ממשיכה לעבוד כרגיל, scopeChange=false ──");
+{
+  const recordFindingEventSpy = makeSpy<[string, string, Record<string, unknown>]>();
+  const deps: ReplyDeferDeps = {
+    setTaskDueDate: async () => {}, updateTask: async () => undefined as never, addTaskNote: async () => {},
+    recordFindingEvent: (...a: unknown[]) => recordFindingEventSpy.fn(...(a as [string, string, Record<string, unknown>])),
+    addNotification: () => 1, markNudgesSeenForFinding: () => {}, createApproval: makeCreateApprovalMock().fn,
+  };
+  const newDate = now.plus({ days: 2 }).toISODate()!;
+  // scopeChange לא מועבר בכלל (כמו כל קריאה "ישנה") — חייב להמשיך לעבוד עם ברירת המחדל false.
+  const r = await replyDefer(dov, baseCtx("__rd_scope_g__", overdue2d), newDate, "עוד קצת עבודה רגילה", null, deps);
+
+  check("G: דחייה רגילה עדיין מבוצעת (executed) בלי scopeChange", r.status === "executed", r.status);
+  const snoozedCall = recordFindingEventSpy.calls.find((c2) => c2[1] === "snoozed");
+  check(
+    "G: ה-payload של snoozed נושא scopeChange=false (ברירת מחדל) — לא מסומן כ-scope change בטעות",
+    snoozedCall ? snoozedCall[2].scopeChange === false : false,
+    JSON.stringify(snoozedCall?.[2]),
   );
 }
 

@@ -153,22 +153,29 @@ export interface DeferralRequestInput {
    * הוא היום עצמו (date-only math לא הופך אותו ל-wasOverdue). ר' followups.ts/loopReply.ts.
    */
   missedCommitment?: boolean;
+  /**
+   * scope change (audit 2026-09-18/19): metadata לתיעוד/audit בלבד — **לא** משתתף בשום החלטה
+   * כאן (בדיוק כמו reasonText). מגיע מ-chat.ts (המודל זיהה שהסיבה היא שינוי היקף), לא מנוחש כאן.
+   * כלל 8 עדיין לא צריך נתיב החלטה נפרד — רק דגל שעובר דרך details/payload לצפייה מאוחרת.
+   */
+  scopeChange?: boolean;
 }
 
 /**
  * כלל 1 ("משימה באיחור לעולם לא מתעלמים ממנה") מתבטא כאן בכך שאין נתיב שמדלג על ההערכה —
  * כל בקשת דחייה, קטנה כגדולה, עוברת את הפונקציה הזו ומקבלת ruleId מתועד.
- * כלל 8 (שינוי היקף) לא צריך נתיב נפרד: הסבר על שינוי היקף הוא "סיבה" לכל דבר — נכנס כ-reasonText/reasonJudgedPlausible.
+ * כלל 8 (שינוי היקף) לא משנה שום ענף כאן: scopeChange (כמו reasonText) הוא metadata שמועבר
+ * ל-details בלבד — אותם כללי אישור בדיוק (2 דחיות לפני יעד, ספי ימים אחרי איחור וכו') חלים גם עליו.
  */
 export function evaluateDeferralRequest(input: DeferralRequestInput): PolicyDecision {
-  const { ctx, now, currentDueDate, requestedNewDueDate, history, reasonText, reasonJudgedPlausible, missedCommitment } = input;
+  const { ctx, now, currentDueDate, requestedNewDueDate, history, reasonText, reasonJudgedPlausible, missedCommitment, scopeChange } = input;
   const today = now.toISODate()!;
   const wasOverdue = !!currentDueDate && daysBetweenDates(currentDueDate, today) > 0;
   const daysAhead = daysBetweenDates(today, requestedNewDueDate);
   // מחושב פעם אחת, מוצג תמיד ב-details — "מספר הדחיות הקודמות" חייב להופיע בכל payload לאישור מוטי.
   const priorDeferrals = countDeferrals(history);
 
-  const details = { currentDueDate, requestedNewDueDate, daysAhead, wasOverdue, reasonText, reasonJudgedPlausible, priorDeferrals, missedCommitment: !!missedCommitment };
+  const details = { currentDueDate, requestedNewDueDate, daysAhead, wasOverdue, reasonText, reasonJudgedPlausible, priorDeferrals, missedCommitment: !!missedCommitment, scopeChange: !!scopeChange };
 
   // Rule 4 (EOD Engine, 2026-09-16): התחייבות "אסיים היום" שהוחמצה דורשת אישור מוטי תמיד —
   // גם אם date-only math לא רואה את זה כ-overdue (currentDueDate=היום). לפני wasOverdue בכוונה:

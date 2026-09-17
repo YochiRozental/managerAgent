@@ -27,7 +27,8 @@ import {
 import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
-import { addUpdateToItem, reassignItem, updateTask } from "./actions.js";
+import { addUpdateToItem, createLeadAction, createTaskAction, reassignItem, updateTask } from "./actions.js";
+import { LEAD_PRODUCT_OPTIONS, LEAD_SOURCE_OPTIONS } from "../integrations/monday/leads.js";
 import { getApproval } from "../db/repositories/managerApprovals.js";
 import { replyToApprovalInstruction } from "./approvalActions.js";
 import {
@@ -49,6 +50,18 @@ import { getOfficeState } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
 
 const MAX_TURNS = 7;
+
+/**
+ * תנאי חשיפת create_task/create_lead בחלונית — פונקציות בשם משלהן (לא inline) כדי שבדיקות
+ * (test-task-creation.ts) יוכלו לאמת "הכלי נחשף כשיש הרשאה" בלי להריץ את כל runOpsChat
+ * (שדורש Monday+AI חיים). נקראות גם בבניית ה-system prompt וגם בגייטינג של תוספת הכלי בפועל.
+ */
+export function canCreateTask(user: IdentifiedUser): boolean {
+  return userCan(user, "task:create") || userCan(user, "task:manage");
+}
+export function canCreateLead(user: IdentifiedUser): boolean {
+  return userCan(user, "lead:manage");
+}
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -127,6 +140,16 @@ function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
     ...(userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")
       ? [
           "• 'תעביר את האחריות על X ל...' / 'תשייך את הליד/הפרויקט/המשימה ל...' — זהה את הפריט, קח itemId, וקרא reassign_item. אשר בקצרה למי הועבר. אם השם לא חד-משמעי — שאל לפני.",
+        ]
+      : []),
+    ...(canCreateTask(user)
+      ? [
+          "• 'תפתח משימה...' / 'תוסיף משימה...' / 'תיצור משימה...' — קרא create_task. יש לך כלי יצירה אמיתי — לעולם אל תגיד שאין לך אפשרות ליצור משימה. אם ציינו פרויקט — המשימה תיווצר בשלב הנכון אוטומטית; אל תשאל על שלב מיוזמתך, רק אם הכלי מחזיר שגיאה שיש כמה שלבים אפשריים. אם ציינו למי ('לדוב', 'לרוחמה') — העבר את זה כ-assignee; בלי זה המשימה תיפתח על שם המשתמש עצמו. אם הכלי מחזיר שגיאה (פרויקט/שלב/עובד לא נמצא או עמום) — הצג את האפשרויות ושאל, אל תנחש.",
+        ]
+      : []),
+    ...(canCreateLead(user)
+      ? [
+          "• 'תפתח ליד...' / 'יש לי ליד חדש...' — קרא create_lead. source/product רק אם המשתמש ציין משהו שמתאים בבירור לאפשרויות הקיימות; אחרת השמט אותם ואל תנחש ואל תשאל שאלות מיותרות על פרטים לא חיוניים.",
         ]
       : []),
     "",
@@ -672,6 +695,80 @@ export async function runOpsChat(
       run: async (input) => {
         const r = await reassignItem(user, String(input.itemId), String(input.person));
         actions.push(`👤 ${r.message}`);
+        return r;
+      },
+    });
+  }
+
+  // ---- יצירת משימה חדשה — למי שיש הרשאת יצירה (task:create לעצמי, task:manage גם לאחרים) ----
+  if (canCreateTask(user)) {
+    tools.push({
+      name: "create_task",
+      description:
+        "פותח משימה חדשה ב-Monday, במקום הנכון במבנה פרויקט→שלב→משימה. אם ניתן שם פרויקט — נוצרת כתת-פריט בשלב הפעיל של אותו פרויקט (נבחר אוטומטית, אל תנחש/תשאל שלב אלא אם הכלי אומר שיש כמה אפשרויות). בלי פרויקט — נוצרת כמשימת משרד כללית. בלי assignee — מוקצית למשתמש עצמו.",
+      input_schema: {
+        type: "object",
+        properties: {
+          taskName: { type: "string", description: "שם/תיאור המשימה" },
+          project: { type: "string", description: "שם הפרויקט, אם המשימה שייכת לפרויקט. השמט למשימת משרד כללית." },
+          stage: {
+            type: "string",
+            description: "שם/מספר השלב בפרויקט — רק אם העובד ציין שלב במפורש בהודעה. אחרת השמט; הסוכן יבחר את השלב הפעיל אוטומטית.",
+          },
+          assignee: { type: "string", description: "שם העובד/ת שיבצע/תבצע את המשימה. השמט כדי להקצות למשתמש עצמו." },
+          dueDate: { type: "string", description: "תאריך יעד בפורמט YYYY-MM-DD, אם ניתן תאריך." },
+          priority: { type: "string", description: "תעדוף — רק אם העובד ציין במפורש (למשל 'קריטי', 'דחוף'). אחרת השמט." },
+        },
+        required: ["taskName"],
+      },
+      run: async (input) => {
+        const r = await createTaskAction(user, {
+          taskName: String(input.taskName ?? ""),
+          project: input.project ? String(input.project) : undefined,
+          stage: input.stage ? String(input.stage) : undefined,
+          assignee: input.assignee ? String(input.assignee) : undefined,
+          dueDate: input.dueDate ? String(input.dueDate) : undefined,
+          priority: input.priority ? String(input.priority) : undefined,
+        });
+        actions.push(`🆕 ${r.message}`);
+        await refresh();
+        return r;
+      },
+    });
+  }
+
+  // ---- יצירת ליד חדש — רק למי שיש lead:manage ----
+  if (canCreateLead(user)) {
+    tools.push({
+      name: "create_lead",
+      description:
+        "פותח ליד חדש (לקוח פוטנציאלי) בלוח הלידים. לבקשות כמו 'תפתח ליד...', 'יש לי ליד חדש...'. source/product חייבים להתאים בדיוק לאפשרויות הקיימות (enum) — אם לא ברור מה המשתמש התכוון, השמט את השדה במקום לנחש.",
+      input_schema: {
+        type: "object",
+        properties: {
+          firstName: { type: "string", description: "שם פרטי" },
+          lastName: { type: "string", description: "שם משפחה" },
+          phone: { type: "string", description: "מספר טלפון/נייד" },
+          email: { type: "string", description: "כתובת מייל" },
+          source: { type: "string", enum: [...LEAD_SOURCE_OPTIONS], description: "מקור הגעת הליד" },
+          product: { type: "string", enum: [...LEAD_PRODUCT_OPTIONS], description: "תחום העניין / סוג השירות" },
+          referredBy: { type: "string", description: "שם הממליץ/מפנה הליד, אם רלוונטי" },
+          assignee: { type: "string", description: "מי אחראי/ת על הליד. השמט כדי לשייך למשתמש עצמו." },
+        },
+        required: ["firstName"],
+      },
+      run: async (input) => {
+        const r = await createLeadAction(user, {
+          firstName: String(input.firstName ?? ""),
+          lastName: input.lastName ? String(input.lastName) : undefined,
+          phone: input.phone ? String(input.phone) : undefined,
+          email: input.email ? String(input.email) : undefined,
+          source: input.source ? String(input.source) : undefined,
+          product: input.product ? String(input.product) : undefined,
+          referredBy: input.referredBy ? String(input.referredBy) : undefined,
+          assignee: input.assignee ? String(input.assignee) : undefined,
+        });
+        actions.push(`🆕 ${r.message}`);
         return r;
       },
     });

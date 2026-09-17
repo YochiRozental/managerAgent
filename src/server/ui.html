@@ -481,7 +481,7 @@ async function renderHistory() {
 $("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory(); };
 $("#histClose").onclick = () => { $("#history").hidden = true; };
 
-const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך" };
+const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה" };
 // kinds שיכולים לשאת itemId+itemSource+findingKey אמיתיים (לא מומצא) — הכפתור עצמו מותנה בבדיקה
 // נוספת בזמן רינדור (n.itemId && n.itemSource && n.findingKey), כי גם בתוך kind actionable ייתכנו
 // שורות ישנות/חלקיות (למשל escalation שנוצרה לפני 2026-09-15, לפני שה-backend צירף context — ר'

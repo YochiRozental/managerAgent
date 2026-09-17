@@ -1,3 +1,15 @@
+/**
+ * כלי ה-AI לסוכן WhatsApp (orchestrator.ts). הכלים הקיימים כאן (assign_monday_task,
+ * update_monday_task_status, set_monday_task_due_date, delete_monday_task) גייטד לפי
+ * requiredPermission="task:manage" בלבד — בלי project scope (החלטת יוכי 2026-09-24: מנהל
+ * פרויקט מורשה לנהל רק את הפרויקטים שהוא בעצמו רשום עליהם ב-"אחראי/ת").
+ *
+ * זה תקין *כרגע* בפועל כי WhatsApp פתוח רק למוטי/owner (CLAUDE.md §3) — owner עוקף scope
+ * ממילא. **ברגע ש-WhatsApp ייפתח למנהלי פרויקטים (דוב/איתן) — האכיפה הזו חובה כאן גם**, באותה
+ * צורה שכבר יושמה בחלונית (src/ops/actions.ts: assertManagesItemProject/managesProject, מעל
+ * resolveItemProjectScope/getProjectOwnerIds ב-src/integrations/monday/opsRead.ts). אל תניחו
+ * ש-task:manage מספיק בלי לבדוק שוב את הפער הזה קודם.
+ */
 import type Anthropic from "@anthropic-ai/sdk";
 import type { IdentifiedUser, Permission } from "../../identity/index.js";
 import {

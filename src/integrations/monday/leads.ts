@@ -43,6 +43,8 @@ export interface CreateLeadInput {
   source?: (typeof LEAD_SOURCE_OPTIONS)[number];
   product?: (typeof LEAD_PRODUCT_OPTIONS)[number];
   referredBy?: string;
+  /** מזהה משתמש Monday שיוגדר כאחראי/ת (multiple_person__1). בלי זה — ליד נוצר בלי אחראי. */
+  assigneeId?: string;
 }
 
 export async function createLead(input: CreateLeadInput) {
@@ -55,6 +57,9 @@ export async function createLead(input: CreateLeadInput) {
   if (input.source) columnValues.color1__1 = { label: input.source };
   if (input.product) columnValues.color5__1 = { label: input.product };
   if (input.referredBy) columnValues.text2__1 = input.referredBy;
+  if (input.assigneeId) {
+    columnValues.multiple_person__1 = { personsAndTeams: [{ id: Number(input.assigneeId), kind: "person" }] };
+  }
 
   const itemName = [input.firstName, input.lastName].filter(Boolean).join(" ");
 

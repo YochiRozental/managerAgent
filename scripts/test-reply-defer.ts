@@ -101,7 +101,7 @@ logger.info("── 1. executed ──");
 {
   const callOrder: string[] = [];
   const setTaskDueDateSpy = makeSpy<[string, string, string]>();
-  const updateTaskSpy = makeSpy<[unknown, unknown]>();
+  const updateTaskSpy = makeSpy<[unknown, unknown, unknown?]>();
   const addTaskNoteSpy = makeSpy<[string, string]>();
   const recordFindingEventSpy = makeSpy<[string, string, unknown]>();
   const addNotificationSpy = makeSpy<[string, string, string, string?, unknown?]>();

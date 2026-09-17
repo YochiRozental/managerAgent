@@ -160,6 +160,15 @@ CREATE INDEX IF NOT EXISTS idx_control_followups_item ON control_followups (item
 
 -- ריצות של עבודות מתוזמנות (הסבב היומי, הדוח השבועי, הגיבוי). מאפשר catch-up אחרי ריסטרט
 -- ("האם הסבב של היום כבר רץ?") ומזין את /health בזמן/הצלחת הריצה האחרונה.
+-- Idempotency ליצירת פריטים מהחלונית (create_task/create_lead, שלב הבקשה של יוכי 2026-09-17):
+-- מונע כפילות אם אותו tool call רץ פעמיים (timeout + retry, fallback FAST→SMART וכו').
+-- idempotency_key דטרמיניסטי מהקלט המנורמל — ר' src/ops/actions.ts.
+CREATE TABLE IF NOT EXISTS idempotent_creations (
+  idempotency_key TEXT PRIMARY KEY,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS job_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job TEXT NOT NULL,               -- daily_cycle | weekly_report | db_backup

@@ -22,6 +22,7 @@ import { fetchSigningsSince } from "../integrations/monday/crmRead.js";
 import { logger } from "../utils/logger.js";
 import { runControlScan } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
+import { visibleForReports } from "./escalation.js";
 import { getOfficeState } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
 
@@ -59,7 +60,10 @@ export async function buildWeeklyReport(): Promise<WeeklyReport> {
 
   const opened = findingsOpenedSince(weekAgoIso);
   const resolved = findingsResolvedSince(weekAgoIso);
-  const chronic = chronicFindings(weekAgoIso);
+  // visibleForReports (audit 2026-09-17): ממצא ותיק ש-snoozed פעיל / resolved_by_reply לא מוצג
+  // כ"בעיה פתוחה כרונית" — opened/resolved למעלה נשארים ספירות היסטוריות גולמיות, לא רשימת "מה
+  // עדיין פתוח עכשיו", ולכן לא עוברים דרך הפילטר הזה.
+  const chronic = visibleForReports(chronicFindings(weekAgoIso), now);
 
   const s: string[] = [`📊 דוח שבועי — ${weekAgo.toFormat("dd/MM")} עד ${now.toFormat("dd/MM/yyyy")}`, ""];
 

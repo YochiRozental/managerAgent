@@ -122,6 +122,20 @@ export function escalationDecision(
   return { skip: false, target, stale };
 }
 
+/**
+ * מסנן ממצאים ל"מה שמוצג בדוחות למוטי" (תדריך בוקר / סיכום סוף יום / chronic בדוח השבועי) —
+ * לא כפילות של לוגיקת snooze/resolved_by_reply, רק שימוש ב-escalationDecision הקיים (audit
+ * 2026-09-17: שלושת הדוחות בנו את הרשימה שלהם ישירות מ-listActiveFindings()/chronicFindings()
+ * בלי לעבור דרך escalationDecision בכלל — ממצא ש-snoozed/resolved_by_reply עדיין הופיע כחריג).
+ *
+ * "snoozed פעיל" ו-"resolved_by_reply" מוחרגים כי escalationDecision.skip כבר מכסה את שניהם —
+ * ברגע שה-snooze עובר (או שהממצא לא סומן resolved_by_reply), skip הופך ל-false אוטומטית,
+ * בלי צורך בשום פעולה נוספת. לא נוגע ב-Policy/Follow-up/Control Engine — קריאה בלבד.
+ */
+export function visibleForReports(findings: readonly StoredFinding[], now: DateTime): StoredFinding[] {
+  return findings.filter((f) => !escalationDecision(f, now).skip);
+}
+
 const SEV_ICON: Record<Severity, string> = { critical: "🔴", high: "🟠", normal: "⚪" };
 
 interface BriefingInput {
@@ -418,7 +432,9 @@ export async function runDailyControlCycle(): Promise<CycleResult> {
   }
 
   // 4. תדריך בוקר למוטי — מקוטע לפי מה שדורש תשומת לב ניהולית, כל יום
-  const managerFindings = listActiveFindings()
+  // visibleForReports (audit 2026-09-17): לא מציג ממצא ש-snoozed פעיל / resolved_by_reply —
+  // הבקרה כבר "הסכימה לשתוק" עליו, אין טעם להטריד את מוטי בו כחריג.
+  const managerFindings = visibleForReports(listActiveFindings(), now)
     .filter((f) => f.severity !== "normal")
     .sort((a, b) => (a.severity === "critical" ? -1 : 0) - (b.severity === "critical" ? -1 : 0));
 

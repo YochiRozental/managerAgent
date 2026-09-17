@@ -19,6 +19,7 @@ import {
 } from "../integrations/monday/opsActivity.js";
 import { listActiveFindings, type StoredFinding } from "../db/repositories/controlFindings.js";
 import { deferralEventsSince } from "../db/repositories/findingEvents.js";
+import { visibleForReports } from "./escalation.js";
 import { addNotification, notificationsByKindSince, supersedeKind, type Notification } from "../db/repositories/notifications.js";
 import { listApprovalsForManager, type StoredApproval } from "../db/repositories/managerApprovals.js";
 import { resolveUserByKey, resolveUsersByAssigneeText } from "../identity/index.js";
@@ -82,6 +83,24 @@ export function groupInProgressByPerson(office: OfficeState): Map<string, string
 
 function cap(arr: string[], n: number = SECTION_CAP): string[] {
   return arr.length > n ? [...arr.slice(0, n), `…ועוד ${arr.length - n}`] : arr;
+}
+
+/**
+ * "⚠️ דורש תשומת לב" — ממצאים פעילים, לא כפילות למה שכבר מוצג ב"⏰ דחיות והתחייבויות"
+ * (usedFindingKeys), ולא ממצא ש-visibleForReports כבר סינן (snoozed פעיל / resolved_by_reply —
+ * audit 2026-09-17). מופרד לפונקציה משלה (אותו טעם כמו groupInProgressByPerson למעלה) כדי
+ * שאפשר לבדוק אותה ישירות עם fixture, בלי תלות בכמות הממצאים האמיתיים ב-DB (ה-cap על תצוגה
+ * לא אמור להשפיע על נכונות הסינון עצמו).
+ */
+export function buildFindingExceptionLines(
+  allFindings: readonly StoredFinding[],
+  usedFindingKeys: ReadonlySet<string>,
+  now: DateTime,
+): string[] {
+  const openFindings = visibleForReports(allFindings, now)
+    .filter((f) => f.severity !== "normal" && !usedFindingKeys.has(f.findingKey))
+    .sort((a, b) => (a.severity === "critical" ? -1 : 0) - (b.severity === "critical" ? -1 : 0));
+  return openFindings.map((f) => `${f.headline} — ${f.who}`);
 }
 
 interface AwaitingDecisionContext {
@@ -185,11 +204,7 @@ export async function buildEndOfDaySummary(deps: EodSummaryDeps = {}): Promise<E
   }
 
   // ---- ⚠️ דורש תשומת לב — לא כפילות למה שכבר הוצג למעלה (usedFindingKeys) ----
-  const exceptionLines: string[] = [];
-  const openFindings: StoredFinding[] = listActiveFindings()
-    .filter((f) => f.severity !== "normal" && !usedFindingKeys.has(f.findingKey))
-    .sort((a, b) => (a.severity === "critical" ? -1 : 0) - (b.severity === "critical" ? -1 : 0));
-  for (const f of openFindings) exceptionLines.push(`${f.headline} — ${f.who}`);
+  const exceptionLines: string[] = buildFindingExceptionLines(listActiveFindings(), usedFindingKeys, now);
 
   for (const n of awaitingToday.filter((x) => !isMissedCommitment(x) && !(x.findingKey && usedFindingKeys.has(x.findingKey)))) {
     const ctx = n.context as AwaitingDecisionContext | null;

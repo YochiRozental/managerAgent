@@ -22,7 +22,12 @@ import {
   type VerifiedGeneralItem,
   type VerifiedStageItem,
 } from "../src/integrations/monday/opsActivity.js";
-import { buildEndOfDaySummary, groupInProgressByPerson, renderEodSummaryText } from "../src/ops/eodSummary.js";
+import {
+  buildEndOfDaySummary,
+  buildFindingExceptionLines,
+  groupInProgressByPerson,
+  renderEodSummaryText,
+} from "../src/ops/eodSummary.js";
 import type { OfficeState } from "../src/ops/officeState.js";
 import type { DashboardTask } from "../src/ops/dashboard.js";
 import { logger } from "../src/utils/logger.js";
@@ -397,6 +402,69 @@ logger.info("── K + L + M. buildEndOfDaySummary עם DB מקומי אמית�
 
   // דוגמה מלאה — לצירוף לדוח הסיום (item 3 בבקשת המשתמש)
   logger.info(`\n--- דוגמת EOD Summary מלאה (מ-test K/L/M) ---\n${result.text}\n--- סוף הדוגמה ---`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E, F — visibleForReports מחובר ל-EOD summary: snoozed פעיל לא מוצג, וחוזר אחרי שה-snooze פג.
+//
+// נבדק ישירות על buildFindingExceptionLines (הפונקציה המדויקת שבונה את סעיף "⚠️" בתוך
+// buildEndOfDaySummary) עם fixture מבודד — לא דרך הפלט המלא/המקוצץ (cap=8), כי ה-DB המקומי
+// המשותף כבר מכיל עשרות ממצאים אמיתיים בחומרה גבוהה שהיו דוחקים את פריט הבדיקה מחוץ לתצוגה
+// המקוצצת בלי שום קשר לתקינות הסינון עצמו. K/L/M וה-fixture הסוגר למטה כבר מוכיחים שהנתיב המלא
+// (buildEndOfDaySummary → buildFindingExceptionLines) מחובר נכון.
+// ─────────────────────────────────────────────────────────────────────────────
+logger.info("── E. finding עם snooze פעיל → buildFindingExceptionLines מסנן אותו ──");
+{
+  const now = DateTime.now().setZone(env.TIMEZONE);
+  const itemId = "__eodsum_snoozed_active__";
+  const findingKey = `overdue:${itemId}`;
+  const created = upsertFinding({
+    findingKey,
+    kind: "overdue_stale",
+    severity: "high",
+    who: "דוב שפירא",
+    headline: "באיחור 4 ימים: תוכנית מים",
+    detail: "בדיקה",
+    itemId,
+    itemSource: "general",
+    now: now.toISO()!,
+  });
+  db.prepare(`INSERT INTO finding_events (finding_key, event, payload_json) VALUES (?, 'snoozed', ?)`).run(
+    findingKey,
+    JSON.stringify({ byUser: "dov", snoozeUntil: now.plus({ days: 3 }).toISODate() }), // snooze עתידי — עדיין בתוקף
+  );
+
+  const lines = buildFindingExceptionLines([created], new Set(), now);
+  check("E: ממצא עם snooze פעיל לא מופיע ב-'⚠️ דורש תשומת לב'", lines.length === 0, JSON.stringify(lines));
+}
+
+logger.info("── F. אותו finding אחרי שה-snooze פג → buildFindingExceptionLines מציג אותו, בלי פעולה ידנית ──");
+{
+  const now = DateTime.now().setZone(env.TIMEZONE);
+  const itemId = "__eodsum_snoozed_expired__";
+  const findingKey = `overdue:${itemId}`;
+  const created = upsertFinding({
+    findingKey,
+    kind: "overdue_stale",
+    severity: "high",
+    who: "דוב שפירא",
+    headline: "באיחור 6 ימים: תוכנית מים",
+    detail: "בדיקה",
+    itemId,
+    itemSource: "general",
+    now: now.toISO()!,
+  });
+  db.prepare(`INSERT INTO finding_events (finding_key, event, payload_json) VALUES (?, 'snoozed', ?)`).run(
+    findingKey,
+    JSON.stringify({ byUser: "dov", snoozeUntil: now.minus({ days: 2 }).toISODate() }), // snooze כבר פג
+  );
+
+  const lines = buildFindingExceptionLines([created], new Set(), now);
+  check(
+    "F: אחרי שה-snoozeUntil עבר — הממצא חוזר להופיע ב-'⚠️ דורש תשומת לב', בלי שום פעולה ידנית",
+    lines.length === 1 && lines[0]!.includes("תוכנית מים"),
+    JSON.stringify(lines),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

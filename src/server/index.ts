@@ -43,6 +43,7 @@ import type { LoopContext } from "../ops/loopReply.js";
 import { getControlScan } from "../ops/controlScan.js";
 import { runCrmScan } from "../ops/crmScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
+import { buildEndOfDaySummary } from "../ops/eodSummary.js";
 import { runDailyControlCycle } from "../ops/escalation.js";
 import { getHealth, noteIncident } from "../ops/health.js";
 import { getOversightReport } from "../ops/oversight.js";
@@ -325,6 +326,14 @@ const server = createServer(async (req, res) => {
         return send(res, 403, { error: "למוטי בלבד" });
       }
       return send(res, 200, await buildWeeklyReport());
+    }
+
+    if (req.method === "POST" && path === "/api/eod/run") {
+      const user = currentUser(req);
+      if (!user || !user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "למוטי בלבד" });
+      }
+      return send(res, 200, await buildEndOfDaySummary());
     }
 
     if (req.method === "GET" && path === "/api/commitments") {

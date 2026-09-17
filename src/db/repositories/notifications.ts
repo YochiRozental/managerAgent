@@ -77,6 +77,12 @@ const existsUnseenStmt = db.prepare(
 const hasUnseenForKindStmt = db.prepare(
   `SELECT 1 FROM notifications WHERE user_key = ? AND finding_key = ? AND kind = ? AND seen_at IS NULL LIMIT 1`,
 );
+// לסיכום סוף היום (eodSummary.ts): כל ה-notifications מסוג נתון שנוצרו מ-sinceIso ואילך, לא רק
+// לא-נראות — created_at הוא datetime('now') של SQLite (UTC, "YYYY-MM-DD HH:MM:SS"), אז sinceIso
+// חייב להיות מפורמט באותה צורה (לא ISO עם offset) — ראה sqlUtcCutoff ב-eodSummary.ts.
+const byKindSinceStmt = db.prepare(
+  `SELECT * FROM notifications WHERE user_key = ? AND kind = ? AND created_at >= ? ORDER BY id ASC`,
+);
 
 export interface NotificationContext {
   itemId?: string;
@@ -115,6 +121,11 @@ export function listUnseenNotifications(userKey: string): Notification[] {
 /** ר' hasUnseenForKindStmt למעלה — idempotency guard מפורש, לא רק הדה-דופ הפנימי של addNotification. */
 export function hasUnseenNotificationForKind(userKey: string, findingKey: string, kind: string): boolean {
   return hasUnseenForKindStmt.get(userKey, findingKey, kind) !== undefined;
+}
+
+/** ר' byKindSinceStmt למעלה — sinceIso בפורמט SQL UTC ("YYYY-MM-DD HH:MM:SS"), לא ISO עם offset. */
+export function notificationsByKindSince(userKey: string, kind: string, sinceIso: string): Notification[] {
+  return (byKindSinceStmt.all(userKey, kind, sinceIso) as unknown as Row[]).map(fromRow);
 }
 
 export function markNotificationsSeen(userKey: string): void {

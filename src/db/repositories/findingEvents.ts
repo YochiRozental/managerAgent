@@ -123,3 +123,63 @@ export function lastResponseAt(findingKey: string): string | null {
   const r = lastResponseStmt.get(findingKey) as unknown as Row | undefined;
   return r?.created_at ?? null;
 }
+
+// ---- לסיכום סוף היום (eodSummary.ts) ----
+
+export interface DeferralSinceRecord {
+  createdAt: string;
+  findingKey: string;
+  itemId: string | null;
+  itemSource: string | null;
+  headline: string;
+  who: string;
+  project: string | null;
+  byUserKey: string | null;
+  snoozeUntil: string | null;
+  note: string | null;
+  scopeChange: boolean;
+}
+
+interface DeferralSinceRow {
+  created_at: string;
+  finding_key: string;
+  payload_json: string | null;
+  item_id: string | null;
+  item_source: string | null;
+  headline: string;
+  who: string;
+  project: string | null;
+}
+
+// JOIN עם control_findings (אותו pattern כמו deferralHistory.ts) — finding_events בלבד לא נושא
+// שם משימה/פרויקט קריא. sinceIso בפורמט SQL UTC ("YYYY-MM-DD HH:MM:SS") — created_at הוא
+// datetime('now'), לא ISO עם offset (בניגוד ל-control_findings.first_seen/resolved_at).
+const deferralsSinceStmt = db.prepare(`
+  SELECT fe.created_at AS created_at, fe.finding_key AS finding_key, fe.payload_json AS payload_json,
+         cf.item_id AS item_id, cf.item_source AS item_source, cf.headline AS headline, cf.who AS who, cf.project AS project
+  FROM finding_events fe
+  JOIN control_findings cf ON cf.finding_key = fe.finding_key
+  WHERE fe.event = 'snoozed' AND fe.created_at >= ?
+  ORDER BY fe.id ASC
+`);
+
+/** כל בקשות הדחייה (snoozed) שנרשמו מ-sinceIso ואילך, עם context קריא (שם/משימה/פרויקט) לסיכום סוף יום. */
+export function deferralEventsSince(sinceIso: string): DeferralSinceRecord[] {
+  const rows = deferralsSinceStmt.all(sinceIso) as unknown as DeferralSinceRow[];
+  return rows.map((r) => {
+    const payload = r.payload_json ? (JSON.parse(r.payload_json) as FindingEventPayload) : {};
+    return {
+      createdAt: r.created_at,
+      findingKey: r.finding_key,
+      itemId: r.item_id,
+      itemSource: r.item_source,
+      headline: r.headline,
+      who: r.who,
+      project: r.project,
+      byUserKey: payload.byUser ?? null,
+      snoozeUntil: payload.snoozeUntil ?? null,
+      note: payload.note ?? null,
+      scopeChange: !!payload.scopeChange,
+    };
+  });
+}

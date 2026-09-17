@@ -1,8 +1,9 @@
 /**
  * מתזמן את הסבבים היזומים של מנוע הבקרה — רץ בתוך שרת החלונית (התהליך שתמיד למעלה תחת PM2/Docker).
- *   • גיבוי DB  — BACKUP_HOUR (ברירת מחדל 6:00), כל יום
- *   • סבב יומי  — CONTROL_SCAN_HOUR (ברירת מחדל 7:00), א׳–ה׳
- *   • דוח שבועי — WEEKLY_REPORT_HOUR (ברירת מחדל 8:00), יום א׳
+ *   • גיבוי DB      — BACKUP_HOUR (ברירת מחדל 6:00), כל יום
+ *   • סבב יומי      — CONTROL_SCAN_HOUR (ברירת מחדל 7:00), א׳–ה׳
+ *   • סיכום סוף יום — EOD_SUMMARY_HOUR (ברירת מחדל 18:00), א׳–ה׳ (eodSummary.ts)
+ *   • דוח שבועי     — WEEKLY_REPORT_HOUR (ברירת מחדל 8:00), יום א׳
  *   • Follow-up Engine — כל FOLLOWUP_SCHEDULE_CONFIG.intervalMinutes דקות, בתוך חלון העבודה בלבד
  *     (ראה למטה) — שונה מהותית מהעבודות למעלה (unce-a-day בשעה קבועה), ולכן לא באותו מנגנון JOBS.
  *
@@ -21,12 +22,14 @@ import {
 } from "../db/repositories/systemHealth.js";
 import { logger } from "../utils/logger.js";
 import { runDbBackup } from "./backup.js";
+import { buildEndOfDaySummary } from "./eodSummary.js";
 import { runDailyControlCycle } from "./escalation.js";
 import { runDueFollowups, type FollowupRunnerDeps, type FollowupRunResult } from "./followups.js";
 import { buildWeeklyReport } from "./weeklyReport.js";
 
 const BACKUP_HOUR = Number(process.env.BACKUP_HOUR ?? 6);
 const DAILY_HOUR = Number(process.env.CONTROL_SCAN_HOUR ?? 7);
+const EOD_SUMMARY_HOUR = Number(process.env.EOD_SUMMARY_HOUR ?? 18);
 const WEEKLY_HOUR = Number(process.env.WEEKLY_REPORT_HOUR ?? 8);
 
 const isWorkday = (weekday: number): boolean => weekday !== 5 && weekday !== 6; // 5=Fri 6=Sat
@@ -43,6 +46,7 @@ interface Job {
 const JOBS: Job[] = [
   { key: "db_backup", label: "גיבוי DB", hour: BACKUP_HOUR, runsOn: () => true, run: async () => runDbBackup() },
   { key: "daily_cycle", label: "סבב יומי", hour: DAILY_HOUR, runsOn: isWorkday, run: runDailyControlCycle },
+  { key: "eod_summary", label: "סיכום סוף יום", hour: EOD_SUMMARY_HOUR, runsOn: isWorkday, run: async () => buildEndOfDaySummary() },
   { key: "weekly_report", label: "דוח שבועי", hour: WEEKLY_HOUR, runsOn: isSunday, run: buildWeeklyReport },
 ];
 

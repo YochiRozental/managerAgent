@@ -35,6 +35,7 @@
     "test:eod-engine": "tsx scripts/test-eod-engine.ts",
     "test:crm": "tsx scripts/test-crm.ts",
     "test:weekly": "tsx scripts/test-weekly.ts",
+    "test:eod-summary": "tsx scripts/test-eod-summary.ts",
     "test:escalation-context": "tsx scripts/test-escalation-context.ts",
     "test:finding-identity": "tsx scripts/test-finding-identity-healing.ts",
     "test:backfill-escalations": "tsx scripts/test-backfill-escalation-identity.ts",

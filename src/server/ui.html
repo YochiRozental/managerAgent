@@ -128,6 +128,7 @@
   #notifBtn.has{color:var(--overdue);font-weight:700}
   .nt{background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:.6rem .8rem;font-size:.9rem;white-space:pre-wrap}
   .nt.briefing{background:var(--accent-soft);border-color:var(--accent)}
+  .nt.eod_summary{background:var(--accent-soft);border-color:var(--accent)}
   .nt.nudge{background:var(--accent-soft);border-color:var(--accent)}
   .nt-head{font-weight:700;font-size:.8rem;margin-bottom:.2rem}
   #notif .dismiss{align-self:flex-start;font:inherit;font-size:.8rem;background:none;border:none;color:var(--accent);cursor:pointer;padding:0}
@@ -480,7 +481,7 @@ async function renderHistory() {
 $("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory(); };
 $("#histClose").onclick = () => { $("#history").hidden = true; };
 
-const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך" };
+const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך" };
 // kinds שיכולים לשאת itemId+itemSource+findingKey אמיתיים (לא מומצא) — הכפתור עצמו מותנה בבדיקה
 // נוספת בזמן רינדור (n.itemId && n.itemSource && n.findingKey), כי גם בתוך kind actionable ייתכנו
 // שורות ישנות/חלקיות (למשל escalation שנוצרה לפני 2026-09-15, לפני שה-backend צירף context — ר'
@@ -538,7 +539,7 @@ async function loadNotifications() {
   btnTop.classList.add("has");
   for (const n of state.nudges) box.appendChild(nudgeCard(n));
   for (const n of list) {
-    const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : ""));
+    const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : n.kind === "eod_summary" ? " eod_summary" : ""));
     d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
     d.appendChild(document.createTextNode(n.body));
     // כפתור "טיפול בשיחה" רק כשיש בפועל itemId+itemSource+findingKey על ההתראה הזו (לא מומצא) —

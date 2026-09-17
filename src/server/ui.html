@@ -290,14 +290,26 @@ function approvalCard(a) {
   const wrap = el("div", "msg bot approval");
   wrap.appendChild(el("span", "nudge-tag", "🔔 נדרש אישור"));
   const p = a.payload || {};
-  wrap.appendChild(document.createTextNode(
-    `${a.requestedByName || a.requestedBy} מבקש/ת לדחות את המשימה "${a.taskName || a.itemId}" מ-${fmtDate(p.oldDueDate)} ל-${fmtDate(p.requestedNewDueDate)}.`,
-  ));
-  if (p.reason) {
-    wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+  const requester = a.requestedByName || a.requestedBy;
+  if (a.kind === "cancellation") {
+    // audit 2026-09-17/20: אותו כרטיס, ניסוח נפרד — payload של ביטול הוא {reason,ruleId} בלבד,
+    // אין oldDueDate/requestedNewDueDate/priorDeferrals (אלה שדות של דחייה בלבד).
+    wrap.appendChild(document.createTextNode(
+      `${requester} מבקש/ת לבטל / לסמן כלא רלוונטית את המשימה "${a.taskName || a.itemId}".`,
+    ));
+    if (p.reason) {
+      wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+    }
+  } else {
+    wrap.appendChild(document.createTextNode(
+      `${requester} מבקש/ת לדחות את המשימה "${a.taskName || a.itemId}" מ-${fmtDate(p.oldDueDate)} ל-${fmtDate(p.requestedNewDueDate)}.`,
+    ));
+    if (p.reason) {
+      wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+    }
+    const priorCount = p.priorDeferrals ? (p.priorDeferrals.beforeOverdue || 0) + (p.priorDeferrals.afterOverdue || 0) : 0;
+    wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`דחיות קודמות: ${priorCount}.`));
   }
-  const priorCount = p.priorDeferrals ? (p.priorDeferrals.beforeOverdue || 0) + (p.priorDeferrals.afterOverdue || 0) : 0;
-  wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`דחיות קודמות: ${priorCount}.`));
 
   // התכתבות קצרה — שאלה/הנחיה של מוטי ותשובת העובד, לפי הסדר. מוטי לא צריך "לחפש את העובד
   // בצ'אט נפרד" — הכל כאן, בתוך הכרטיס.

@@ -7,6 +7,7 @@
 
 import "dotenv/config";
 import { DateTime } from "luxon";
+import { env } from "../src/config/env.js";
 import { db } from "../src/db/db.js";
 import { upsertFinding } from "../src/db/repositories/controlFindings.js";
 import { findingEvents } from "../src/db/repositories/findingEvents.js";
@@ -31,7 +32,11 @@ const check = (label: string, cond: boolean, extra = "") => {
   }
 };
 
-const now = DateTime.fromISO("2026-09-14T10:00:00", { zone: "Asia/Jerusalem" });
+// דינמי בכוונה (audit 2026-09-20, אותו תיקון כמו test-reply-defer.ts): replyDefer מחשב "today"
+// מ-DateTime.now() בפועל (loopReply.ts), לא מקבל now כפרמטר. תאריך קפוא כאן התיישן עם חלוף הימים
+// וגרם לסעיף 9 (replyDefer אמיתי, deps ריק) לבחור ענף "executed" במקום "manager_approval_required"
+// → קריאת Monday אמיתית לא-מזוייפת. ר' git history / שיחה על אותו תיקון ב-test-reply-defer.ts.
+const now = DateTime.now().setZone(env.TIMEZONE);
 const nowIso = now.toISO()!;
 const overdue2d = now.minus({ days: 2 }).toISODate()!;
 const newDate5d = now.plus({ days: 5 }).toISODate()!;

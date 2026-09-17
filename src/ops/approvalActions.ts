@@ -2,8 +2,9 @@
  * הכרעת מוטי על בקשת אישור (Approval) — השלב השני של הלולאה: הצד הראשון (יצירת ה-Approval)
  * הוא ב-loopReply.replyDefer, כש-Policy Engine מחזיר manager_approval_required.
  *
- * גנרי לפי kind (deferral/cancellation/reassignment) דרך KIND_EXECUTORS — ראה למטה. **רק
- * "deferral" רשום בפועל כרגע**, כפי שהתבקש. kind אחר → unsupported_kind בלי לגעת בכלום.
+ * גנרי לפי kind (deferral/cancellation/reassignment) דרך KIND_EXECUTORS — ראה למטה. **deferral
+ * ו-cancellation רשומים בפועל (audit 2026-09-17/20)** — reassignment עדיין לא (evaluateReassignmentRequest
+ * קיים ב-policy.ts אבל reassignItem לא עובר דרכו כלל, ר' audit). kind לא-רשום → unsupported_kind בלי לגעת בכלום.
  *
  * idempotency + סדר פעולות (Audit 2026-09-14):
  *   claim (CAS) → executor.applyToMonday (הפעולה הקריטית היחידה שחייבת להצליח, פעם אחת) →
@@ -33,7 +34,7 @@ import {
 import { markNudgesSeenForFinding } from "../db/repositories/notifications.js";
 import { resolveUserByKey, userCan, type IdentifiedUser } from "../identity/index.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
-import { addTaskNote, setTaskDueDate } from "../integrations/monday/opsWrite.js";
+import { addTaskNote, setTaskDueDate, PARKED_LABEL } from "../integrations/monday/opsWrite.js";
 import { updateTask } from "./actions.js";
 import { scheduleCommitmentCheck } from "./followups.js";
 import { publishNotificationLive } from "./notificationBus.js";
@@ -80,6 +81,12 @@ interface DeferralApprovalPayload {
   scopeChange?: boolean;
 }
 
+/** payload של בקשת ביטול/"לא רלוונטי" — בונה אותו evaluateCancellationRequest (policy.ts, כלל 6). */
+interface CancellationApprovalPayload {
+  reason: string | null;
+  ruleId: string;
+}
+
 function pretty(dateISO: string): string {
   return DateTime.fromISO(dateISO, { zone: env.TIMEZONE }).toFormat("dd/MM");
 }
@@ -110,6 +117,9 @@ interface KindExecutor {
   recordApproved(approval: StoredApproval, manager: IdentifiedUser, note: string | null, deps: ExecutorDeps): void;
   /** מה להגיד לעובד שביקש, אחרי אישור בפועל. */
   employeeApprovedMessage(approval: StoredApproval): string;
+  /** מה להגיד לעובד שביקש, אחרי דחייה (audit 2026-09-17/20) — kind-specific כמו employeeApprovedMessage,
+   *  כי הטקסט הישן היה קשיח לדחייה (מניח oldDueDate) ולא התאים ל-kind אחר. */
+  employeeRejectedMessage(approval: StoredApproval, note: string | null): string;
 }
 
 const deferralExecutor: KindExecutor = {
@@ -186,10 +196,68 @@ const deferralExecutor: KindExecutor = {
     const payload = approval.payload as unknown as DeferralApprovalPayload;
     return `מוטי אישר לדחות את המשימה עד ${pretty(payload.requestedNewDueDate)}. עדכנתי את Monday ואמשיך לעקוב עד אז.`;
   },
+
+  employeeRejectedMessage(approval, note) {
+    // טקסט מקורי, הועבר כמו-שהוא לכאן (audit 2026-09-17/20) — התנהגות deferral לא השתנתה.
+    const payload = approval.payload as unknown as DeferralApprovalPayload;
+    const oldDue = payload.oldDueDate ? pretty(payload.oldDueDate) : "המקורי";
+    return `מוטי לא אישר את הדחייה שביקשת. התאריך נשאר ${oldDue}.${note ? ` (${note})` : ""}`;
+  },
+};
+
+/**
+ * ביטול/"לא רלוונטי" (audit 2026-09-17/20) — הפעולה הקריטית היא אותה updateTask({action:"state"})
+ * הגנרית שכבר משמשת בכל המערכת (deferralExecutor למעלה, replyBlocked/replyFinishingToday ב-
+ * loopReply.ts) עם PARKED_LABEL (opsWrite.ts) — "לא ממציאים פעולה חדשה", כפי שהתבקש.
+ */
+const cancellationExecutor: KindExecutor = {
+  async applyToMonday(approval, manager, note, deps) {
+    if (!approval.itemId || !approval.itemSource) throw new Error("לבקשת האישור חסר itemId/itemSource.");
+    const label = PARKED_LABEL[approval.itemSource as OpsTaskSource];
+
+    // הקריטי היחיד: שינוי הסטטוס בפועל ל"לא רלוונטי/מושהה". זורק ומחוץ ל-try/catch פנימי.
+    await deps.updateTask(manager, { action: "state", source: approval.itemSource as OpsTaskSource, itemId: approval.itemId, label });
+
+    // נלווה, best-effort — הסטטוס כבר השתנה בפועל, כשלון כאן לא הופך את זה ל"נכשל".
+    try {
+      await deps.addTaskNote(
+        approval.itemId,
+        `⏸️ סומן/ה כ"${label}" — אושר ע"י מוטי${note ? ` — ${note}` : ""} (בקשה מקורית: ${approval.requestedBy})`,
+      );
+    } catch (err) {
+      logger.error({ approvalId: approval.id, err }, "approve(cancellation): addTaskNote נכשל אחרי updateTask — האישור עדיין תקף");
+    }
+  },
+
+  recordApproved(approval, manager, note, deps) {
+    if (!approval.findingKey) return;
+    deps.recordFindingEvent(approval.findingKey, "manager_approval_approved", {
+      byUser: manager.key,
+      note: note ?? undefined,
+      approvalId: approval.id,
+    });
+    // "לא רלוונטי" הוא סגירה, לא snooze — אין תאריך שאחריו חוזרים לבדוק. resolved_by_reply הוא
+    // בדיוק הסמנטיקה הזו (findingEvents.ts: isResolvedByReply — "סיים / לא רלוונטי").
+    deps.recordFindingEvent(approval.findingKey, "resolved_by_reply", {
+      byUser: manager.key,
+      note: note ?? undefined,
+      action: "cancellation_approved",
+    });
+    deps.markNudgesSeenForFinding(approval.requestedBy, approval.findingKey);
+  },
+
+  employeeApprovedMessage(approval) {
+    return `מוטי אישר לסגור את המשימה "${approval.taskName ?? approval.itemId}" כ"לא רלוונטי". עדכנתי את Monday.`;
+  },
+
+  employeeRejectedMessage(approval, note) {
+    return `מוטי לא אישר את הבקשה לסגור את המשימה "${approval.taskName ?? approval.itemId}" כ"לא רלוונטי" — היא נשארת פתוחה.${note ? ` (${note})` : ""}`;
+  },
 };
 
 const KIND_EXECUTORS: Partial<Record<ApprovalKind, KindExecutor>> = {
   deferral: deferralExecutor,
+  cancellation: cancellationExecutor,
 };
 
 /** בדיקות שמשותפות לשלושת הפעולות: הרשאה server-side, שהבקשה מיועדת לאותו מנהל, לא לאשר לעצמך. */
@@ -296,7 +364,6 @@ export async function rejectApproval(
     return { ok: false, code: "already_decided", message: "הבקשה הזו כבר הוכרעה.", approval: getApproval(approvalId)! };
   }
 
-  const payload = approval.payload as unknown as DeferralApprovalPayload;
   try {
     if (approval.findingKey) {
       doRecordFindingEvent(approval.findingKey, "manager_approval_rejected", {
@@ -310,12 +377,16 @@ export async function rejectApproval(
   }
 
   try {
-    const oldDue = payload.oldDueDate ? pretty(payload.oldDueDate) : "המקורי";
-    const body = `מוטי לא אישר את הדחייה שביקשת. התאריך נשאר ${oldDue}.${note ? ` (${note})` : ""}`;
+    // kind-specific (audit 2026-09-17/20) — קודם היה קשיח לניסוח דחייה (מניח oldDueDate), לא
+    // התאים ל-kind אחר. kind בלי executor רשום (למשל reassignment עדיין) → ניסוח כללי.
+    const executor = KIND_EXECUTORS[approval.kind];
+    const body = executor
+      ? executor.employeeRejectedMessage(approval, note ?? null)
+      : `מוטי לא אישר את הבקשה שלך.${note ? ` (${note})` : ""}`;
     const notifId = doAddNotification(approval.requestedBy, "manager_decision", body, approval.findingKey ?? undefined, {
       itemId: approval.itemId ?? undefined,
       itemSource: approval.itemSource ?? undefined,
-      context: { approvalId, kind: "deferral", decision: "rejected" },
+      context: { approvalId, kind: approval.kind, decision: "rejected" },
     });
     publishApprovalLive(approval.requestedBy, notifId, "manager_decision", body, approval, { decision: "rejected" });
   } catch (err) {

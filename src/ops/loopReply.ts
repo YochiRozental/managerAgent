@@ -535,12 +535,36 @@ export async function replyAwaitManager(
   };
 }
 
+/** side-effects הניתנים להזרקה עבור replyNotRelevant — אותו pattern כמו ReplyDeferDeps (בדיקות בלי Monday אמיתי). */
+export interface ReplyNotRelevantDeps {
+  addTaskNote?: typeof addTaskNote;
+  recordFindingEvent?: typeof recordFindingEvent;
+  addNotification?: typeof addNotification;
+  markNudgesSeenForFinding?: typeof markNudgesSeenForFinding;
+  createApproval?: typeof createApproval;
+}
+
 /**
  * "זה כבר לא רלוונטי" → לפי ה-Policy Engine (policy.ts, כלל 6): ביטול/אי-רלוונטיות תמיד דורש
  * אישור מוטי. הסוכן **לא** נוגע בסטטוס ב-Monday ו**לא** סוגר את הממצא לבד — רק מתעד את הבקשה
  * ומעביר להחלטת מוטי. (תיקון: קודם זה סגר את המשימה לבד — זה היה שגוי.)
+ *
+ * אישורים בזמן אמת (audit 2026-09-17/20): אותו pattern בדיוק כמו replyDefer's manager_approval_required —
+ * createApproval (kind="cancellation", dedup מובנה לפי findingKey+kind) → אם created (לא כפילות) →
+ * notification + publishNotificationLive, כדי שהכרטיס יקפוץ מיד ב-SSE אצל מוטי, לא רק ב-poll הבא.
  */
-export async function replyNotRelevant(user: IdentifiedUser, c: LoopContext, reason?: string): Promise<LoopResult> {
+export async function replyNotRelevant(
+  user: IdentifiedUser,
+  c: LoopContext,
+  reason?: string,
+  deps: ReplyNotRelevantDeps = {},
+): Promise<LoopResult> {
+  const doAddTaskNote = deps.addTaskNote ?? addTaskNote;
+  const doRecordFindingEvent = deps.recordFindingEvent ?? recordFindingEvent;
+  const doAddNotification = deps.addNotification ?? addNotification;
+  const doMarkNudgesSeenForFinding = deps.markNudgesSeenForFinding ?? markNudgesSeenForFinding;
+  const doCreateApproval = deps.createApproval ?? createApproval;
+
   const ctx: ApprovalContext = { itemId: c.itemId, source: c.source, findingKey: c.findingKey, taskName: c.taskName, requestedBy: user.key };
   const decision = evaluateCancellationRequest(ctx, reason);
   // בכוונה: אין "if (decision.action === allow)" כאן — לפי המדיניות היום ביטול תמיד manager_approval_required.
@@ -549,33 +573,69 @@ export async function replyNotRelevant(user: IdentifiedUser, c: LoopContext, rea
     throw new Error(`מדיניות בלתי צפויה עבור ביטול/לא-רלוונטי: ${decision.action} (${decision.ruleId})`);
   }
 
-  await addTaskNote(
+  await doAddTaskNote(
     c.itemId,
     `❓ ${who(user)} מבקש/ת לסמן כלא רלוונטי${reason ? ` — ${reason}` : ""} (ממתין לאישור מוטי, דרך פנייה יזומה של הבקרה)`,
   );
   // לא resolved_by_reply (זה לא נסגר) ולא manager_pinged (זה לא "מחכה למנהל" הרגיל) —
   // manager_approval_required מסמן בדיוק את המצב: בקשה שעברה את ה-Policy Engine וממתינה להחלטה.
-  recordFindingEvent(c.findingKey, "manager_approval_required", {
+  doRecordFindingEvent(c.findingKey, "manager_approval_required", {
     byUser: user.key,
     action: decision.ruleId,
     note: reason,
     details: decision.approvalPayload,
   });
+
   const moti = resolveUserByKey("moti");
   if (moti) {
-    addNotification(
-      moti.key,
-      "awaiting_decision",
-      `${who(user)} מבקש/ת לסגור כ"לא רלוונטי" את "${c.taskName ?? c.itemId}"${reason ? `: ${reason}` : ""}. לאשר?`,
-      c.findingKey,
-      { itemId: c.itemId, itemSource: c.source, context: { taskName: c.taskName, from: user.key, reason, ruleId: decision.ruleId } },
+    const createInput: CreateApprovalInput = {
+      kind: "cancellation",
+      requestedBy: user.key,
+      managerUserKey: moti.key,
+      findingKey: c.findingKey,
+      itemId: c.itemId,
+      itemSource: c.source,
+      taskName: c.taskName,
+      payload: { reason: reason ?? null, ruleId: decision.ruleId },
+    };
+    const { approval, created }: { approval: StoredApproval; created: boolean } = doCreateApproval(createInput);
+
+    // "אם כבר קיימת בקשה זהה — אל תיצור כפילויות": לא notification/publish live שוב (אותו dedup
+    // pattern בדיוק כמו replyDefer — createApproval עצמו כבר בודק finding_key+kind פתוח).
+    if (created) {
+      const body = `${who(user)} מבקש/ת לסגור כ"לא רלוונטי" את "${c.taskName ?? c.itemId}"${reason ? `: ${reason}` : ""}. לאשר?`;
+      const notifContext = {
+        approvalId: approval.id,
+        kind: "cancellation" as const,
+        requestedByName: who(user),
+        taskName: c.taskName ?? c.itemId,
+        reason: reason ?? null,
+        ruleId: decision.ruleId,
+      };
+      const notifId = doAddNotification(moti.key, "approval_request", body, c.findingKey, {
+        itemId: c.itemId,
+        itemSource: c.source,
+        context: notifContext,
+      });
+      publishNotificationLive({
+        userKey: moti.key,
+        id: notifId,
+        kind: "approval_request",
+        body,
+        findingKey: c.findingKey,
+        itemId: c.itemId,
+        itemSource: c.source,
+        context: notifContext,
+        createdAt: DateTime.now().setZone(env.TIMEZONE).toISO()!,
+      });
+    }
+
+    logger.info(
+      { findingKey: c.findingKey, user: user.key, ruleId: decision.ruleId, approvalId: approval.id, created },
+      "בקשת 'לא רלוונטי' ממתינה לאישור מוטי (Policy Engine + Approval persistent) — לא בוצע שינוי ב-Monday",
     );
   }
-  markNudgesSeenForFinding(user.key, c.findingKey);
-  logger.info(
-    { findingKey: c.findingKey, user: user.key, ruleId: decision.ruleId },
-    "בקשת 'לא רלוונטי' ממתינה לאישור מוטי (Policy Engine) — לא בוצע שינוי ב-Monday",
-  );
+  doMarkNudgesSeenForFinding(user.key, c.findingKey);
   return {
     ok: true,
     message: "רשמתי את הבקשה שלך והעברתי להחלטת מוטי — לא סגרתי את המשימה לבד.",

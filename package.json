@@ -27,6 +27,7 @@
     "test:deferral-plan": "tsx scripts/test-deferral-plan.ts",
     "test:reply-defer": "tsx scripts/test-reply-defer.ts",
     "test:approvals": "tsx scripts/test-approvals.ts",
+    "test:cancellation-approval": "tsx scripts/test-cancellation-approval.ts",
     "test:approvals-audit": "tsx scripts/test-approvals-audit.ts",
     "test:approval-conversation": "tsx scripts/test-approval-conversation.ts",
     "test:followups": "tsx scripts/test-followups.ts",

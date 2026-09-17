@@ -381,7 +381,7 @@ const server = createServer(async (req, res) => {
     }
 
     // מערכת האישורים למוטי — persistent (manager_approvals), לא רק notification.
-    // גנרי לפי kind, אבל רק "deferral" ממומש כרגע (approvalActions.ts).
+    // גנרי לפי kind — "deferral" ו-"cancellation" ממומשים (audit 2026-09-17/20, approvalActions.ts).
     if (req.method === "GET" && path === "/api/approvals") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });

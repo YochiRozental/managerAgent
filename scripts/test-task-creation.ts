@@ -135,12 +135,12 @@ async function main() {
     check("משימת משרד: personId = רוחמה עצמה", calls.length === 1 && (calls[0] as { personId: string }).personId === ruchama.mondayUserId);
   }
 
-  // ---- 2. יצירת משימת פרויקט בשלב הנכון (דוב, פרויקט עם שלב 1 סגור + שלב 2 פתוח) ----
+  // ---- 2. project + שלב מפורש → יוצר subitem ישר, בלי שאלת כללית/שלב (סעיף 4, 2026-09-24) ----
   {
     let capturedStageId: string | null = null;
     const r = await createTaskAction(
       dov,
-      { taskName: `תכנית חשמל ${RUN_TAG}` , project: "מגדל השרון" },
+      { taskName: `תכנית חשמל ${RUN_TAG}`, project: "מגדל השרון", stage: "שלב 2" },
       freshTaskDeps({
         createStageTask: async (input) => {
           capturedStageId = input.stageItemId;
@@ -148,14 +148,49 @@ async function main() {
         },
       }),
     );
-    check("משימת פרויקט: נוצרה בהצלחה", r.ok && r.source === "project_stage");
-    check(
-      "משימת פרויקט: נבחר השלב הפעיל האמיתי (שלב 2, לא שלב 1 שכבר הושלם)",
-      capturedStageId === "8002",
-      `בפועל: ${capturedStageId}`,
-    );
-    check("משימת פרויקט: stageName מדווח נכון", r.stageName === "שלב 2 - היתר");
+    check("משימת פרויקט עם שלב מפורש: נוצרה בהצלחה, בלי שאלה", r.ok && r.source === "project_stage");
+    check("משימת פרויקט עם שלב מפורש: נכנסה לשלב הנכון לפי הטקסט שניתן", capturedStageId === "8002", `בפועל: ${capturedStageId}`);
+    check("משימת פרויקט עם שלב מפורש: stageName מדווח נכון", r.stageName === "שלב 2 - היתר");
   }
+
+  // ---- 2ב. project + taskName, בלי לציין כללית/שלב → שואל, לא יוצר (סעיף 1) ----
+  await expectRejects(
+    "project בלי stage ובלי taskKind → שואל כללית/שלב, לא יוצר (לא findActiveStage, לא ניחוש)",
+    () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון" }, freshTaskDeps()),
+    "כמשימה כללית המקושרת לפרויקט, או תחת אחד משלבי הפרויקט",
+  );
+
+  // ---- 2ג. בחירה "כללית" → general task עם project relation (סעיף 2) ----
+  {
+    const calls: unknown[] = [];
+    const r = await createTaskAction(
+      dov,
+      { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "general" },
+      freshTaskDeps({
+        createGeneralTask: async (input) => {
+          calls.push(input);
+          return { id: "gp1", name: input.name };
+        },
+      }),
+    );
+    check("taskKind='general' → נוצרה כמשימה כללית (source='general'), בלי שאלה", r.ok && r.source === "general");
+    check(
+      "taskKind='general': הפרויקט הועבר כ-project relation ל-createGeneralTask",
+      calls.length === 1 && (calls[0] as { projectId?: string }).projectId === "9001",
+    );
+  }
+
+  // ---- 2ד. בחירה "תחת שלב" בלי לנקוב שלב → שואל איזה שלב, עם הרשימה האמיתית (סעיף 3) ----
+  await expectRejects(
+    "taskKind='stage' בלי stage → שואל איזה שלב, עם שמות השלבים האמיתיים",
+    () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "stage" }, freshTaskDeps()),
+    "באיזה שלב בפרויקט",
+  );
+  await expectRejects(
+    "taskKind='stage' בלי stage → הרשימה כוללת את שמות השלבים האמיתיים (לא ניחוש)",
+    () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "stage" }, freshTaskDeps()),
+    "שלב 1 - תכנון, שלב 2 - היתר",
+  );
 
   // ---- 3. פרויקט לא נמצא ----
   await expectRejects(
@@ -280,11 +315,12 @@ async function main() {
   }
 
   // ---- 9ג. scope פר-פרויקט למנהל פרויקט (החלטה עסקית #2, 2026-09-17) ----
+  // כולן עם stage מפורש — אחרת נתקעות קודם על שאלת כללית/שלב (סעיף 1), לפני שמגיעות ל-scope בכלל.
   {
     // דוב מנהל את "מגדל השרון" (ownerIds) → מותר לו להקצות שם משימה לאיתן.
     const r = await createTaskAction(
       dov,
-      { taskName: `בתוך הפרויקט שלי ${RUN_TAG}`, project: "מגדל השרון", assignee: "איתן" },
+      { taskName: `בתוך הפרויקט שלי ${RUN_TAG}`, project: "מגדל השרון", stage: "שלב 2", assignee: "איתן" },
       freshTaskDeps({ createStageTask: async (input) => ({ id: "scope1", name: input.name }) }),
     );
     check("מנהל הפרויקט (דוב) מקצה משימה לאחר *בתוך הפרויקט שלו* → מותר", r.ok);
@@ -294,7 +330,7 @@ async function main() {
     () =>
       createTaskAction(
         eitan,
-        { taskName: "X", project: "מגדל השרון", assignee: "דוב" },
+        { taskName: "X", project: "מגדל השרון", stage: "שלב 2", assignee: "דוב" },
         freshTaskDeps({ createStageTask: async (input) => ({ id: "scope2", name: input.name }) }),
       ),
     "לא מנהל/ת הפרויקט",
@@ -303,7 +339,7 @@ async function main() {
     // owner עוקף scope בכל פרויקט, גם כזה שהוא לא ownerIds שלו (מגדל השרון — בניהול דוב).
     const r = await createTaskAction(
       moti,
-      { taskName: `owner בכל פרויקט ${RUN_TAG}`, project: "מגדל השרון", assignee: "איתן" },
+      { taskName: `owner בכל פרויקט ${RUN_TAG}`, project: "מגדל השרון", stage: "שלב 2", assignee: "איתן" },
       freshTaskDeps({ createStageTask: async (input) => ({ id: "scope3", name: input.name }) }),
     );
     check("owner (מוטי) מקצה משימה בפרויקט שהוא לא ה'אחראי' הרשום שלו → מותר (bypass)", r.ok);
@@ -312,7 +348,7 @@ async function main() {
     // יצירה *לעצמי* בתוך פרויקט שאני לא מנהל/ת — לא נכנסת ל-scope check בכלל (אין "לאדם אחר").
     const r = await createTaskAction(
       eitan,
-      { taskName: `לעצמי בפרויקט של מישהו אחר ${RUN_TAG}`, project: "מגדל השרון" },
+      { taskName: `לעצמי בפרויקט של מישהו אחר ${RUN_TAG}`, project: "מגדל השרון", stage: "שלב 2" },
       freshTaskDeps({ createStageTask: async (input) => ({ id: "scope4", name: input.name }) }),
     );
     check("יצירה לעצמי בפרויקט שלא בניהולי → מותר (ה-scope חל רק על הקצאה לאחר)", r.ok);

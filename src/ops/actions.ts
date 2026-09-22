@@ -8,9 +8,7 @@
 import { resolveUsersByAssigneeText, TEAM_DIRECTORY, userCan, type IdentifiedUser } from "../identity/index.js";
 import {
   BOARDS_WITH_MANDATORY_PROJECT,
-  currentStageIndex,
   fetchActiveProjects,
-  findActiveStage,
   getProjectOwnerIds,
   getProjectStages,
   matchProjectsByQuery,
@@ -262,9 +260,13 @@ export async function updateTask(
 // יצירת משימה חדשה / ליד חדש מהחלונית (create_task / create_lead) — 2026-09-17.
 //
 // עיצוב: המשתמש אף פעם לא מוסר boardId/itemId. פרויקט/שלב/מבצע מזוהים לפי טקסט חופשי;
-// עמימות (כמה התאמות) → שגיאה שמזמינה את המודל לשאול, בדיוק כמו reassignItem. אין ניחוש שלב:
-// בלי ציון שלב מפורש נבחר "השלב הנוכחי" (currentStageIndex, אותה הגדרה כמו "הפעולה הבאה"),
-// ורק אם יש שלבים בכלל.
+// עמימות (כמה התאמות) → שגיאה שמזמינה את המודל לשאול, בדיוק כמו reassignItem.
+//
+// כללית-מול-שלב (החלטת מוטי, 2026-09-24, אחרי בדיקת production): פרויקט לבדו *אינו* מספיק כדי
+// להחליט "subitem בשלב הפעיל". אם ניתן project בלי stage מפורש ובלי taskKind — הסוכן חייב
+// לשאול "משימה כללית או תחת שלב", לא לבחור לבד. findActiveStage/currentStageIndex לא משמשים
+// יותר כאן בכלל (עדיין בשימוש במקומות אחרים — getProjectNextAction/"עכשיו:" בתדריך היומי) —
+// אין ניחוש שלב פעיל בשביל יצירת משימה. ר' authorizeCreateTask/CreateTaskInput.taskKind למטה.
 //
 // הרשאות (סעיף 5 בבקשת יוכי — נבדק מול roles.ts + CLAUDE.md §5, לא ניחוש):
 //   - יצירה *לעצמי* → מספיק task:create (זה בדיוק למה task:create הופרד מ-task:manage — כדי
@@ -364,9 +366,15 @@ function authorizeCreateTask(user: IdentifiedUser, assigneeMondayId: string, pro
 
 export interface CreateTaskInput {
   taskName: string;
-  /** שם הפרויקט, אם המשימה שייכת לפרויקט. בלי זה — משימת משרד כללית. */
+  /** שם הפרויקט, אם המשימה שייכת לפרויקט. בלי זה — משימת משרד כללית (ללא scope, ללא שאלה). */
   project?: string;
-  /** שם/מספר שלב, רק אם העובד ציין במפורש. בלי זה — נבחר השלב הפעיל אוטומטית. */
+  /**
+   * רלוונטי רק כש-project ניתן. "general" = משימת משרד רגילה עם קישור לפרויקט (project relation),
+   * בלי שיוך לשלב. "stage" = subitem תחת שלב בפרויקט — צריך גם stage (או שיישאל/תיזרק שגיאה
+   * עם רשימת השלבים האמיתית). לא נחשב אם stage כבר ניתן מפורש — אז stage לבדו מכריע (סעיף 4).
+   */
+  taskKind?: "general" | "stage";
+  /** שם/מספר שלב. אם ניתן — מכריע תמיד (גם בלי taskKind), ולא נשאלת שאלת כללית/שלב בכלל. */
   stage?: string;
   /** שם עובד/ת חופשי. בלי זה — המשתמש עצמו. */
   assignee?: string;
@@ -464,36 +472,48 @@ export async function createTaskAction(
     projectId = project.itemId;
     projectName = project.name;
 
-    const stages = await doGetProjectStages(projectId);
-    if (stages.length === 0) {
-      throw new Error(`לפרויקט "${project.name}" אין שלבים מוגדרים ב-Monday — אי אפשר לשייך אליו משימה.`);
-    }
+    const explicitStage = input.stage?.trim();
 
-    if (input.stage?.trim()) {
-      const stageMatches = matchStagesByQuery(stages, input.stage);
+    if (explicitStage) {
+      // סעיף 4 (החלטת מוטי 2026-09-24): שלב מפורש מכריע תמיד, בלי קשר ל-taskKind ובלי שאלה.
+      const stages = await doGetProjectStages(projectId);
+      if (stages.length === 0) {
+        throw new Error(`לפרויקט "${project.name}" אין שלבים מוגדרים ב-Monday — אי אפשר לשייך אליו משימה תחת שלב.`);
+      }
+      const stageMatches = matchStagesByQuery(stages, explicitStage);
       if (stageMatches.length === 0) {
         throw new Error(
-          `לא מצאתי שלב שמתאים ל-"${input.stage}" בפרויקט "${project.name}". השלבים הקיימים: ${stages
+          `לא מצאתי שלב שמתאים ל-"${explicitStage}" בפרויקט "${project.name}". השלבים הקיימים: ${stages
             .map((s) => s.name)
             .join(", ")}`,
         );
       }
       if (stageMatches.length > 1) {
         throw new Error(
-          `"${input.stage}" מתאים לכמה שלבים: ${stageMatches.map((s) => s.name).join(", ")}. לאיזה בדיוק?`,
+          `"${explicitStage}" מתאים לכמה שלבים: ${stageMatches.map((s) => s.name).join(", ")}. לאיזה בדיוק?`,
         );
       }
       stageItemId = stageMatches[0]!.id;
       stageName = stageMatches[0]!.name;
+    } else if (input.taskKind === "general") {
+      // סעיף 2/5: משימה כללית מפורשת — לא נוגעים בשלבים בכלל. projectId נשאר, לקישור בלבד
+      // (createGeneralTask מקבל אותו כ-board_relation, stageItemId נשאר undefined).
+    } else if (input.taskKind === "stage") {
+      // סעיף 3: המשתמש בחר "תחת שלב" אבל לא אמר איזה — צריך רשימה אמיתית מ-Monday, לא ניחוש.
+      const stages = await doGetProjectStages(projectId);
+      if (stages.length === 0) {
+        throw new Error(
+          `לפרויקט "${project.name}" אין שלבים מוגדרים ב-Monday — אי אפשר לשייך אליו משימה תחת שלב. אפשר ליצור אותה כמשימה כללית המקושרת לפרויקט במקום.`,
+        );
+      }
+      throw new Error(
+        `באיזה שלב בפרויקט "${project.name}" תרצה להוסיף את המשימה? השלבים הקיימים: ${stages.map((s) => s.name).join(", ")}`,
+      );
     } else {
-      // בלי שלב מפורש — השלב הפעיל האמיתי (findActiveStage, אותה הגדרה כמו "עכשיו:" בתדריך
-      // היומי). אם כל השלבים סגורים/חסומים (אין "שלב פעיל" ברור) — נופלים ל-currentStageIndex
-      // (השלב האחרון שנגעו בו) כברירת מחדל סבירה, לא ניחוש שרירותי.
-      const active = findActiveStage(stages);
-      const fallbackIdx = currentStageIndex(stages);
-      const chosen = active?.stage ?? stages[fallbackIdx]!;
-      stageItemId = chosen.id;
-      stageName = chosen.name;
+      // סעיף 1: אין taskKind ואין שלב מפורש — אסור להחליט לבד (לא findActiveStage, לא ניחוש).
+      throw new Error(
+        `להוסיף את המשימה בפרויקט "${project.name}" כמשימה כללית המקושרת לפרויקט, או תחת אחד משלבי הפרויקט?`,
+      );
     }
   }
 

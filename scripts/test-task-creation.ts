@@ -153,19 +153,19 @@ async function main() {
     check("משימת פרויקט עם שלב מפורש: stageName מדווח נכון", r.stageName === "שלב 2 - היתר");
   }
 
-  // ---- 2ב. project + taskName, בלי לציין כללית/שלב → שואל, לא יוצר (סעיף 1) ----
+  // ---- 2ב. project + taskName, בלי לציין תחת-הפרויקט/שלב → שואל, לא יוצר (סעיף ב) ----
   await expectRejects(
-    "project בלי stage ובלי taskKind → שואל כללית/שלב, לא יוצר (לא findActiveStage, לא ניחוש)",
+    "project בלי stage ובלי taskKind → שואל תחת-הפרויקט/תחת-שלב, לא יוצר (לא findActiveStage, לא ניחוש)",
     () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון" }, freshTaskDeps()),
-    "כמשימה כללית המקושרת לפרויקט, או תחת אחד משלבי הפרויקט",
+    "תחת הפרויקט",
   );
 
-  // ---- 2ג. בחירה "כללית" → general task עם project relation (סעיף 2) ----
+  // ---- 2ג. בחירה "תחת הפרויקט" → item בלוח המשימות עם project relation, לא subitem (סעיף ג) ----
   {
     const calls: unknown[] = [];
     const r = await createTaskAction(
       dov,
-      { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "general" },
+      { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "project" },
       freshTaskDeps({
         createGeneralTask: async (input) => {
           calls.push(input);
@@ -173,14 +173,14 @@ async function main() {
         },
       }),
     );
-    check("taskKind='general' → נוצרה כמשימה כללית (source='general'), בלי שאלה", r.ok && r.source === "general");
+    check("taskKind='project' → נוצרה בלוח המשימות (source='general'), לא subitem, בלי שאלה", r.ok && r.source === "general");
     check(
-      "taskKind='general': הפרויקט הועבר כ-project relation ל-createGeneralTask",
+      "taskKind='project': projectId הנכון (9001) הועבר ל-createGeneralTask — זה מה שהופך ל-project relation",
       calls.length === 1 && (calls[0] as { projectId?: string }).projectId === "9001",
     );
   }
 
-  // ---- 2ד. בחירה "תחת שלב" בלי לנקוב שלב → שואל איזה שלב, עם הרשימה האמיתית (סעיף 3) ----
+  // ---- 2ד. בחירה "תחת שלב" בלי לנקוב שלב → שואל איזה שלב, עם הרשימה האמיתית (סעיף ד) ----
   await expectRejects(
     "taskKind='stage' בלי stage → שואל איזה שלב, עם שמות השלבים האמיתיים",
     () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "stage" }, freshTaskDeps()),
@@ -190,6 +190,30 @@ async function main() {
     "taskKind='stage' בלי stage → הרשימה כוללת את שמות השלבים האמיתיים (לא ניחוש)",
     () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "stage" }, freshTaskDeps()),
     "שלב 1 - תכנון, שלב 2 - היתר",
+  );
+
+  // ---- 2ה. "תחת הפרויקט X" מפורש מההתחלה → item + relation, בלי שאלת סוג (סעיף ה) ----
+  {
+    const calls: unknown[] = [];
+    const r = await createTaskAction(
+      dov,
+      { taskName: `X ${RUN_TAG}`, project: "בלומינג", taskKind: "project" },
+      freshTaskDeps({ createGeneralTask: async (input) => { calls.push(input); return { id: "gp2", name: input.name }; } }),
+    );
+    check("'תחת הפרויקט X' מההתחלה (taskKind='project' + project יחד) → נוצר ישר, בלי שאלה", r.ok);
+    check("project הנכון הועבר (בלומינג, 9002)", (calls[0] as { projectId?: string })?.projectId === "9002");
+  }
+
+  // ---- 2ו. תיקון אירוע production (2026-09-22): taskKind בלי project באותה קריאה → חסום, לא נוצרת משימה מנותקת ----
+  await expectRejects(
+    "taskKind='project' בלי project באותה קריאה → נחסם (לא ממשיך בשקט למשימה מנותקת)",
+    () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, taskKind: "project" }, freshTaskDeps()),
+    "בלי project באותה קריאה",
+  );
+  await expectRejects(
+    "taskKind='stage' בלי project באותה קריאה → נחסם",
+    () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, taskKind: "stage" }, freshTaskDeps()),
+    "בלי project באותה קריאה",
   );
 
   // ---- 3. פרויקט לא נמצא ----

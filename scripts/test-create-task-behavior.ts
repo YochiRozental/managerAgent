@@ -6,9 +6,14 @@
  * זאת* יקרא ל-create_task, התוצאה היא רק רשומה בזיכרון של הבדיקה, לא כתיבה אמיתית. מותר
  * להריץ את זה גם לפני שמאשרים deploy.
  *
- * לתרחישי השיחה הרב-שלבית (3+): ה-stub מדמה את התשובות ה*אמיתיות* של createTaskAction
- * (שאלת כללית/שלב, שגיאת "באיזה שלב" עם רשימה) — כדי שהמודל יקבל בדיוק את המשוב שהוא היה
- * מקבל במערכת האמיתית, ונבדוק אם הוא שומר context נכון בין סבבים.
+ * לתרחישי השיחה הרב-שלבית: ה-stub מדמה את התשובות ה*אמיתיות* של createTaskAction (שאלת
+ * תחת-הפרויקט/תחת-שלב, שגיאת "באיזה שלב" עם רשימה, **וגם** את ה-guard החדש נגד taskKind בלי
+ * project) — כדי שהמודל יקבל בדיוק את המשוב שהוא היה מקבל במערכת האמיתית, ונבדוק אם הוא שומר
+ * context נכון בין סבבים.
+ *
+ * תרחיש 7 משחזר במדויק את אירוע ה-production מ-2026-09-22 (item "להתקשר ליוכי" שנוצר בלי קישור
+ * לפרויקט) — אותה שיחה בדיוק, כדי לוודא שהתיקון עובד על התרחיש שבאמת קרה, לא רק על תרחישים
+ * מומצאים.
  *
  * הרצת מודל אמיתית → תוצאה לא ב-100% דטרמיניסטית (אופי LLM). ר' test-create-task-prompt.ts
  * לבדיקה דטרמיניסטית על טקסט ה-prompt/schema עצמם.
@@ -64,13 +69,21 @@ const FAKE_STAGES = ["שלב 1 - תכנון", "שלב 2 - היתר", "שלב 3 -
 
 /**
  * מדמה בדיוק את התשובות שהמערכת האמיתית (createTaskAction) הייתה מחזירה — כדי שבדיקת שיחה
- * רב-שלבית תיתן למודל משוב אמיתי, לא stub שקוף שרק בולע קריאות. לא נוגע ב-Monday בפועל.
+ * רב-שלבית תיתן למודל משוב אמיתי, לא stub שקוף שרק בולע קריאות. כולל את ה-guard נגד
+ * taskKind בלי project (אירוע production 2026-09-22) — אם המודל נופל בדיוק לבאג ההוא, הבדיקה
+ * תראה את זה כשגיאה, לא כהצלחה שקטה. לא נוגע ב-Monday בפועל.
  */
 function stubCreateTaskExecute(input: Record<string, unknown>): { content: string; sideEffect: boolean } {
   const project = input.project ? String(input.project) : "";
   const stage = input.stage ? String(input.stage) : "";
   const taskKind = typeof input.taskKind === "string" ? input.taskKind : undefined;
 
+  if (!project && (taskKind === "project" || taskKind === "stage")) {
+    return {
+      content: `שגיאה: ניתן taskKind='${taskKind}' בלי project באותה קריאה — יש להעביר גם את שם הפרויקט בכל קריאה שעוסקת במשימה תחת פרויקט/שלב.`,
+      sideEffect: false,
+    };
+  }
   if (project && !stage) {
     if (taskKind === "stage") {
       return {
@@ -78,15 +91,15 @@ function stubCreateTaskExecute(input: Record<string, unknown>): { content: strin
         sideEffect: false,
       };
     }
-    if (taskKind !== "general") {
+    if (taskKind !== "project") {
       return {
-        content: `שגיאה: להוסיף את המשימה בפרויקט "${project}" כמשימה כללית המקושרת לפרויקט, או תחת אחד משלבי הפרויקט?`,
+        content: `שגיאה: המשימה קשורה לפרויקט "${project}" — האם להוסיף אותה תחת הפרויקט, או תחת אחד משלבי הפרויקט?`,
         sideEffect: false,
       };
     }
   }
   return {
-    content: JSON.stringify({ ok: true, itemName: String(input.taskName ?? "stub"), source: stage ? "project_stage" : "general" }),
+    content: JSON.stringify({ ok: true, itemName: String(input.taskName ?? "stub"), source: stage ? "project_stage" : "general", project }),
     sideEffect: true,
   };
 }
@@ -157,26 +170,26 @@ async function main() {
     check("לא הייתה שגיאת מודל", !errored);
   }
 
-  logger.info("\n── תרחיש 3: 'תוסיף משימה בפרויקט מגדל השרון לעדכן תוכניות' (בלי לציין כללית/שלב) — שואל, לא קורא לכלי ──");
+  logger.info("\n── תרחיש 3: 'תוסיף משימה בפרויקט מגדל השרון לעדכן תוכניות' (בלי לציין תחת-הפרויקט/שלב) — שואל, לא קורא לכלי ──");
   {
     const { calls, text, errored } = await runScenario("תוסיף משימה בפרויקט מגדל השרון לעדכן תוכניות");
-    check("המודל לא קרא ל-create_task (חסר כללית/שלב)", calls.length === 0, `קריאות בפועל: ${JSON.stringify(calls)}`);
+    check("המודל לא קרא ל-create_task (חסר תחת-הפרויקט/שלב)", calls.length === 0, `קריאות בפועל: ${JSON.stringify(calls)}`);
     check("לא הייתה שגיאת מודל", !errored);
     check(
-      "המודל שואל כללית/תחת שלב (לא בוחר לבד)",
-      !!text && /כלל|שלב/.test(text),
+      "המודל שואל תחת-הפרויקט/תחת-שלב (לא בוחר לבד, לא אומר 'כללית')",
+      !!text && /פרויקט|שלב/.test(text) && !text.includes("כללית"),
       text ?? "(ריק)",
     );
     logger.info(`תשובת המודל: "${text}"`);
   }
 
-  logger.info("\n── תרחיש 4: 'תיצור משימה כללית בפרויקט מגדל השרון לעדכן תוכניות' — קורא ישר עם taskKind='general', בלי שאלה ──");
+  logger.info("\n── תרחיש 4: 'תיצור משימה תחת הפרויקט מגדל השרון לעדכן תוכניות' — קורא ישר עם taskKind='project', בלי שאלה ──");
   {
-    const { calls, errored } = await runScenario("תיצור משימה כללית בפרויקט מגדל השרון לעדכן תוכניות");
-    check("המודל קרא ל-create_task ישירות (ניסוח 'כללית' מפורש)", calls.length === 1, `קריאות בפועל: ${JSON.stringify(calls)}`);
+    const { calls, errored } = await runScenario("תיצור משימה תחת הפרויקט מגדל השרון (לא תחת שלב מסוים) לעדכן תוכניות");
+    check("המודל קרא ל-create_task ישירות (ניסוח 'תחת הפרויקט' מפורש)", calls.length === 1, `קריאות בפועל: ${JSON.stringify(calls)}`);
     if (calls.length === 1) {
       const input = calls[0]!.input as Record<string, unknown>;
-      check("taskKind='general'", input.taskKind === "general", `בפועל: ${JSON.stringify(input.taskKind)}`);
+      check("taskKind='project'", input.taskKind === "project", `בפועל: ${JSON.stringify(input.taskKind)}`);
       check("project הועבר", !!input.project);
     }
     check("לא הייתה שגיאת מודל", !errored);
@@ -213,10 +226,10 @@ async function main() {
       messages[1]!.content,
     );
 
-    check("סבב 2 (יש תוכן משימה, אין כללית/שלב): לא קרא לכלי", perTurnCalls[1]!.length === 0);
+    check("סבב 2 (יש תוכן משימה, אין תחת-פרויקט/שלב): לא קרא לכלי", perTurnCalls[1]!.length === 0);
     check(
-      "סבב 2: המודל שואל כללית/תחת שלב, ולא שואל שוב מה הפרויקט/מי המבצע (context נשמר)",
-      /כלל|שלב/.test(messages[3]!.content) && !/איזה פרויקט|מי (ה)?מבצע|למי/.test(messages[3]!.content),
+      "סבב 2: המודל שואל תחת-הפרויקט/תחת-שלב, ולא שואל שוב מה הפרויקט/מי המבצע (context נשמר)",
+      /פרויקט|שלב/.test(messages[3]!.content) && !/איזה פרויקט|מי (ה)?מבצע|למי/.test(messages[3]!.content),
       messages[3]!.content,
     );
 
@@ -242,6 +255,40 @@ async function main() {
       check("סבב 4: project נשמר מסבב 1 ('מגדל השרון')", String(input.project ?? "").includes("מגדל השרון"), JSON.stringify(input));
       check("סבב 4: assignee נשמר מסבב 1 ('דוב')", /דוב/.test(String(input.assignee ?? "")), JSON.stringify(input));
       check("סבב 4: stage הוא '4' לפי התשובה בסבב הזה", String(input.stage ?? "").includes("4"), JSON.stringify(input));
+    }
+
+    logger.info("תמליל מלא:\n" + messages.map((m) => `[${m.role}] ${m.content}`).join("\n"));
+  }
+
+  logger.info(
+    "\n── תרחיש 7 (שחזור מדויק של אירוע production 2026-09-22): 'תוסיף משימה בפרויקט' → תוכן → 'תחת הפרויקט' — project חייב לחזור בקריאה האחרונה ──",
+  );
+  {
+    const { perTurnCalls, messages } = await runConversation([
+      "תוסיף לי משימה בפרויקט מגדל השרון",
+      "להתקשר ליוכי",
+      "תחת הפרויקט",
+    ]);
+
+    check("סבב 1: לא קרא לכלי (חסר תוכן משימה)", perTurnCalls[0]!.length === 0);
+    check("סבב 2: לא קרא לכלי (חסר תחת-הפרויקט/שלב), ולא אמר 'כללית'", perTurnCalls[1]!.length === 0 && !messages[3]!.content.includes("כללית"));
+
+    check(
+      "סבב 3 ('תחת הפרויקט'): קרא לכלי בדיוק פעם אחת, עם taskKind='project' *וגם* project — לא נפל לבאג המקורי (project חסר)",
+      perTurnCalls[2]!.length === 1 &&
+        (perTurnCalls[2]![0]!.input as Record<string, unknown>).taskKind === "project" &&
+        !!(perTurnCalls[2]![0]!.input as Record<string, unknown>).project,
+      JSON.stringify(perTurnCalls[2]),
+    );
+    check(
+      "סבב 3: אין הודעת שגיאה על taskKind בלי project (ה-guard לא הופעל — סימן שהמודל כן שלח project)",
+      !messages[5]!.content.includes("בלי project"),
+      messages[5]!.content,
+    );
+    if (perTurnCalls[2]!.length === 1) {
+      const input = perTurnCalls[2]![0]!.input as Record<string, unknown>;
+      check("סבב 3: taskName נשמר ('להתקשר ליוכי')", String(input.taskName ?? "").includes("יוכי"), JSON.stringify(input));
+      check("סבב 3: project הוא 'מגדל השרון' (לא אבד, לא ריק)", String(input.project ?? "").includes("מגדל השרון"), JSON.stringify(input));
     }
 
     logger.info("תמליל מלא:\n" + messages.map((m) => `[${m.role}] ${m.content}`).join("\n"));

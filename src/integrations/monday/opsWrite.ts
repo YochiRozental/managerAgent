@@ -323,7 +323,7 @@ export async function createGeneralTask(input: CreateGeneralTaskInput): Promise<
   };
   if (input.dueDate) columnValues.date4 = { date: input.dueDate };
   if (priorityLabel) columnValues.priority = { label: priorityLabel };
-  if (input.projectId) columnValues.board_relation_mkqzzfgt = { item_ids: [Number(input.projectId)] };
+  // בכוונה לא כולל board_relation_mkqzzfgt כאן — ר' הערה למטה.
 
   const res = await mondayRequest<{ create_item: { id: string; name: string } }>(
     `mutation ($boardId: ID!, $groupId: String!, $itemName: String!, $columnValues: JSON!) {
@@ -334,5 +334,25 @@ export async function createGeneralTask(input: CreateGeneralTaskInput): Promise<
     }`,
     { boardId: BOARD_GENERAL_TASKS, groupId, itemName: name, columnValues: JSON.stringify(columnValues) },
   );
+
+  // קישור לפרויקט (board_relation_mkqzzfgt) — בכוונה *לא* דרך column_values של create_item.
+  // אובחן ב-production ב-2026-09-22 (item 3237786923, "להתקשר ליוכי"): person/status נכתבו
+  // נכון מאותו column_values בדיוק, אבל board_relation_mkqzzfgt נשאר ריק — create_item לא כותב
+  // בפועל עמודות connect_boards inline. change_column_value בנפרד (אותה שיטה שכבר מוכחת עובדת
+  // ב-setTaskDueDate/setTaskStatus) הוא התיקון.
+  if (input.projectId) {
+    await mondayRequest(
+      `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) { id }
+      }`,
+      {
+        boardId: BOARD_GENERAL_TASKS,
+        itemId: res.create_item.id,
+        columnId: "board_relation_mkqzzfgt",
+        value: JSON.stringify({ item_ids: [Number(input.projectId)] }),
+      },
+    );
+  }
+
   return res.create_item;
 }

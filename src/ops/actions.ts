@@ -11,6 +11,7 @@ import {
   fetchActiveProjects,
   getProjectOwnerIds,
   getProjectStages,
+  invalidateProjectStagesCache,
   matchProjectsByQuery,
   matchStagesByQuery,
   resolveItemProjectScope,
@@ -22,10 +23,12 @@ import {
   addTaskNote,
   assertUserOwnsItem,
   createGeneralTask,
+  createProjectStage,
   createStageTask,
   DONE_LABEL,
   setTaskStatus,
   type CreateGeneralTaskInput,
+  type CreateProjectStageInput as CreateProjectStageWriteInput,
   type CreateStageTaskInput,
 } from "../integrations/monday/opsWrite.js";
 import { detectPeopleColumn, setItemPeople, type PeopleColumnInfo } from "../integrations/monday/itemWrite.js";
@@ -640,6 +643,124 @@ export async function createTaskAction(
     stageName,
     assigneeName,
     message: `נוצרה משימה "${created.name}"${forOther}${inProject}${dueSuffix}`,
+    deduped: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// יצירת שלב חדש בפרויקט (create_project_stage, 2026-09-22) — פער production: "תוסיף את המשימה
+// בתור עוד שלב" לא היה נתמך בכלל (create_task יודע רק ליצור task/subitem *תחת* שלב קיים, לא
+// שלב חדש). "תחת" ("תחת הפרויקט X שלב חדש") הוא עדיין מונח היררכיה — הבדל בין stage-task
+// (subitem תחת שלב קיים) ל-stage חדש הוא explicit "שלב"/"stage" בבקשה עצמה, לא "תחת" לבד.
+//
+// הרשאות (נבדק מול roles.ts — project:manage כבר קיים בדיוק בשביל זה, לא הוספתי הרשאה חדשה):
+// project:manage יש רק ל-owner/admin/project_manager (ר' ROLE_PERMISSIONS). owner/admin — בכל
+// פרויקט. project_manager — רק בפרויקט שהוא/היא מנהל/ת בפועל (managesProject, אותו מקור אמת
+// כמו authorizeCreateTask/assertManagesItemProject — ownerIds מעמודת האחראי/ת של הפרויקט).
+// planner/finance אין להם project:manage → חסומים, תואם למדיניות "רק מי שמנהל את הפרויקט".
+// ---------------------------------------------------------------------------
+
+function authorizeCreateStage(user: IdentifiedUser, project: ProjectMeta): void {
+  if (user.role === "owner" || user.role === "admin") return;
+  if (!userCan(user, "project:manage")) {
+    throw new Error("אין לך הרשאה ליצור שלבים חדשים בפרויקטים");
+  }
+  if (!managesProject(user, project)) {
+    throw new Error(
+      `אתה לא מנהל/ת את הפרויקט "${project.name}" — יצירת שלב חדש שמורה למנהל/ת הפרויקט, לבעלים או לאדמין.`,
+    );
+  }
+}
+
+export interface CreateProjectStageActionInput {
+  /** שם הפרויקט (טקסט חופשי — נפתר מול הרשימה האמיתית דרך matchProjectsByQuery) */
+  project: string;
+  stageName: string;
+}
+
+export interface CreateProjectStageActionResult {
+  ok: true;
+  itemId: string;
+  itemName: string;
+  project: string;
+  message: string;
+  deduped: boolean;
+}
+
+export interface CreateProjectStageActionDeps {
+  listProjects?: () => Promise<ProjectMeta[]>;
+  getProjectStages?: (projectId: string) => Promise<ProjectStage[]>;
+  createProjectStage?: (input: CreateProjectStageWriteInput) => Promise<{ id: string; name: string }>;
+  invalidateProjectStagesCache?: (projectId: string) => void;
+  getCachedCreation?: typeof getCachedCreation;
+  recordCreation?: typeof recordCreation;
+}
+
+/**
+ * יוצר שלב חדש (item) בפרויקט — לא task/subitem. אידמפוטנטי כמו createTaskAction/createLeadAction
+ * (retry של אותו tool call לא יוצר כפילות). זורק Error עם טקסט מיועד למודל על עמימות בשם הפרויקט
+ * (בדיוק כמו create_task) — הקורא (runOpsChat) מציג את זה ושואל, לא מנחש.
+ */
+export async function createProjectStageAction(
+  user: IdentifiedUser,
+  input: CreateProjectStageActionInput,
+  deps: CreateProjectStageActionDeps = {},
+): Promise<CreateProjectStageActionResult> {
+  const doListProjects = deps.listProjects ?? fetchActiveProjects;
+  const doGetProjectStages = deps.getProjectStages ?? getProjectStages;
+  const doCreateProjectStage = deps.createProjectStage ?? createProjectStage;
+  const doInvalidateProjectStagesCache = deps.invalidateProjectStagesCache ?? invalidateProjectStagesCache;
+  const doGetCachedCreation = deps.getCachedCreation ?? getCachedCreation;
+  const doRecordCreation = deps.recordCreation ?? recordCreation;
+
+  const stageName = input.stageName.trim();
+  if (!stageName) throw new Error("חסר שם לשלב");
+  const projectQuery = input.project?.trim();
+  if (!projectQuery) throw new Error("חסר שם הפרויקט שאליו להוסיף את השלב");
+
+  const projects = await doListProjects();
+  const matches = matchProjectsByQuery(projects, projectQuery);
+  if (matches.length === 0) throw new Error(`לא מצאתי פרויקט שמתאים ל-"${projectQuery}"`);
+  if (matches.length > 1) {
+    throw new Error(
+      `"${projectQuery}" מתאים לכמה פרויקטים: ${matches.map((p) => p.name).join(", ")}. לאיזה בדיוק?`,
+    );
+  }
+  const project = matches[0]!;
+
+  authorizeCreateStage(user, project);
+
+  const idKey = ["create_project_stage", user.key, project.itemId, stageName.toLowerCase()].join("|");
+  const cached = doGetCachedCreation(idKey);
+  if (cached) {
+    const c = cached.result as { itemId: string; itemName: string };
+    return {
+      ok: true,
+      itemId: c.itemId,
+      itemName: c.itemName,
+      project: project.name,
+      message: `השלב "${c.itemName}" כבר נוצר קודם בפרויקט "${project.name}" (מזהה תואם) — לא יצרתי כפילות.`,
+      deduped: true,
+    };
+  }
+
+  const existingStages = await doGetProjectStages(project.itemId);
+  const created = await doCreateProjectStage({
+    projectId: project.itemId,
+    projectName: project.name,
+    existingStageIds: existingStages.map((s) => s.id),
+    name: stageName,
+  });
+
+  doRecordCreation(idKey, { itemId: created.id, itemName: created.name });
+  doInvalidateProjectStagesCache(project.itemId);
+
+  return {
+    ok: true,
+    itemId: created.id,
+    itemName: created.name,
+    project: project.name,
+    message: `נוצר שלב חדש "${created.name}" בפרויקט "${project.name}"`,
     deduped: false,
   };
 }

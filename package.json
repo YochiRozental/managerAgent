@@ -47,6 +47,8 @@
     "test:item-project-scope": "tsx scripts/test-item-project-scope-live.ts",
     "test:create-task-prompt": "tsx scripts/test-create-task-prompt.ts",
     "test:create-task-behavior": "tsx scripts/test-create-task-behavior.ts",
+    "test:project-stage": "tsx scripts/test-project-stage.ts",
+    "test:project-stage-behavior": "tsx scripts/test-project-stage-behavior.ts",
     "maintenance:backfill-escalations": "tsx scripts/maintenance/backfill-escalation-identity.ts",
     "maintenance:backfill-escalations:apply": "tsx scripts/maintenance/backfill-escalation-identity.ts --apply"
   },

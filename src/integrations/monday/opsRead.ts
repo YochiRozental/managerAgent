@@ -515,6 +515,16 @@ export async function getProjectStages(projectId: string): Promise<ProjectStage[
 }
 
 /**
+ * מבטל את ה-cache של שלבי הפרויקט (וממילא את "הפעולה הבאה" שנגזרת ממנו) — לקרוא אחרי יצירת
+ * שלב חדש (create_project_stage), אחרת השלב לא יופיע ב-getProjectStages/getProjectNextAction
+ * עד 5 דקות, גם אם הוא כבר נוצר ב-Monday בפועל.
+ */
+export function invalidateProjectStagesCache(projectId: string): void {
+  stagesCache.delete(projectId);
+  nextActionCache.delete(projectId);
+}
+
+/**
  * אינדקס "השלב הנוכחי" ברשימת שלבים ממוינת — השלב הגבוה ביותר שיש בו משימה שהושלמה (אם אין —
  * השלב הראשון). פונקציה טהורה כדי שגם getProjectNextAction וגם create_task ישתמשו באותה הגדרה.
  */
@@ -540,11 +550,89 @@ export function matchStagesByQuery(stages: ProjectStage[], query: string): Proje
   return stages.filter((s) => s.name.toLowerCase().includes(q) || q.includes(s.name.toLowerCase()));
 }
 
-/** מתאים פרויקטים לפי טקסט חופשי — ל-create_task. אותו עיקרון: לא מנחש, מחזיר את כל ההתאמות. */
+/**
+ * מנרמל טקסט להשוואת שמות פרויקטים: מוריד גרשיים/מירכאות/מפרידים, מכווץ רווחים, lowercase.
+ * לא מוריד תווי עברית — רק פיסוק שנוטה להשתנות בין איך שמשתמש מקליד לאיך ששם נשמר ב-Monday.
+ */
+function normalizeProjectText(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/["'׳״]/g, "")
+    .replace(/[-,._]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function projectWords(s: string): string[] {
+  return normalizeProjectText(s).split(" ").filter(Boolean);
+}
+
+/** מרחק עריכה (Levenshtein) — לשכבת ה-fuzzy השמרנית ב-matchProjectsByQuery בלבד. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array(b.length + 1);
+  const curr = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+/**
+ * מתאים פרויקטים לפי טקסט חופשי, בעדיפות יורדת — לא מנחש, ולא ממציא שמות: כל תוצאה תמיד אחד
+ * מה-`projects` שהתקבלו בפועל מ-Monday/getOfficeState. שימוש משותף: create_task,
+ * create_project_stage, project_status (הכל דרך הפונקציה הזו — מקור אמת אחד לחיפוש פרויקט).
+ *
+ * שכבות (עוצרים בשכבה הראשונה שיש בה לפחות התאמה אחת — לא מערבבים שכבות חזקות עם חלשות):
+ *  1. התאמה מדויקת (אחרי נרמול פיסוק/רווחים/אותיות).
+ *  2. השאילתה מוכלת בשם (או להפך) — substring, בכל כיוון.
+ *  3. כל מילה בשאילתה מופיעה איפשהו בשם (סדר מילים לא משנה).
+ *  4. fuzzy שמרני: לכל מילה בשאילתה יש מילה קרובה (Levenshtein) בשם — רק אם שום שכבה חזקה יותר
+ *     לא הניבה תוצאה.
+ * 0 תוצאות = אין התאמה טובה, לא לנחש. 1 = חד-משמעי. 2+ = עמימות אמיתית, להחזיר להבהרה.
+ */
 export function matchProjectsByQuery(projects: ProjectMeta[], query: string): ProjectMeta[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  return projects.filter((p) => p.name.toLowerCase().includes(q));
+  const rawQ = query.trim();
+  if (!rawQ) return [];
+  const nq = normalizeProjectText(rawQ);
+  if (!nq) return [];
+
+  const exact = projects.filter((p) => normalizeProjectText(p.name) === nq);
+  if (exact.length > 0) return exact;
+
+  const contains = projects.filter((p) => {
+    const np = normalizeProjectText(p.name);
+    return np.includes(nq) || nq.includes(np);
+  });
+  if (contains.length > 0) return contains;
+
+  const qWords = projectWords(rawQ);
+  if (qWords.length > 0) {
+    const wordMatch = projects.filter((p) => {
+      const np = normalizeProjectText(p.name);
+      return qWords.every((w) => np.includes(w));
+    });
+    if (wordMatch.length > 0) return wordMatch;
+
+    const fuzzy = projects.filter((p) => {
+      const pWords = projectWords(p.name);
+      return qWords.every((qw) =>
+        pWords.some((pw) => levenshtein(qw, pw) <= (qw.length <= 4 ? 1 : 2)),
+      );
+    });
+    if (fuzzy.length > 0) return fuzzy;
+  }
+
+  return [];
 }
 
 // ---------------------------------------------------------------------------

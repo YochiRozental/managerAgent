@@ -9,7 +9,7 @@
  */
 
 import { mondayRequest } from "./client.js";
-import { BOARD_GENERAL_TASKS, BOARD_PROJECT_STAGE_TASKS, type OpsTaskSource } from "./opsRead.js";
+import { BOARD_GENERAL_TASKS, BOARD_PROJECT_STAGES, BOARD_PROJECT_STAGE_TASKS, BOARD_PROJECTS, type OpsTaskSource } from "./opsRead.js";
 
 interface StatusConfig {
   boardId: string;
@@ -353,6 +353,147 @@ export async function createGeneralTask(input: CreateGeneralTaskInput): Promise<
       },
     );
   }
+
+  return res.create_item;
+}
+
+// ---------------------------------------------------------------------------
+// יצירת שלב חדש בפרויקט (create_project_stage, ר' src/ops/actions.ts) — item חדש בבורד
+// "מאגר משימות פרויקטים" (BOARD_PROJECT_STAGES), בקבוצת השלבים של הפרויקט הנכון, מקושר אליו.
+//
+// נבדק חי מול Monday (קריאה בלבד, 2026-09-22): קבוצה בבורד השלבים = פרויקט אחד (כותרת הקבוצה
+// בד"כ קרובה לשם הפרויקט אבל לא בהכרח זהה מילה-במילה — לא סומכים על התאמת מחרוזת בלבד כשיש
+// כבר שלב קיים לקחת ממנו את מזהה הקבוצה). סטטוס השלב עצמו כמעט תמיד ריק בדאטה האמיתי (ר'
+// CLAUDE.md) — לא ממציאים ברירת מחדל, משאירים ריק כמו רוב השלבים הקיימים.
+//
+// connect_boards4__1 (שלב→פרויקט) ו-link_to____________9__1 (פרויקט→שלב) הם connect_boards
+// עם boardIds שמצביעים זה על זה (settings_str נבדק חי) — נראה כמו טור מקושר דו-כיווני, אבל
+// באותו אופן שבו create_item לא כתב בפועל board_relation_mkqzzfgt inline (ר' createGeneralTask
+// למעלה), לא סומכים על מיראור אוטומטי: קוראים חזרה את הפרויקט אחרי הכתיבה ומוודאים/משלימים את
+// הצד השני בעצמנו (ensureProjectLinksStage) — בטוח משני הכיוונים: אם Monday כבר סינכרן לבד,
+// הקריאה החוזרת פשוט מוצאת את השלב כבר שם ולא כותבת שוב.
+// ---------------------------------------------------------------------------
+
+function normalizeGroupTitle(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/["'׳״]/g, "")
+    .replace(/[-,._]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** מזהי הפריטים המקושרים של column_value מסוג board_relation, מהתגובה הגולמית של Monday. */
+function readLinkedIds(values: { id: string; linked_item_ids?: string[] | null }[], columnId: string): string[] {
+  return values.find((c) => c.id === columnId)?.linked_item_ids ?? [];
+}
+
+/**
+ * מזהה את הקבוצה בבורד השלבים ששייכת לפרויקט הנתון: אם יש כבר שלב קיים — לוקחים את הקבוצה שלו
+ * (מקור אמת ודאי). אחרת מחפשים קבוצה עם כותרת קרובה לשם הפרויקט; אם אין — יוצרים קבוצה חדשה
+ * (פרויקט חדש לגמרי בלי אף שלב עדיין, מקרה קצה אמיתי אך נדיר).
+ */
+async function findOrCreateStageGroupId(projectId: string, projectName: string, existingStageIds: string[]): Promise<string> {
+  if (existingStageIds.length > 0) {
+    const res = await mondayRequest<{ items: { group: { id: string } | null }[] }>(
+      `query ($id: [ID!]) { items(ids: $id) { group { id } } }`,
+      { id: [existingStageIds[0]] },
+    );
+    const groupId = res.items[0]?.group?.id;
+    if (groupId) return groupId;
+  }
+
+  const boardRes = await mondayRequest<{ boards: { groups: { id: string; title: string }[] }[] }>(
+    `query ($boardId: ID!) { boards(ids: [$boardId]) { groups { id title } } }`,
+    { boardId: BOARD_PROJECT_STAGES },
+  );
+  const groups = boardRes.boards[0]?.groups ?? [];
+  const nName = normalizeGroupTitle(projectName);
+  const match = groups.find((g) => {
+    const ng = normalizeGroupTitle(g.title);
+    return ng === nName || ng.includes(nName) || nName.includes(ng);
+  });
+  if (match) return match.id;
+
+  const createRes = await mondayRequest<{ create_group: { id: string } }>(
+    `mutation ($boardId: ID!, $groupName: String!) {
+      create_group(board_id: $boardId, group_name: $groupName) { id }
+    }`,
+    { boardId: BOARD_PROJECT_STAGES, groupName: projectName },
+  );
+  return createRes.create_group.id;
+}
+
+/**
+ * מוודא ש-link_to____________9__1 של הפרויקט כולל את מזהה השלב החדש — append בלבד (קורא את
+ * הרשימה הקיימת קודם), לא overwrite, כדי לא למחוק שלבים אחרים אם אין מיראור אוטומטי.
+ */
+async function ensureProjectLinksStage(projectId: string, stageId: string): Promise<void> {
+  const res = await mondayRequest<{
+    items: { column_values: { id: string; linked_item_ids?: string[] | null }[] }[];
+  }>(
+    `query ($id: [ID!]) {
+      items(ids: $id) {
+        column_values(ids: ["link_to____________9__1"]) {
+          id
+          ... on BoardRelationValue { linked_item_ids }
+        }
+      }
+    }`,
+    { id: [projectId] },
+  );
+  const current = readLinkedIds(res.items[0]?.column_values ?? [], "link_to____________9__1");
+  if (current.includes(stageId)) return; // כבר שם — או שנכתב אוטומטית (מיראור), או שנקרא כבר מוקדם יותר
+
+  await mondayRequest(
+    `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) { id }
+    }`,
+    {
+      boardId: BOARD_PROJECTS,
+      itemId: projectId,
+      columnId: "link_to____________9__1",
+      value: JSON.stringify({ item_ids: [...current, stageId].map(Number) }),
+    },
+  );
+}
+
+export interface CreateProjectStageInput {
+  projectId: string;
+  projectName: string;
+  /** מזהי השלבים הקיימים של הפרויקט (מ-getProjectStages) — לאיתור ודאי של הקבוצה הנכונה. */
+  existingStageIds: string[];
+  name: string;
+}
+
+/** יוצר שלב (item) חדש בבורד השלבים, בקבוצת הפרויקט הנכונה, ומקשר אותו לפרויקט בשני הכיוונים. */
+export async function createProjectStage(input: CreateProjectStageInput): Promise<{ id: string; name: string }> {
+  const name = input.name.trim();
+  if (!name) throw new Error("חסר שם לשלב");
+
+  const groupId = await findOrCreateStageGroupId(input.projectId, input.projectName, input.existingStageIds);
+
+  const res = await mondayRequest<{ create_item: { id: string; name: string } }>(
+    `mutation ($boardId: ID!, $groupId: String!, $itemName: String!) {
+      create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName) { id name }
+    }`,
+    { boardId: BOARD_PROJECT_STAGES, groupId, itemName: name },
+  );
+
+  await mondayRequest(
+    `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) { id }
+    }`,
+    {
+      boardId: BOARD_PROJECT_STAGES,
+      itemId: res.create_item.id,
+      columnId: "connect_boards4__1",
+      value: JSON.stringify({ item_ids: [Number(input.projectId)] }),
+    },
+  );
+
+  await ensureProjectLinksStage(input.projectId, res.create_item.id);
 
   return res.create_item;
 }

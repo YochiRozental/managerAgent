@@ -17,6 +17,7 @@ import { userCan, type IdentifiedUser } from "../identity/index.js";
 import {
   fetchUserOpsTasks,
   getProjectNextAction,
+  matchProjectsByQuery,
   type OpsTask,
 } from "../integrations/monday/opsRead.js";
 import {
@@ -27,7 +28,14 @@ import {
 import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
-import { addUpdateToItem, createLeadAction, createTaskAction, reassignItem, updateTask } from "./actions.js";
+import {
+  addUpdateToItem,
+  createLeadAction,
+  createProjectStageAction,
+  createTaskAction,
+  reassignItem,
+  updateTask,
+} from "./actions.js";
 import { LEAD_PRODUCT_OPTIONS, LEAD_SOURCE_OPTIONS } from "../integrations/monday/leads.js";
 import { getApproval } from "../db/repositories/managerApprovals.js";
 import { replyToApprovalInstruction } from "./approvalActions.js";
@@ -61,6 +69,15 @@ export function canCreateTask(user: IdentifiedUser): boolean {
 }
 export function canCreateLead(user: IdentifiedUser): boolean {
   return userCan(user, "lead:manage");
+}
+/**
+ * יצירת שלב חדש בפרויקט (create_project_stage) — שינוי מבנה הפרויקט עצמו, לא רק תוכן בתוכו,
+ * לכן שער ב-project:manage (לא task:create/task:manage): קיים בדיוק ל-owner/admin/project_manager
+ * (ר' roles.ts) — לא ל-planner/finance. scope פר-פרויקט (מנהל/ת רק בפרויקט שהוא/היא מנהל/ת)
+ * נאכף בפועל ב-createProjectStageAction (authorizeCreateStage), לא כאן — זה רק שער הכלי.
+ */
+export function canManageProjectStages(user: IdentifiedUser): boolean {
+  return userCan(user, "project:manage");
 }
 
 /**
@@ -106,6 +123,32 @@ export const CREATE_TASK_TOOL_DECL = {
       priority: { type: "string", description: "תעדוף — רק אם העובד ציין במפורש (למשל 'קריטי', 'דחוף'). אחרת השמט." },
     },
     required: ["taskName"],
+  },
+};
+
+/**
+ * יצירת **שלב** חדש בפרויקט — לא task/subitem (זה create_task). פער production (2026-09-22):
+ * "תוסיף את המשימה בתור עוד שלב" לא היה נתמך — create_task יודע רק ליצור task תחת שלב *קיים*,
+ * לא ליצור שלב חדש. מיוצא בנפרד באותה סיבה כמו CREATE_TASK_TOOL_DECL — בדיקות (test-create-
+ * task-prompt.ts style) יכולות לבחון את אותו schema בדיוק שהמודל מקבל.
+ */
+export const CREATE_PROJECT_STAGE_TOOL_DECL = {
+  name: "create_project_stage",
+  description:
+    "יוצר שלב חדש (לא משימה!) בתוך פרויקט — item עצמאי בבורד השלבים של הפרויקט, לא subitem/task. השתמש בזה רק כשהמשתמש ביקש להוסיף/לפתוח 'שלב' חדש במפורש (למשל 'תוסיף שלב חדש בשם X', 'תעשה את זה שלב', 'תוסיף את זה בתור עוד שלב') — לא לבקשת 'משימה'/'task' רגילה (זה create_task). אם המשתמש התחיל לתאר משימה ואז אמר במפורש שזה שלב — הכוונה האחרונה גוברת: קרא create_project_stage, לא create_task. חובה project ו-name אמיתיים; אם אחד מהם לא ברור מההודעה/מההקשר שנשמר בשיחה — אל תקרא לכלי, שאל.",
+  input_schema: {
+    type: "object",
+    properties: {
+      project: {
+        type: "string",
+        description: "שם הפרויקט שאליו מוסיפים את השלב. אם לא ברור/לא נאמר — אל תנחש, שאל.",
+      },
+      name: {
+        type: "string",
+        description: "שם השלב החדש, כפי שהמשתמש תיאר. חובה שיגיע מהמשתמש — אל תמציא/תשלים לבד.",
+      },
+    },
+    required: ["project", "name"],
   },
 };
 
@@ -199,6 +242,13 @@ export function systemPrompt(user: IdentifiedUser, about?: LoopContext): string 
           "• 'משימה בפרויקט X' סתם — בלי 'תחת' ובלי 'מקושר/לקשר' ובלי שלב — **זו החלטה עסקית של המשתמש, אסור לך לבחור לבד**: אל תקרא לכלי, שאל 'האם לקשר את המשימה לפרויקט, או ליצור אותה תחת אחד משלבי הפרויקט?' ותחכה לתשובה. תשובה 'לקשר (לפרויקט)' → taskKind='project'. תשובה 'תחת הפרויקט'/'תחת שלב' → taskKind='stage' (כנ״ל: בלי stage אם לא נקב שלב, מהכלי תקבל רשימה אמיתית).",
           "• **קריטי: project הוא לא 'פעם אחת וזהו'.** בכל קריאה חוזרת ל-create_task על אותה משימה — כולל הקריאה אחרי ששאלת 'לקשר או תחת שלב' וקיבלת תשובה — חובה להעביר שוב את project (ואת taskName ואת assignee אם ניתנו), גם אם כבר הועברו בקריאה קודמת. כל קריאה עצמאית: אם לא תעביר project בקריאה שבה אתה כן מעביר taskKind, המשימה תיווצר מנותקת מהפרויקט בלי שתדע — זה קרה בפועל וגרם לתקלה. שמור context בין הודעות כדי לדעת *מה* לשלוח שוב, אבל תמיד שלח את זה מפורשות בכל קריאה.",
           "• אם ציינו למי ('לדוב', 'לרוחמה') — העבר את זה כ-assignee; בלי זה המשימה תיפתח על שם המשתמש עצמו. אם הכלי מחזיר שגיאה (פרויקט/שלב/עובד לא נמצא או עמום, או שאלת לקשר/תחת-שלב) — הצג את האפשרויות/השאלה ושאל, אל תנחש. יש לך כלי יצירה אמיתי — לעולם אל תגיד שאין לך אפשרות ליצור משימה.",
+        ]
+      : []),
+    ...(canManageProjectStages(user)
+      ? [
+          "• **משימה (task) מול שלב (stage) — שני כלים שונים, אל תבלבל:** 'תוסיף שלב חדש בפרויקט X בשם Y' / 'תעשה את זה שלב' / 'תוסיף את זה בתור עוד שלב' היא בקשה ליצור **שלב עצמו** — קרא create_project_stage (לא create_task!). create_task (גם עם taskKind='stage') יוצר task/subitem *בתוך* שלב קיים; create_project_stage יוצר את השלב עצמו כפריט חדש בפרויקט. חובה project ו-name אמיתיים לפני הקריאה — אם אחד מהם לא ברור, שאל ואל תנחש.",
+          "• **הכוונה האחרונה גוברת:** אם השיחה התחילה מניסוח שנשמע כמו משימה ('תיצור לי משהו תחת X', 'סוכות מתקרב') אבל אחר כך המשתמש אמר במפורש 'תעשה את זה שלב' / 'תוסיף את זה בתור עוד שלב' / 'זה שלב, לא משימה' — זה מבטל את הפרשנות הקודמת: אל תיצור task, קרא create_project_stage. שמור מה-context את שם הפרויקט ואת התוכן שכבר נאמר (למשל 'סוכות מתקרב') כ-name של השלב — אל תבקש את זה שוב אם כבר ברור. ולהפך: אם ברור בוודאות שמדובר במשימה רגילה — אל תיצור שלב.",
+          "• אם לא ברור בכלל אם הכוונה למשימה או לשלב (למשל 'תוסיף תחת X משהו בשם Y' בלי המילה 'שלב' ובלי שום ניסוח שמתאים ל-task רגיל) — אל תקרא אף כלי; שאל בקצרה: 'זו משימה רגילה או שלב חדש בפרויקט?' וחכה לתשובה.",
         ]
       : []),
     ...(canCreateLead(user)
@@ -776,6 +826,21 @@ export async function runOpsChat(
     });
   }
 
+  // ---- יצירת שלב חדש בפרויקט — רק למי שיש project:manage (owner/admin/project_manager) ----
+  if (canManageProjectStages(user)) {
+    tools.push({
+      ...CREATE_PROJECT_STAGE_TOOL_DECL,
+      run: async (input) => {
+        const r = await createProjectStageAction(user, {
+          project: String(input.project ?? ""),
+          stageName: String(input.name ?? ""),
+        });
+        actions.push(`🆕 ${r.message}`);
+        return r;
+      },
+    });
+  }
+
   // ---- יצירת ליד חדש — רק למי שיש lead:manage ----
   if (canCreateLead(user)) {
     tools.push({
@@ -865,9 +930,9 @@ export async function runOpsChat(
           required: ["query"],
         },
         run: async (input) => {
-          const q = String(input.query ?? "").trim().toLowerCase();
+          const q = String(input.query ?? "").trim();
           const [office, ctrl] = await Promise.all([getOfficeState(), runControlScan()]);
-          const matches = office.projects.filter((p) => p.name.toLowerCase().includes(q));
+          const matches = matchProjectsByQuery(office.projects, q);
           if (matches.length === 0) return { error: `לא מצאתי פרויקט שמתאים ל"${q}".` };
           if (matches.length > 3) return { hint: "יותר מדי התאמות", names: matches.map((p) => p.name).slice(0, 10) };
           const out = [];

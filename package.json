@@ -45,6 +45,8 @@
     "test:tool-parity": "tsx scripts/test-tool-parity.ts",
     "test:project-scope": "tsx scripts/test-project-scope.ts",
     "test:item-project-scope": "tsx scripts/test-item-project-scope-live.ts",
+    "test:create-task-prompt": "tsx scripts/test-create-task-prompt.ts",
+    "test:create-task-behavior": "tsx scripts/test-create-task-behavior.ts",
     "maintenance:backfill-escalations": "tsx scripts/maintenance/backfill-escalation-identity.ts",
     "maintenance:backfill-escalations:apply": "tsx scripts/maintenance/backfill-escalation-identity.ts --apply"
   },

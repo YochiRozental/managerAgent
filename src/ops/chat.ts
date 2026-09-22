@@ -63,6 +63,41 @@ export function canCreateLead(user: IdentifiedUser): boolean {
   return userCan(user, "lead:manage");
 }
 
+/**
+ * הצהרת הכלי (בלי run — זה מצורף בתוך runOpsChat, שם יש גישה ל-closures כמו actions/refresh).
+ * מיוצא בנפרד כדי שבדיקות (test-create-task-prompt.ts) יוכלו להשתמש באותו schema אמיתי בדיוק
+ * שהמודל רואה בפועל, בלי לשכפל אותו וליצור סיכון לסטייה בין הבדיקה לקוד האמיתי.
+ *
+ * taskName חייב להגיע מהמשתמש בפועל — ר' האירוע מ-2026-09-22: "תיצור לרוחי משימה" (בלי המשך)
+ * גרם למודל למלא taskName="משימה חדשה" כדי לספק שדה חובה, במקום לשאול. אין לזה ברירת מחדל
+ * הגיונית (בשונה מ-project/stage/assignee/dueDate/priority), אז זה מנוסח כאן וב-system prompt
+ * (systemPrompt) פעמיים בכוונה — גם ב-tool schema וגם בהוראה מפורשת.
+ */
+export const CREATE_TASK_TOOL_DECL = {
+  name: "create_task",
+  description:
+    "פותח משימה חדשה ב-Monday, במקום הנכון במבנה פרויקט→שלב→משימה. אם ניתן שם פרויקט — נוצרת כתת-פריט בשלב הפעיל של אותו פרויקט (נבחר אוטומטית, אל תנחש/תשאל שלב אלא אם הכלי אומר שיש כמה אפשרויות). בלי פרויקט — נוצרת כמשימת משרד כללית. בלי assignee — מוקצית למשתמש עצמו. חובה שיהיה taskName אמיתי לפני הקריאה — אל תקרא לכלי הזה כדי 'לבדוק' מה קורה בלי תוכן משימה אמיתי.",
+  input_schema: {
+    type: "object",
+    properties: {
+      taskName: {
+        type: "string",
+        description:
+          "תוכן המשימה בפועל (מה צריך לעשות), בדיוק כמו שהמשתמש תיאר — לא כותרת פורמלית נפרדת. חובה שיגיע מהמשתמש בעצמו. אם המשתמש ביקש ליצור משימה בלי לומר מה היא — אל תמלא כאן ערך מומצא/placeholder (כמו 'משימה חדשה', 'משימה', 'ללא שם', 'משימה כללית') ואל תקרא לכלי הזה בכלל; שאל את המשתמש מה המשימה לפני שאתה קורא לכלי.",
+      },
+      project: { type: "string", description: "שם הפרויקט, אם המשימה שייכת לפרויקט. השמט למשימת משרד כללית." },
+      stage: {
+        type: "string",
+        description: "שם/מספר השלב בפרויקט — רק אם העובד ציין שלב במפורש בהודעה. אחרת השמט; הסוכן יבחר את השלב הפעיל אוטומטית.",
+      },
+      assignee: { type: "string", description: "שם העובד/ת שיבצע/תבצע את המשימה. השמט כדי להקצות למשתמש עצמו." },
+      dueDate: { type: "string", description: "תאריך יעד בפורמט YYYY-MM-DD, אם ניתן תאריך." },
+      priority: { type: "string", description: "תעדוף — רק אם העובד ציין במפורש (למשל 'קריטי', 'דחוף'). אחרת השמט." },
+    },
+    required: ["taskName"],
+  },
+};
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -74,7 +109,8 @@ export interface OpsChatResult {
   actions: string[];
 }
 
-function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
+/** מיוצא כדי שבדיקות יוכלו לבחון את הטקסט האמיתי שהמודל מקבל (ר' CREATE_TASK_TOOL_DECL). */
+export function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
   const now = DateTime.now().setZone(env.TIMEZONE);
   return [
     `אתה העוזר התפעולי של ${user.name} במשרד האדריכלים "גוטליב אדריכלים". תפקיד המשתמש: ${user.roleDescription}`,
@@ -144,7 +180,7 @@ function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
       : []),
     ...(canCreateTask(user)
       ? [
-          "• 'תפתח משימה...' / 'תוסיף משימה...' / 'תיצור משימה...' — קרא create_task. יש לך כלי יצירה אמיתי — לעולם אל תגיד שאין לך אפשרות ליצור משימה. אם ציינו פרויקט — המשימה תיווצר בשלב הנכון אוטומטית; אל תשאל על שלב מיוזמתך, רק אם הכלי מחזיר שגיאה שיש כמה שלבים אפשריים. אם ציינו למי ('לדוב', 'לרוחמה') — העבר את זה כ-assignee; בלי זה המשימה תיפתח על שם המשתמש עצמו. אם הכלי מחזיר שגיאה (פרויקט/שלב/עובד לא נמצא או עמום) — הצג את האפשרויות ושאל, אל תנחש.",
+          "• 'תפתח משימה...' / 'תוסיף משימה...' / 'תיצור משימה...' — קרא create_task, אבל רק אחרי שיש לך taskName אמיתי. taskName = תוכן המשימה בפועל (מה צריך לעשות), כפי שהמשתמש תיאר — לא כותרת פורמלית נפרדת. 'תיצור לרוחי משימה להתקשר ליוסי' → taskName='להתקשר ליוסי', בלי לשאול עוד. אבל 'תיצור לרוחי משימה' לבד, בלי המשך — **אל תקרא ל-create_task בכלל**: אין לך מה המשימה, ואסור למלא taskName בערך מומצא ('משימה חדשה'/'משימה'/'ללא שם'/'משימה כללית' וכל placeholder דומה) רק כדי שהשדה יתמלא. במקום זה שאל בקצרה: 'מה המשימה שתרצה לפתוח לרוחי?' וחכה לתשובה. (זה שונה מ-project/stage/assignee/dueDate/priority למטה — לאלה יש ברירת מחדל הגיונית כשלא צוינו; ל-taskName אין.) יש לך כלי יצירה אמיתי — לעולם אל תגיד שאין לך אפשרות ליצור משימה (זה נוגע ליכולת עצמה, לא להיתר לנחש תוכן). אם ציינו פרויקט — המשימה תיווצר בשלב הנכון אוטומטית; אל תשאל על שלב מיוזמתך, רק אם הכלי מחזיר שגיאה שיש כמה שלבים אפשריים. אם ציינו למי ('לדוב', 'לרוחמה') — העבר את זה כ-assignee; בלי זה המשימה תיפתח על שם המשתמש עצמו. אם הכלי מחזיר שגיאה (פרויקט/שלב/עובד לא נמצא או עמום) — הצג את האפשרויות ושאל, אל תנחש.",
         ]
       : []),
     ...(canCreateLead(user)
@@ -703,24 +739,7 @@ export async function runOpsChat(
   // ---- יצירת משימה חדשה — למי שיש הרשאת יצירה (task:create לעצמי, task:manage גם לאחרים) ----
   if (canCreateTask(user)) {
     tools.push({
-      name: "create_task",
-      description:
-        "פותח משימה חדשה ב-Monday, במקום הנכון במבנה פרויקט→שלב→משימה. אם ניתן שם פרויקט — נוצרת כתת-פריט בשלב הפעיל של אותו פרויקט (נבחר אוטומטית, אל תנחש/תשאל שלב אלא אם הכלי אומר שיש כמה אפשרויות). בלי פרויקט — נוצרת כמשימת משרד כללית. בלי assignee — מוקצית למשתמש עצמו.",
-      input_schema: {
-        type: "object",
-        properties: {
-          taskName: { type: "string", description: "שם/תיאור המשימה" },
-          project: { type: "string", description: "שם הפרויקט, אם המשימה שייכת לפרויקט. השמט למשימת משרד כללית." },
-          stage: {
-            type: "string",
-            description: "שם/מספר השלב בפרויקט — רק אם העובד ציין שלב במפורש בהודעה. אחרת השמט; הסוכן יבחר את השלב הפעיל אוטומטית.",
-          },
-          assignee: { type: "string", description: "שם העובד/ת שיבצע/תבצע את המשימה. השמט כדי להקצות למשתמש עצמו." },
-          dueDate: { type: "string", description: "תאריך יעד בפורמט YYYY-MM-DD, אם ניתן תאריך." },
-          priority: { type: "string", description: "תעדוף — רק אם העובד ציין במפורש (למשל 'קריטי', 'דחוף'). אחרת השמט." },
-        },
-        required: ["taskName"],
-      },
+      ...CREATE_TASK_TOOL_DECL,
       run: async (input) => {
         const r = await createTaskAction(user, {
           taskName: String(input.taskName ?? ""),

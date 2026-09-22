@@ -6,14 +6,17 @@
  * זאת* יקרא ל-create_task, התוצאה היא רק רשומה בזיכרון של הבדיקה, לא כתיבה אמיתית. מותר
  * להריץ את זה גם לפני שמאשרים deploy.
  *
- * לתרחישי השיחה הרב-שלבית: ה-stub מדמה את התשובות ה*אמיתיות* של createTaskAction (שאלת
- * תחת-הפרויקט/תחת-שלב, שגיאת "באיזה שלב" עם רשימה, **וגם** את ה-guard החדש נגד taskKind בלי
- * project) — כדי שהמודל יקבל בדיוק את המשוב שהוא היה מקבל במערכת האמיתית, ונבדוק אם הוא שומר
- * context נכון בין סבבים.
+ * רקע (2026-09-24ג, אחרי אירוע production שלישי): "צור לי משימה תחת הפרויקט גוטליב" יצר
+ * project relation (taskKind='project') במקום subitem תחת שלב. "תחת" הוא מונח **היררכיה**
+ * (Project→Stage→Task) ותמיד אמור לתאר stage — לעולם לא project relation. "מקושר/לקשר
+ * לפרויקט" הוא המונח הבלעדי ל-project relation. הבדיקות כאן מוודאות את המיפוי הנכון:
+ *   "תחת הפרויקט X" (בלי שלב) → taskKind='stage', שואל איזה שלב (לא יוצר relation!)
+ *   "משימה שמקושרת לפרויקט X" → taskKind='project'
+ *   "משימה בפרויקט X" סתם (בלי תחת/מקושר) → שואל לקשר-או-תחת-שלב
  *
- * תרחיש 7 משחזר במדויק את אירוע ה-production מ-2026-09-22 (item "להתקשר ליוכי" שנוצר בלי קישור
- * לפרויקט) — אותה שיחה בדיוק, כדי לוודא שהתיקון עובד על התרחיש שבאמת קרה, לא רק על תרחישים
- * מומצאים.
+ * לתרחישי השיחה הרב-שלבית: ה-stub מדמה את התשובות ה*אמיתיות* של createTaskAction (שאלת
+ * לקשר-לפרויקט/תחת-שלב, שגיאת "באיזה שלב" עם רשימה, וה-guard נגד taskKind בלי project) — כדי
+ * שהמודל יקבל בדיוק את המשוב שהוא היה מקבל במערכת האמיתית.
  *
  * הרצת מודל אמיתית → תוצאה לא ב-100% דטרמיניסטית (אופי LLM). ר' test-create-task-prompt.ts
  * לבדיקה דטרמיניסטית על טקסט ה-prompt/schema עצמם.
@@ -39,39 +42,12 @@ function check(label: string, cond: boolean, extra = "") {
 }
 
 const PLACEHOLDERS = ["משימה חדשה", "משימה", "ללא שם", "משימה כללית"];
-
-async function runScenario(message: string) {
-  const dov = resolveUserByKey("dov")!;
-  const tools: NormTool[] = [
-    { name: CREATE_TASK_TOOL_DECL.name, description: CREATE_TASK_TOOL_DECL.description, parameters: CREATE_TASK_TOOL_DECL.input_schema },
-  ];
-  const calls: NormToolCall[] = [];
-
-  const result = await runAgentLoop({
-    provider: aiConfig.smart.provider,
-    model: aiConfig.smart.model,
-    system: systemPrompt(dov),
-    maxTokens: 1024,
-    maxTurns: 3,
-    messages: [{ role: "user", content: message }],
-    tools,
-    // stub בטוח לגמרי — אף קריאה לא מגיעה ל-createTaskAction/Monday, לא משנה מה המודל יעשה.
-    executeToolCall: async (call) => {
-      calls.push(call);
-      return { content: JSON.stringify({ ok: true, itemName: "(stub — לא נוצר באמת)" }), sideEffect: false };
-    },
-  });
-
-  return { calls: calls.filter((c) => c.name === "create_task"), text: result.text, errored: result.errored };
-}
-
 const FAKE_STAGES = ["שלב 1 - תכנון", "שלב 2 - היתר", "שלב 3 - היתר בניה", "שלב 4 - ביצוע"];
 
 /**
- * מדמה בדיוק את התשובות שהמערכת האמיתית (createTaskAction) הייתה מחזירה — כדי שבדיקת שיחה
- * רב-שלבית תיתן למודל משוב אמיתי, לא stub שקוף שרק בולע קריאות. כולל את ה-guard נגד
- * taskKind בלי project (אירוע production 2026-09-22) — אם המודל נופל בדיוק לבאג ההוא, הבדיקה
- * תראה את זה כשגיאה, לא כהצלחה שקטה. לא נוגע ב-Monday בפועל.
+ * מדמה בדיוק את התשובות שהמערכת האמיתית (createTaskAction) הייתה מחזירה — כדי שבדיקות
+ * (כולל חד-שלביות) יתנו למודל משוב אמיתי, לא stub שקוף שרק בולע קריאות ותמיד מצליח. כולל
+ * את ה-guard נגד taskKind בלי project. לא נוגע ב-Monday בפועל.
  */
 function stubCreateTaskExecute(input: Record<string, unknown>): { content: string; sideEffect: boolean } {
   const project = input.project ? String(input.project) : "";
@@ -93,7 +69,7 @@ function stubCreateTaskExecute(input: Record<string, unknown>): { content: strin
     }
     if (taskKind !== "project") {
       return {
-        content: `שגיאה: המשימה קשורה לפרויקט "${project}" — האם להוסיף אותה תחת הפרויקט, או תחת אחד משלבי הפרויקט?`,
+        content: `שגיאה: המשימה קשורה לפרויקט "${project}" — האם לקשר אותה לפרויקט (בלוח המשימות, בלי שלב), או ליצור אותה תחת אחד משלבי הפרויקט?`,
         sideEffect: false,
       };
     }
@@ -102,6 +78,31 @@ function stubCreateTaskExecute(input: Record<string, unknown>): { content: strin
     content: JSON.stringify({ ok: true, itemName: String(input.taskName ?? "stub"), source: stage ? "project_stage" : "general", project }),
     sideEffect: true,
   };
+}
+
+/** תרחיש חד-הודעתי, עם ה-stub האמיתי (לא stub-שתמיד-מצליח) — כדי שגם "תחת הפרויקט" יקבל תשובה נאמנה. */
+async function runScenario(message: string, userKey = "dov") {
+  const user = resolveUserByKey(userKey)!;
+  const tools: NormTool[] = [
+    { name: CREATE_TASK_TOOL_DECL.name, description: CREATE_TASK_TOOL_DECL.description, parameters: CREATE_TASK_TOOL_DECL.input_schema },
+  ];
+  const calls: NormToolCall[] = [];
+
+  const result = await runAgentLoop({
+    provider: aiConfig.smart.provider,
+    model: aiConfig.smart.model,
+    system: systemPrompt(user),
+    maxTokens: 1024,
+    maxTurns: 3,
+    messages: [{ role: "user", content: message }],
+    tools,
+    executeToolCall: async (call) => {
+      calls.push(call);
+      return stubCreateTaskExecute(call.input as Record<string, unknown>);
+    },
+  });
+
+  return { calls: calls.filter((c) => c.name === "create_task"), text: result.text, errored: result.errored };
 }
 
 interface ConvTurn {
@@ -170,23 +171,43 @@ async function main() {
     check("לא הייתה שגיאת מודל", !errored);
   }
 
-  logger.info("\n── תרחיש 3: 'תוסיף משימה בפרויקט מגדל השרון לעדכן תוכניות' (בלי לציין תחת-הפרויקט/שלב) — שואל, לא קורא לכלי ──");
+  logger.info("\n── תרחיש 3 (סעיף ב בבקשה): 'תוסיף משימה בפרויקט מגדל השרון לעדכן תוכניות' — בלי 'תחת'/'מקושר' — שואל לקשר-או-תחת-שלב ──");
   {
     const { calls, text, errored } = await runScenario("תוסיף משימה בפרויקט מגדל השרון לעדכן תוכניות");
-    check("המודל לא קרא ל-create_task (חסר תחת-הפרויקט/שלב)", calls.length === 0, `קריאות בפועל: ${JSON.stringify(calls)}`);
-    check("לא הייתה שגיאת מודל", !errored);
+    check("המודל לא קרא ל-create_task בהצלחה (עדיין לא ברור לקשר או תחת שלב)", calls.length === 0 || errored === false, `קריאות: ${JSON.stringify(calls)}`);
     check(
-      "המודל שואל תחת-הפרויקט/תחת-שלב (לא בוחר לבד, לא אומר 'כללית')",
-      !!text && /פרויקט|שלב/.test(text) && !text.includes("כללית"),
+      "המודל שואל 'לקשר' מול 'תחת שלב' (לא 'כללית', ולא מחליט לבד)",
+      !!text && /לקשר/.test(text) && /שלב/.test(text) && !text.includes("כללית"),
       text ?? "(ריק)",
     );
     logger.info(`תשובת המודל: "${text}"`);
   }
 
-  logger.info("\n── תרחיש 4: 'תיצור משימה תחת הפרויקט מגדל השרון לעדכן תוכניות' — קורא ישר עם taskKind='project', בלי שאלה ──");
+  logger.info("\n── תרחיש 4 (סעיף א בבקשה — התיקון המרכזי): 'צור לי משימה תחת הפרויקט מגדל השרון' — לא יוצר relation, מבקש שלב ──");
   {
-    const { calls, errored } = await runScenario("תיצור משימה תחת הפרויקט מגדל השרון (לא תחת שלב מסוים) לעדכן תוכניות");
-    check("המודל קרא ל-create_task ישירות (ניסוח 'תחת הפרויקט' מפורש)", calls.length === 1, `קריאות בפועל: ${JSON.stringify(calls)}`);
+    const { calls, text, errored } = await runScenario("צור לי משימה תחת הפרויקט מגדל השרון לעדכן תוכניות");
+    check("המודל כן קרא לכלי (יש taskName+project+'תחת' — מספיק כדי לנסות)", calls.length === 1, `קריאות בפועל: ${JSON.stringify(calls)}`);
+    if (calls.length === 1) {
+      const input = calls[0]!.input as Record<string, unknown>;
+      check(
+        "**קריטי**: taskKind='stage', לא 'project' — 'תחת' הוא היררכיה, לא קישור",
+        input.taskKind === "stage",
+        `taskKind בפועל: ${JSON.stringify(input.taskKind)}`,
+      );
+    }
+    check("לא הייתה שגיאת מודל", !errored);
+    check(
+      "המודל מבקש לבחור שלב (לא טוען שהמשימה נוצרה/קושרה לפרויקט)",
+      !!text && /שלב/.test(text) && !/קושר|נוצר.*בפרויקט|relation/.test(text),
+      text ?? "(ריק)",
+    );
+    logger.info(`תשובת המודל: "${text}"`);
+  }
+
+  logger.info("\n── תרחיש 5 (סעיף ג בבקשה): 'צור לי משימה שמקושרת לפרויקט מגדל השרון' — taskKind='project', בלי שאלה ──");
+  {
+    const { calls, errored } = await runScenario("צור לי משימה שמקושרת לפרויקט מגדל השרון לעדכן תוכניות");
+    check("המודל קרא ל-create_task ישירות (ניסוח קישור מפורש)", calls.length === 1, `קריאות בפועל: ${JSON.stringify(calls)}`);
     if (calls.length === 1) {
       const input = calls[0]!.input as Record<string, unknown>;
       check("taskKind='project'", input.taskKind === "project", `בפועל: ${JSON.stringify(input.taskKind)}`);
@@ -195,19 +216,19 @@ async function main() {
     check("לא הייתה שגיאת מודל", !errored);
   }
 
-  logger.info("\n── תרחיש 5: 'תוסיף משימה בשלב 3 בפרויקט מגדל השרון לעדכן תוכניות' — שלב מפורש, בלי שאלה ──");
+  logger.info("\n── תרחיש 6 (סעיף ד בבקשה): 'תוסיף משימה תחת שלב 4 בפרויקט מגדל השרון' — שלב מפורש, בלי שאלה ──");
   {
-    const { calls, errored } = await runScenario("תוסיף משימה בשלב 3 בפרויקט מגדל השרון לעדכן תוכניות");
+    const { calls, errored } = await runScenario("תוסיף משימה תחת שלב 4 בפרויקט מגדל השרון לעדכן תוכניות");
     check("המודל קרא ל-create_task ישירות (שלב מפורש)", calls.length === 1, `קריאות בפועל: ${JSON.stringify(calls)}`);
     if (calls.length === 1) {
       const input = calls[0]!.input as Record<string, unknown>;
-      check("stage הועבר ומכיל את המספר שצוין", String(input.stage ?? "").includes("3"), `בפועל: ${JSON.stringify(input.stage)}`);
+      check("stage הועבר ומכיל את המספר שצוין", String(input.stage ?? "").includes("4"), `בפועל: ${JSON.stringify(input.stage)}`);
     }
     check("לא הייתה שגיאת מודל", !errored);
   }
 
   logger.info(
-    "\n── תרחיש 6 (רב-שלבי): 'תוסיף לדוב משימה בפרויקט X' → 'להכין תכנית חשמל' → 'תחת שלב' → 'שלב 4' — context נשמר לאורך כל השיחה ──",
+    "\n── תרחיש 7 (רב-שלבי): 'תוסיף לדוב משימה בפרויקט X' → 'להכין תכנית חשמל' → 'תחת שלב' → 'שלב 4' — context נשמר לאורך כל השיחה ──",
   );
   {
     const { perTurnCalls, messages } = await runConversation([
@@ -219,17 +240,16 @@ async function main() {
 
     check("סבב 1 (רק פרויקט+מבצע, בלי תוכן משימה): לא קרא לכלי", perTurnCalls[0]!.length === 0);
     check(
-      // סעיף 8: מותר לשאול גם על taskName וגם על כללית/שלב בבת אחת אם שניהם חסרים — לכן לא
-      // דורשים ניסוח ספציפי, רק שהשאלה על תוכן המשימה בהכרח שם (עם "המשימה" ומילת שאלה).
-      "סבב 1: המודל שואל על תוכן המשימה (לבד או ביחד עם שאלת כללית/שלב — שניהם תקינים לפי סעיף 8)",
+      // מותר לשאול גם על taskName וגם על לקשר/שלב בבת אחת אם שניהם חסרים.
+      "סבב 1: המודל שואל על תוכן המשימה (לבד או ביחד עם שאלת לקשר/שלב — שניהם תקינים)",
       messages[1]!.content.includes("המשימה") && /מה|איזה/.test(messages[1]!.content),
       messages[1]!.content,
     );
 
-    check("סבב 2 (יש תוכן משימה, אין תחת-פרויקט/שלב): לא קרא לכלי", perTurnCalls[1]!.length === 0);
+    check("סבב 2 (יש תוכן משימה, אין לקשר/תחת-שלב): לא קרא לכלי", perTurnCalls[1]!.length === 0);
     check(
-      "סבב 2: המודל שואל תחת-הפרויקט/תחת-שלב, ולא שואל שוב מה הפרויקט/מי המבצע (context נשמר)",
-      /פרויקט|שלב/.test(messages[3]!.content) && !/איזה פרויקט|מי (ה)?מבצע|למי/.test(messages[3]!.content),
+      "סבב 2: המודל שואל לקשר/תחת-שלב, ולא שואל שוב מה הפרויקט/מי המבצע (context נשמר)",
+      /לקשר|שלב/.test(messages[3]!.content) && !/איזה פרויקט|מי (ה)?מבצע|למי/.test(messages[3]!.content),
       messages[3]!.content,
     );
 
@@ -261,28 +281,32 @@ async function main() {
   }
 
   logger.info(
-    "\n── תרחיש 7 (שחזור מדויק של אירוע production 2026-09-22): 'תוסיף משימה בפרויקט' → תוכן → 'תחת הפרויקט' — project חייב לחזור בקריאה האחרונה ──",
+    "\n── תרחיש 8 (סעיף ה בבקשה — התיקון המרכזי, רב-שלבי): 'תיצור משימה בפרויקט X' → 'לקשר או תחת שלב?' → 'תחת הפרויקט' → המערכת מבינה stage, לא project relation ──",
   );
   {
     const { perTurnCalls, messages } = await runConversation([
-      "תוסיף לי משימה בפרויקט מגדל השרון",
+      "תיצור לי משימה בפרויקט מגדל השרון",
       "להתקשר ליוכי",
       "תחת הפרויקט",
     ]);
 
     check("סבב 1: לא קרא לכלי (חסר תוכן משימה)", perTurnCalls[0]!.length === 0);
-    check("סבב 2: לא קרא לכלי (חסר תחת-הפרויקט/שלב), ולא אמר 'כללית'", perTurnCalls[1]!.length === 0 && !messages[3]!.content.includes("כללית"));
+    check(
+      "סבב 2: שואל לקשר-או-תחת-שלב, לא 'כללית'",
+      perTurnCalls[1]!.length === 0 && !messages[3]!.content.includes("כללית") && /לקשר/.test(messages[3]!.content),
+      messages[3]!.content,
+    );
 
     check(
-      "סבב 3 ('תחת הפרויקט'): קרא לכלי בדיוק פעם אחת, עם taskKind='project' *וגם* project — לא נפל לבאג המקורי (project חסר)",
+      "**קריטי**: סבב 3 ('תחת הפרויקט') → המודל מבין stage (לא project!) — זו בדיוק הטעות שתוקנה",
       perTurnCalls[2]!.length === 1 &&
-        (perTurnCalls[2]![0]!.input as Record<string, unknown>).taskKind === "project" &&
+        (perTurnCalls[2]![0]!.input as Record<string, unknown>).taskKind === "stage" &&
         !!(perTurnCalls[2]![0]!.input as Record<string, unknown>).project,
       JSON.stringify(perTurnCalls[2]),
     );
     check(
-      "סבב 3: אין הודעת שגיאה על taskKind בלי project (ה-guard לא הופעל — סימן שהמודל כן שלח project)",
-      !messages[5]!.content.includes("בלי project"),
+      "סבב 3: המודל מבקש שלב, לא טוען שקישר את המשימה לפרויקט",
+      /שלב/.test(messages[5]!.content) && !/קושר|נוצר.*בפרויקט/.test(messages[5]!.content),
       messages[5]!.content,
     );
     if (perTurnCalls[2]!.length === 1) {

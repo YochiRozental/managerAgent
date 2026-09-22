@@ -7,17 +7,21 @@
  * ברירת מחדל בקוד, אלא המצאה של המודל כי ה-prompt הישן עודד "תמיד תקרא לכלי, מלא ברירות מחדל
  * למה שחסר" בלי לחריג את taskName (שאין לו ברירת מחדל הגיונית).
  *
- * רקע 2 (2026-09-24א): "תוסיף משימה לפרויקט X" (בלי לציין תחת-הפרויקט/תחת-שלב) גרם למודל
- * להחליט לבד וליצור subitem בשלב הפעיל (findActiveStage) — התנהגות עסקית לא רצויה. עכשיו:
- * פרויקט לבדו לא מספיק כדי לבחור stage-task; המודל חייב לשאול.
+ * רקע 2 (2026-09-24א): "תוסיף משימה לפרויקט X" (בלי לציין סוג) גרם למודל להחליט לבד וליצור
+ * subitem בשלב הפעיל (findActiveStage) — התנהגות עסקית לא רצויה. עכשיו: פרויקט לבדו לא מספיק
+ * כדי לבחור stage-task; המודל חייב לשאול.
  *
- * רקע 3 (2026-09-24ב, אחרי אירוע production אמיתי — item "להתקשר ליוכי" נוצר בלי קישור
- * לפרויקט): המודל שאל "כללית או תחת שלב" (הניסוח הישן), המשתמש בחר "כללית", והתשובה הסופית
- * טענה שהמשימה נוצרה "בפרויקט X" — אבל בפועל board_relation_mkqzzfgt נשאר ריק. שני תיקונים:
- * (א) מודל עסקי מדויק יותר — "תחת הפרויקט" (לא "כללית", מונח שמטשטש בין בלי-פרויקט לבין
- * עם-קישור-לפרויקט) מול "תחת שלב"; (ב) createGeneralTask תוקנה לכתוב את הקישור ב-
- * change_column_value נפרד אחרי היצירה, כי create_item התברר כלא כותב עמודות connect_boards
- * inline (ר' opsWrite.ts) — person/status כן נכתבו נכון מאותו column_values, רק הקישור לא.
+ * רקע 3 (2026-09-24ב): item נוצר בלי קישור לפרויקט בפועל (board_relation_mkqzzfgt ריק) —
+ * תוקן ב-createGeneralTask (change_column_value נפרד, ר' opsWrite.ts). בסבב הזה גם הוחלף
+ * הניסוח "משימה כללית המקושרת לפרויקט" ב"תחת הפרויקט" — **שהתברר כטעות נוספת, ר' רקע 4**.
+ *
+ * רקע 4 (2026-09-24ג, אירוע production שלישי — הטעות המתוקנת בקובץ הזה): "צור לי משימה תחת
+ * הפרויקט גוטליב" פורש כ-taskKind='project' (project relation) — אבל "תחת" הוא מונח **היררכיה**
+ * אצלנו (Project→Stage→Task), לא קישור! "תחת X" תמיד אמור לתאר subitem תחת שלב. המונח היחיד
+ * ל-project relation הוא "מקושר/לקשר לפרויקט". המיפוי הנכון עכשיו:
+ *   "תחת הפרויקט X" (בלי שלב)  → taskKind='stage', שואל איזה שלב (לא project relation!)
+ *   "משימה שמקושרת לפרויקט X"  → taskKind='project'
+ *   "משימה בפרויקט X" סתם      → שואל "לקשר לפרויקט, או תחת אחד משלביו?"
  *
  *   npm run test:create-task-prompt
  */
@@ -52,9 +56,19 @@ function main() {
     prompt.includes("להתקשר ליוסי"),
   );
 
-  // רקע 3: המודל העסקי המדויק (general / project / stage) — לא "כללית" עם פרויקט
+  // רקע 4 (התיקון המרכזי בסבב הזה): "תחת" = היררכיה, "מקושר/לקשר" = קישור — אף פעם לא הפוך
   check(
-    "system prompt מגדיר את שלושת הסוגים במפורש (בלי פרויקט / תחת הפרויקט / תחת שלב)",
+    "system prompt מבחין במפורש בין 'תחת' (היררכיה) ל'מקושר/לקשר' (קישור), עם אזהרה מפורשת",
+    prompt.includes("שתי מילים שונות לגמרי") &&
+      prompt.includes("מילת **היררכיה**") &&
+      prompt.includes("מילת **קישור**"),
+  );
+  check(
+    "system prompt אומר במפורש: לעולם אל תפרש 'תחת הפרויקט' כבקשת קישור",
+    prompt.includes("לעולם אל תפרש 'תחת הפרויקט' כבקשה לקשר"),
+  );
+  check(
+    "system prompt מגדיר את שלושת הסוגים במפורש (בלי פרויקט / מקושר לפרויקט / תחת שלב)",
     prompt.includes("שלושה סוגי משימה"),
   );
   check(
@@ -62,27 +76,30 @@ function main() {
     prompt.includes("אל תשתמש במילה 'כללית' לתיאור (2)"),
   );
   check(
-    "system prompt אוסר על המודל לבחור לבד בין תחת-הפרויקט לתחת-שלב",
+    "system prompt אוסר על המודל לבחור לבד בין לקשר-לפרויקט לתחת-שלב",
     prompt.includes("החלטה עסקית של המשתמש, אסור לך לבחור לבד"),
   );
   check(
-    "system prompt נותן את נוסח השאלה המדויק (תחת הפרויקט או תחת שלב, לא 'כללית')",
-    prompt.includes("האם להוסיף את המשימה תחת הפרויקט, או תחת אחד משלבי הפרויקט?"),
+    "system prompt נותן את נוסח השאלה המדויק ('לקשר', לא 'תחת הפרויקט', לא 'כללית')",
+    prompt.includes("האם לקשר את המשימה לפרויקט, או ליצור אותה תחת אחד משלבי הפרויקט?"),
+  );
+  check(
+    "system prompt מנחה: 'תחת הפרויקט X' בלי שלב → taskKind='stage' ישר, לא שאלת לקשר-או-שלב",
+    prompt.includes("אתר את הפרויקט, **אל תשאל 'לקשר או תחת שלב'**") && prompt.includes("קרא ישר עם taskKind='stage'"),
+  );
+  check(
+    "system prompt מנחה: ניסוח קישור מפורש ('מקושרת'/'קשר את המשימה') → taskKind='project' ישר",
+    prompt.includes("'משימה שמקושרת לפרויקט X' / 'קשר את המשימה לפרויקט X'") && prompt.includes("taskKind='project' ישר"),
   );
   check(
     "system prompt מבהיר ששלב מפורש מכריע לבד, בלי שאלה",
-    prompt.includes("שלב מפורש") && prompt.includes("מכריע לבד"),
-  );
-  check(
-    "system prompt מבהיר ש'תחת הפרויקט' מפורש מכריע לבד → taskKind='project'",
-    prompt.includes("תעביר taskKind='project' ואל תשאל כלום"),
+    prompt.includes("stage מפורש") && prompt.includes("קרא ישר בלי שאלה בכלל"),
   );
   check(
     "system prompt מנחה איך להתמודד עם 'תחת שלב' בלי שם שלב (לקרוא עם taskKind='stage', להציג רשימה אמיתית)",
     prompt.includes("הכלי יחזיר שגיאה עם רשימת השלבים האמיתיים"),
   );
   check(
-    // רקע 3: התיקון הקריטי — project חייב לחזור בכל קריאה, לא רק בפעם הראשונה.
     "system prompt מדגיש שחובה להעביר project מחדש בכל קריאה חוזרת, לא רק פעם ראשונה",
     prompt.includes("project הוא לא 'פעם אחת וזהו'") && prompt.includes("גם אם כבר הועברו בקריאה קודמת"),
   );
@@ -90,6 +107,10 @@ function main() {
   check(
     "system prompt כבר לא מכיל את ההתנהגות הישנה (בחירת שלב פעיל אוטומטית)",
     !prompt.includes("המשימה תיווצר בשלב הנכון אוטומטית"),
+  );
+  check(
+    "system prompt כבר לא ממפה 'תחת הפרויקט' ל-taskKind='project' (הטעות שתוקנה)",
+    !prompt.includes("תעביר taskKind='project' ואל תשאל כלום"),
   );
 
   const taskNameDesc = CREATE_TASK_TOOL_DECL.input_schema.properties.taskName.description;
@@ -109,8 +130,17 @@ function main() {
     JSON.stringify(CREATE_TASK_TOOL_DECL.input_schema.properties.taskKind.enum) === '["project","stage"]',
   );
   check("תיאור taskKind אוסר על המודל למלא אותו לבד", taskKindDesc.includes("אל תמלא לבד"));
-  check("תיאור taskKind אוסר במפורש את המונח 'כללית'", taskKindDesc.includes("'כללית'"));
+  check(
+    "תיאור taskKind ב-schema מבהיר במפורש: 'תחת' = היררכיה/stage, 'מקושר' = קישור/project",
+    taskKindDesc.includes("מילת **היררכיה**") && taskKindDesc.includes("לעולם לא 'project'"),
+  );
   check("taskKind לא required (כי stage מפורש יכול להחליף אותו)", !CREATE_TASK_TOOL_DECL.input_schema.required.includes("taskKind"));
+
+  const topDesc = CREATE_TASK_TOOL_DECL.description;
+  check(
+    "התיאור הראשי של הכלי (top-level) לא ממפה 'תחת הפרויקט' ל-(2)/project — מציין שזה על בסיס 'ביקש לקשר' בלבד",
+    !topDesc.includes("או שאין stage מפורש והוזכר 'תחת הפרויקט'") && topDesc.includes("ביקש 'לקשר'"),
+  );
 
   // ולידציה שהמשתמשים בלי הרשאת יצירה לא רואים את ההוראה הזו בכלל (התנאי הקיים canCreateTask)
   const goldi = resolveUserByKey("goldi")!; // finance — אין לו task:create/task:manage

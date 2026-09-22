@@ -153,14 +153,14 @@ async function main() {
     check("משימת פרויקט עם שלב מפורש: stageName מדווח נכון", r.stageName === "שלב 2 - היתר");
   }
 
-  // ---- 2ב. project + taskName, בלי לציין תחת-הפרויקט/שלב → שואל, לא יוצר (סעיף ב) ----
+  // ---- 2ב. project + taskName, בלי לציין לקשר/שלב → שואל, לא יוצר (סעיף ב) ----
   await expectRejects(
-    "project בלי stage ובלי taskKind → שואל תחת-הפרויקט/תחת-שלב, לא יוצר (לא findActiveStage, לא ניחוש)",
+    "project בלי stage ובלי taskKind → שואל לקשר-לפרויקט/תחת-שלב, לא יוצר (לא findActiveStage, לא ניחוש)",
     () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון" }, freshTaskDeps()),
-    "תחת הפרויקט",
+    "לקשר אותה לפרויקט",
   );
 
-  // ---- 2ג. בחירה "תחת הפרויקט" → item בלוח המשימות עם project relation, לא subitem (סעיף ג) ----
+  // ---- 2ג. taskKind='project' (המשתמש ביקש "לקשר לפרויקט", לא "תחת") → item בלוח המשימות עם project relation, לא subitem (סעיף ג/ו) ----
   {
     const calls: unknown[] = [];
     const r = await createTaskAction(
@@ -180,9 +180,9 @@ async function main() {
     );
   }
 
-  // ---- 2ד. בחירה "תחת שלב" בלי לנקוב שלב → שואל איזה שלב, עם הרשימה האמיתית (סעיף ד) ----
+  // ---- 2ד. "תחת הפרויקט"/"תחת שלב" בלי לנקוב שלב → taskKind='stage' בלי stage → שואל איזה שלב, עם הרשימה האמיתית (סעיף א/ד) ----
   await expectRejects(
-    "taskKind='stage' בלי stage → שואל איזה שלב, עם שמות השלבים האמיתיים",
+    "taskKind='stage' בלי stage → שואל איזה שלב, עם שמות השלבים האמיתיים (זה מה ש'תחת הפרויקט' אמור למפות אליו, לא taskKind='project')",
     () => createTaskAction(dov, { taskName: `X ${RUN_TAG}`, project: "מגדל השרון", taskKind: "stage" }, freshTaskDeps()),
     "באיזה שלב בפרויקט",
   );
@@ -192,7 +192,7 @@ async function main() {
     "שלב 1 - תכנון, שלב 2 - היתר",
   );
 
-  // ---- 2ה. "תחת הפרויקט X" מפורש מההתחלה → item + relation, בלי שאלת סוג (סעיף ה) ----
+  // ---- 2ה. "משימה שמקושרת לפרויקט X" מפורש מההתחלה (לא "תחת") → item + relation, בלי שאלת סוג (סעיף ו) ----
   {
     const calls: unknown[] = [];
     const r = await createTaskAction(
@@ -200,7 +200,7 @@ async function main() {
       { taskName: `X ${RUN_TAG}`, project: "בלומינג", taskKind: "project" },
       freshTaskDeps({ createGeneralTask: async (input) => { calls.push(input); return { id: "gp2", name: input.name }; } }),
     );
-    check("'תחת הפרויקט X' מההתחלה (taskKind='project' + project יחד) → נוצר ישר, בלי שאלה", r.ok);
+    check("'מקושרת לפרויקט X' מההתחלה (taskKind='project' + project יחד) → נוצר ישר, בלי שאלה", r.ok);
     check("project הנכון הועבר (בלומינג, 9002)", (calls[0] as { projectId?: string })?.projectId === "9002");
   }
 

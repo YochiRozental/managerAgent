@@ -20,6 +20,7 @@
     "test:google": "tsx scripts/test-google.ts",
     "test:whatsapp": "tsx scripts/test-whatsapp-echo.ts",
     "test:whatsapp-lifecycle": "tsx scripts/test-whatsapp-lifecycle.ts",
+    "test:whatsapp-reply-loop": "tsx scripts/test-whatsapp-reply-loop.ts",
     "test:control": "tsx scripts/test-control.ts",
     "test:cycle": "tsx scripts/test-cycle.ts",
     "test:health": "tsx scripts/test-health.ts",

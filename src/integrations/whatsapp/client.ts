@@ -25,13 +25,104 @@ export type VoiceMessageHandler = (jid: string, audioFilePath: string) => void;
  * IDs of messages the bot itself just sent, so self-chat commands (fromMe=true, typed by the
  * human from their phone) can still be processed while the bot's own replies are not treated
  * as new incoming commands (which would otherwise cause an infinite reply loop).
+ *
+ * WhatsApp's server echoes every message we send back to us over the same socket, tagged
+ * fromMe:true and type:"notify" (the multi-device-sync mechanism that lets a linked phone/Web
+ * session show messages sent from other own devices) — with the *same* message id. If that echo
+ * arrives before the id lands here, the bot "hears" its own reply as fresh user input and answers
+ * it, which answers itself again, etc. send.ts now registers the id *before* calling
+ * sock.sendMessage (not after awaiting it), which closes that race — see markAsSentByBot's jid+text
+ * params below for a second, content-based layer of defense that doesn't depend on id matching.
  */
 const recentlySentIds = new Set<string>();
 
-export function markAsSentByBot(id: string | null | undefined) {
+interface SentRecord {
+  text: string;
+  at: number;
+}
+const ECHO_TEXT_WINDOW_MS = 30_000;
+const recentlySentByJid = new Map<string, SentRecord[]>();
+
+export function markAsSentByBot(id: string | null | undefined, jid?: string, text?: string) {
+  if (id) {
+    recentlySentIds.add(id);
+    setTimeout(() => recentlySentIds.delete(id), 60_000);
+  }
+  if (jid && text) {
+    const cutoff = Date.now() - ECHO_TEXT_WINDOW_MS;
+    const list = (recentlySentByJid.get(jid) ?? []).filter((r) => r.at >= cutoff);
+    list.push({ text, at: Date.now() });
+    recentlySentByJid.set(jid, list);
+  }
+}
+
+/** שכבת הגנה שנייה, בלתי-תלויה ב-id: האם הטקסט הזה משהו שהבוט עצמו שלח ל-jid הזה ממש עכשיו. */
+function isOwnRecentEcho(jid: string, text: string): boolean {
+  const cutoff = Date.now() - ECHO_TEXT_WINDOW_MS;
+  const list = recentlySentByJid.get(jid);
+  if (!list) return false;
+  const fresh = list.filter((r) => r.at >= cutoff);
+  if (fresh.length) recentlySentByJid.set(jid, fresh);
+  else recentlySentByJid.delete(jid);
+  return fresh.some((r) => r.text === text);
+}
+
+/**
+ * מזהים של הודעות (נכנסות *או* יוצאות) שכבר טופלו — בלי קשר ל-fromMe. WhatsApp/Baileys יכולים
+ * לספק את אותה הודעה פעמיים ב-messages.upsert (redelivery בפרוטוקול, resync אחרי reconnect) —
+ * זה לא קשור ל-echo של הבוט על עצמו, אבל גם הוא יכול להפעיל את ה-orchestrator פעמיים על אותה
+ * הודעה אנושית. TTL ארוך יחסית (10 דק') כדי לכסות חלון resync סביר בלי לצמוח בלי גבול.
+ */
+const PROCESSED_ID_TTL_MS = 10 * 60_000;
+const processedMessageIds = new Set<string>();
+
+function alreadyProcessed(id: string): boolean {
+  return !!id && processedMessageIds.has(id);
+}
+
+function markProcessed(id: string) {
   if (!id) return;
-  recentlySentIds.add(id);
-  setTimeout(() => recentlySentIds.delete(id), 60_000);
+  processedMessageIds.add(id);
+  setTimeout(() => processedMessageIds.delete(id), PROCESSED_ID_TTL_MS);
+}
+
+/**
+ * רשת ביטחון קשה, בלתי-תלויה בכל מנגנון זיהוי-echo: בלי קשר לשאלה *למה* הודעה חזרה כקלט (id,
+ * תוכן, או מנגנון שלא חשבנו עליו) — אם יותר מ-MAX_FORWARDS_PER_WINDOW הודעות "חדשות" מגיעות
+ * מאותו jid בתוך BREAKER_WINDOW_MS, זה לא בן-אדם מקליד, וממשיכים לפני שנפתחת לולאה בלתי חסומה.
+ */
+const BREAKER_WINDOW_MS = 20_000;
+const MAX_FORWARDS_PER_WINDOW = 4;
+const BREAKER_COOLDOWN_MS = 2 * 60_000;
+const forwardTimestamps = new Map<string, number[]>();
+const breakerTrippedUntil = new Map<string, number>();
+
+function guardedForward(jid: string, text: string, forward: MessageHandler) {
+  const now = Date.now();
+  const trippedUntil = breakerTrippedUntil.get(jid);
+  if (trippedUntil) {
+    if (now < trippedUntil) {
+      logger.warn({ jid }, "מגן fail-safe פעיל — מתעלם מהודעה עד שהצינון מסתיים");
+      return;
+    }
+    breakerTrippedUntil.delete(jid);
+  }
+
+  const timestamps = (forwardTimestamps.get(jid) ?? []).filter((t) => now - t < BREAKER_WINDOW_MS);
+  timestamps.push(now);
+
+  if (timestamps.length > MAX_FORWARDS_PER_WINDOW) {
+    forwardTimestamps.delete(jid);
+    breakerTrippedUntil.set(jid, now + BREAKER_COOLDOWN_MS);
+    logger.error(
+      { jid, count: timestamps.length, windowMs: BREAKER_WINDOW_MS },
+      "⚠️ מגן fail-safe הופעל: יותר מדי הודעות בזמן קצר מאותו jid — נראה כמו לולאת תשובות. מפסיק להגיב לג'יד הזה לכמה דקות",
+    );
+    return;
+  }
+
+  forwardTimestamps.set(jid, timestamps);
+  forward(jid, text);
 }
 
 let socketPromise: Promise<WASocket> | null = null;
@@ -70,6 +161,58 @@ async function downloadVoiceNote(sock: WASocket, msg: Parameters<typeof download
   const filePath = path.join(VOICE_DIR, `${msg.key.id ?? Date.now()}.ogg`);
   fs.writeFileSync(filePath, buffer);
   return filePath;
+}
+
+type UpsertMessage = Parameters<typeof downloadMediaMessage>[0];
+
+/**
+ * מטפל באירוע messages.upsert בודד — exported בנפרד מ-connectWhatsApp כדי שאפשר יהיה לבדוק אותו
+ * ישירות (הודעות מדומות, בלי socket/חיבור אמיתי): הודעה נכנסת אמיתית → onMessage; echo של הבוט
+ * על עצמו (id או תוכן) → מדולג; הודעה (כלשהי) שכבר טופלה → מדולגת; יותר מדי הודעות "חדשות"
+ * מאותו jid בזמן קצר → guardedForward עוצר (רשת הביטחון מפני לולאה).
+ */
+export function handleMessagesUpsert(
+  update: { messages: UpsertMessage[]; type: string },
+  sock: WASocket,
+  onMessage?: MessageHandler,
+  onVoiceMessage?: VoiceMessageHandler,
+): void {
+  if (update.type !== "notify") return;
+  for (const msg of update.messages) {
+    const id = msg.key.id ?? "";
+    if (alreadyProcessed(id)) continue; // upsert כפול / redelivery — טופלה כבר
+
+    // Prefer the phone-number JID (remoteJidAlt) over the @lid form when available — replying
+    // to a fresh contact's @lid address can throw inside Baileys before its LID<->PN mapping
+    // has synced, while the phone-number JID works immediately.
+    const jid = msg.key.remoteJidAlt ?? msg.key.remoteJid;
+    if (!jid) continue;
+
+    const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
+
+    if (msg.key.fromMe) {
+      // fromMe:true covers two very different things: (a) the bot's own reply, echoed back
+      // by WhatsApp's server for multi-device sync — must NEVER be treated as input, that's
+      // the infinite-loop bug; (b) a command the account owner typed from another linked
+      // device into the same self-chat — a real, wanted input. id-match is the primary
+      // signal (race-free now that send.ts registers it before sending); text-match is a
+      // second, id-independent layer in case Baileys ever surfaces the echo differently.
+      if (recentlySentIds.has(id) || (text && isOwnRecentEcho(jid, text))) continue;
+    }
+
+    if (text && onMessage) {
+      if (id) markProcessed(id);
+      guardedForward(jid, text, onMessage);
+      continue;
+    }
+
+    if (msg.message?.audioMessage && onVoiceMessage) {
+      if (id) markProcessed(id);
+      void downloadVoiceNote(sock, msg)
+        .then((filePath) => onVoiceMessage(jid, filePath))
+        .catch((err) => logger.error(err, "הורדת הודעת קול נכשלה"));
+    }
+  }
 }
 
 export async function connectWhatsApp(
@@ -139,29 +282,7 @@ export async function connectWhatsApp(
     });
 
     if (onMessage || onVoiceMessage) {
-      sock.ev.on("messages.upsert", ({ messages, type }) => {
-        if (type !== "notify") return;
-        for (const msg of messages) {
-          if (msg.key.fromMe && recentlySentIds.has(msg.key.id ?? "")) continue;
-          // Prefer the phone-number JID (remoteJidAlt) over the @lid form when available — replying
-          // to a fresh contact's @lid address can throw inside Baileys before its LID<->PN mapping
-          // has synced, while the phone-number JID works immediately.
-          const jid = msg.key.remoteJidAlt ?? msg.key.remoteJid;
-          if (!jid) continue;
-
-          const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
-          if (text && onMessage) {
-            onMessage(jid, text);
-            continue;
-          }
-
-          if (msg.message?.audioMessage && onVoiceMessage) {
-            void downloadVoiceNote(sock, msg)
-              .then((filePath) => onVoiceMessage(jid, filePath))
-              .catch((err) => logger.error(err, "הורדת הודעת קול נכשלה"));
-          }
-        }
-      });
+      sock.ev.on("messages.upsert", (update) => handleMessagesUpsert(update, sock, onMessage, onVoiceMessage));
     }
 
     return sock;

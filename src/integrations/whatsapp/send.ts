@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { WASocket } from "@whiskeysockets/baileys";
+import { generateMessageID, type WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../../utils/logger.js";
 import { getSocket, isReady } from "./connectionState.js";
 import { markAsSentByBot } from "./client.js";
@@ -52,15 +52,25 @@ export async function setTyping(jid: string, typing: boolean) {
 
 export async function sendText(jid: string, text: string) {
   if (!isReady()) throw new WhatsAppNotReadyError();
-  const sent = await withRetry("שליחת טקסט", () => requireReadySocket().sendMessage(jid, { text }));
-  markAsSentByBot(sent?.key.id);
+  const messageId = generateMessageID();
+  // נרשם *לפני* השליחה בפועל, לא אחרי ה-await — סוגר את המירוץ מול ה-echo שהשרת של WhatsApp
+  // שולח בחזרה על ההודעה שלנו (type:"notify", fromMe:true, אותו message id — פרוטוקול
+  // multi-device sync). אם ה-echo מגיע לפני שנרשם ה-id, הבוט "שומע" את התשובה של עצמו כאילו
+  // זו הודעה חדשה מהמשתמש — זה שורש לולאת התשובות האינסופית.
+  markAsSentByBot(messageId, jid, text);
+  const sent = await withRetry("שליחת טקסט", () =>
+    requireReadySocket().sendMessage(jid, { text }, { messageId }),
+  );
+  markAsSentByBot(sent?.key.id, jid, text);
 }
 
 export async function sendVoiceNote(jid: string, oggFilePath: string) {
   if (!isReady()) throw new WhatsAppNotReadyError();
   const audio = fs.readFileSync(oggFilePath);
+  const messageId = generateMessageID();
+  markAsSentByBot(messageId, jid); // ראו הערה ב-sendText — נרשם לפני השליחה, לא אחריה
   const sent = await withRetry("שליחת הודעת קול", () =>
-    requireReadySocket().sendMessage(jid, { audio, mimetype: "audio/ogg; codecs=opus", ptt: true }),
+    requireReadySocket().sendMessage(jid, { audio, mimetype: "audio/ogg; codecs=opus", ptt: true }, { messageId }),
   );
-  markAsSentByBot(sent?.key.id);
+  markAsSentByBot(sent?.key.id, jid);
 }

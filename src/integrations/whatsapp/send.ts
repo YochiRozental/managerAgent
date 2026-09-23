@@ -1,7 +1,30 @@
 import fs from "node:fs";
 import type { WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../../utils/logger.js";
+import { getSocket, isReady } from "./connectionState.js";
 import { markAsSentByBot } from "./client.js";
+
+/**
+ * נזרקת כש-WhatsApp לא מחובר כרגע (עדיין מתחבר / באמצע reconnect / logged-out). מסמנת לקוראים
+ * (outboxDrainer בעיקר) שזה מצב זמני-צפוי ולא כשל אמיתי: אין טעם ב-retry פנימי, וההודעה צריכה
+ * פשוט להישאר בתור עד שהחיבור חוזר.
+ */
+export class WhatsAppNotReadyError extends Error {
+  constructor() {
+    super("WhatsApp אינו מחובר כרגע");
+    this.name = "WhatsAppNotReadyError";
+  }
+}
+
+/**
+ * שואב את ה-socket הפעיל *ברגע הקריאה* — לא reference שנשמר מראש — כדי שכל שולח ימשיך לעבוד
+ * נכון גם אחרי reconnect (QR שפג, ניתוק זמני, "restart required"), בלי restart של התהליך.
+ */
+function requireReadySocket(): WASocket {
+  const sock = getSocket();
+  if (!sock || !isReady()) throw new WhatsAppNotReadyError();
+  return sock;
+}
 
 async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3, delayMs = 3000): Promise<T> {
   let lastErr: unknown;
@@ -10,6 +33,7 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3, d
       return await fn();
     } catch (err) {
       lastErr = err;
+      if (err instanceof WhatsAppNotReadyError) throw err; // לא retry — WhatsApp כבר לא מחובר, לא זמני
       logger.warn({ err, attempt, attempts }, `${label} נכשל, מנסה שוב`);
       if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs));
     }
@@ -18,23 +42,25 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3, d
 }
 
 /** Shows/clears the "typing…" indicator in the chat. Best-effort — never worth failing a reply over. */
-export async function setTyping(sock: WASocket, jid: string, typing: boolean) {
+export async function setTyping(jid: string, typing: boolean) {
   try {
-    await sock.sendPresenceUpdate(typing ? "composing" : "paused", jid);
+    await requireReadySocket().sendPresenceUpdate(typing ? "composing" : "paused", jid);
   } catch (err) {
     logger.warn({ err }, "עדכון סטטוס 'מקליד/ה' נכשל");
   }
 }
 
-export async function sendText(sock: WASocket, jid: string, text: string) {
-  const sent = await withRetry("שליחת טקסט", () => sock.sendMessage(jid, { text }));
+export async function sendText(jid: string, text: string) {
+  if (!isReady()) throw new WhatsAppNotReadyError();
+  const sent = await withRetry("שליחת טקסט", () => requireReadySocket().sendMessage(jid, { text }));
   markAsSentByBot(sent?.key.id);
 }
 
-export async function sendVoiceNote(sock: WASocket, jid: string, oggFilePath: string) {
+export async function sendVoiceNote(jid: string, oggFilePath: string) {
+  if (!isReady()) throw new WhatsAppNotReadyError();
   const audio = fs.readFileSync(oggFilePath);
   const sent = await withRetry("שליחת הודעת קול", () =>
-    sock.sendMessage(jid, { audio, mimetype: "audio/ogg; codecs=opus", ptt: true }),
+    requireReadySocket().sendMessage(jid, { audio, mimetype: "audio/ogg; codecs=opus", ptt: true }),
   );
   markAsSentByBot(sent?.key.id);
 }

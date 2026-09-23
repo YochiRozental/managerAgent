@@ -1,22 +1,21 @@
-import type { WASocket } from "@whiskeysockets/baileys";
 import { createPendingAction, getOpenPendingAction, resolvePendingAction } from "../db/repositories/pendingActions.js";
 import { resolveUserByWhatsappJid, type IdentifiedUser } from "../identity/index.js";
 import { runOrchestrator, type ConversationMessage } from "../integrations/claude/orchestrator.js";
 import { getTool } from "../integrations/claude/tools.js";
 import { synthesizeHebrewVoiceNote } from "../integrations/tts/edgeTts.js";
-import { sendText, sendVoiceNote, setTyping } from "../integrations/whatsapp/send.js";
+import { sendText, sendVoiceNote, setTyping, WhatsAppNotReadyError } from "../integrations/whatsapp/send.js";
 import { logger } from "../utils/logger.js";
 import { classifyConfirmation, describeAction } from "./confirmation.js";
 
 const MAX_HISTORY = 20;
 const conversations = new Map<string, ConversationMessage[]>();
 
-async function sendReply(sock: WASocket, jid: string, text: string, alsoVoice: boolean) {
-  await sendText(sock, jid, text);
+async function sendReply(jid: string, text: string, alsoVoice: boolean) {
+  await sendText(jid, text);
   if (!alsoVoice) return;
   try {
     const oggPath = await synthesizeHebrewVoiceNote(text);
-    await sendVoiceNote(sock, jid, oggPath);
+    await sendVoiceNote(jid, oggPath);
   } catch (err) {
     logger.error(err, "סינתזת קול נכשלה, נשלח טקסט בלבד");
   }
@@ -77,8 +76,8 @@ async function handlePendingConfirmation(
   return reply;
 }
 
-async function processIncomingMessage(sock: WASocket, jid: string, text: string, isVoiceOrigin: boolean) {
-  await setTyping(sock, jid, true);
+async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: boolean) {
+  await setTyping(jid, true);
   try {
     const history = conversations.get(jid) ?? [];
 
@@ -92,7 +91,7 @@ async function processIncomingMessage(sock: WASocket, jid: string, text: string,
     const pendingReply = await handlePendingConfirmation(jid, text, history, user);
     if (pendingReply !== null) {
       conversations.set(jid, history.slice(-MAX_HISTORY));
-      await sendReply(sock, jid, pendingReply, isVoiceOrigin);
+      await sendReply(jid, pendingReply, isVoiceOrigin);
       logger.info({ jid, reply: pendingReply }, "תשובה נשלחה (אישור/ביטול פעולה)");
       return;
     }
@@ -107,7 +106,7 @@ async function processIncomingMessage(sock: WASocket, jid: string, text: string,
       createPendingAction(jid, result.toolName, result.input, draft);
       history.push({ role: "assistant", content: `מציע לבצע: ${draft}\n\n(ממתין לאישור המשתמש - כן/לא)` });
       conversations.set(jid, history.slice(-MAX_HISTORY));
-      await sendReply(sock, jid, `${draft}\n\nלאשר? (כן / לא)`, isVoiceOrigin);
+      await sendReply(jid, `${draft}\n\nלאשר? (כן / לא)`, isVoiceOrigin);
       logger.info({ jid, toolName: result.toolName }, "טיוטת אישור נשלחה, ממתין לתשובה");
       return;
     }
@@ -116,13 +115,13 @@ async function processIncomingMessage(sock: WASocket, jid: string, text: string,
     conversations.set(jid, history.slice(-MAX_HISTORY));
 
     if (result.text) {
-      await sendReply(sock, jid, result.text, isVoiceOrigin);
+      await sendReply(jid, result.text, isVoiceOrigin);
       logger.info({ jid, reply: result.text }, "תשובה נשלחה");
     } else {
       logger.warn({ jid }, "לא נוצרה תשובה לשליחה");
     }
   } finally {
-    await setTyping(sock, jid, false);
+    await setTyping(jid, false);
   }
 }
 
@@ -132,21 +131,27 @@ async function processIncomingMessage(sock: WASocket, jid: string, text: string,
  * every hiccup, which could silently swallow a reply that had already been composed. Errors are
  * caught, logged, and best-effort reported to the user instead.
  *
- * But if even the fallback error message can't be sent, sendText has already retried it 3 times
- * with backoff on top of whatever failed originally — that's not a hiccup, it means the socket
- * itself is wedged (seen in practice: Baileys stuck logging "timed out waiting for message" every
- * few seconds for hours, without ever firing the "connection closed" event our reconnect logic
- * listens for). No amount of catching fixes a dead socket, so exit and let Docker's
- * `restart: unless-stopped` bring up a fresh process that reconnects cleanly.
+ * If WhatsApp is merely disconnected right now (WhatsAppNotReadyError — mid-reconnect, QR expired,
+ * a transient network blip), that's expected and self-heals via client.ts's own reconnect logic —
+ * exiting the process here would defeat the whole point of pulling the live socket at send time.
+ * But if the send genuinely failed while the socket was supposedly ready (sendText already retried
+ * 3 times with backoff), that means the socket itself is wedged (seen in practice: Baileys stuck
+ * logging "timed out waiting for message" for hours without ever firing "connection closed"). No
+ * amount of catching fixes a truly dead-but-reports-open socket, so exit and let Docker's
+ * `restart: unless-stopped` bring up a fresh process.
  */
-export async function handleIncomingMessage(sock: WASocket, jid: string, text: string, isVoiceOrigin = false) {
+export async function handleIncomingMessage(jid: string, text: string, isVoiceOrigin = false) {
   try {
-    await processIncomingMessage(sock, jid, text, isVoiceOrigin);
+    await processIncomingMessage(jid, text, isVoiceOrigin);
   } catch (err) {
     logger.error(err, "טיפול בהודעה נכשל");
     try {
-      await sendText(sock, jid, "משהו השתבש אצלי בטיפול בהודעה - אפשר לנסות שוב?");
+      await sendText(jid, "משהו השתבש אצלי בטיפול בהודעה - אפשר לנסות שוב?");
     } catch (sendErr) {
+      if (sendErr instanceof WhatsAppNotReadyError) {
+        logger.warn({ jid }, "WhatsApp לא מחובר כרגע — לא ניתן לשלוח הודעת שגיאה, מוותרים על התשובה הזו");
+        return;
+      }
       logger.error(sendErr, "גם שליחת הודעת השגיאה נכשלה — כנראה החיבור לוואטסאפ תקוע, מפעיל מחדש");
       process.exit(1);
     }

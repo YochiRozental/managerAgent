@@ -29,10 +29,10 @@ async function main() {
     logger.info({ allowedWhatsappJids }, "הסוכן פעיל ומגיב למספרים הבאים");
   }
 
-  const sock = await connectWhatsApp(
+  await connectWhatsApp(
     (jid, text) => {
       if (!allowedWhatsappJids.includes(jid)) return;
-      void handleIncomingMessage(sock, jid, text);
+      void handleIncomingMessage(jid, text);
     },
     (jid, audioFilePath) => {
       if (!allowedWhatsappJids.includes(jid)) {
@@ -42,7 +42,7 @@ async function main() {
 
       if (!env.ENABLE_VOICE_TRANSCRIPTION) {
         fs.unlink(audioFilePath, () => {});
-        void sendText(sock, jid, "כרגע אני לא יכול להבין הודעות קוליות - תוכל בבקשה לכתוב לי בטקסט? 🙂");
+        void sendText(jid, "כרגע אני לא יכול להבין הודעות קוליות - תוכל בבקשה לכתוב לי בטקסט? 🙂");
         return;
       }
 
@@ -51,7 +51,7 @@ async function main() {
           logger.info({ jid }, "מתמלל הודעת קול...");
           const text = await transcribeHebrew(audioFilePath);
           logger.info({ jid, text }, "תמלול הושלם");
-          if (text) await handleIncomingMessage(sock, jid, text, true);
+          if (text) await handleIncomingMessage(jid, text, true);
         } catch (err) {
           logger.error(err, "תמלול הודעת קול נכשל");
         } finally {
@@ -61,8 +61,8 @@ async function main() {
     },
   );
 
-  startLeadEmailWatcher(sock);
-  startOutboxDrainer(sock);
+  startLeadEmailWatcher();
+  startOutboxDrainer();
 
   // פעימת לב — כדי ש-/health (שרת החלונית) ידע שסוכן ה-WhatsApp חי.
   recordHeartbeat("whatsapp-agent", `pid ${process.pid}`);

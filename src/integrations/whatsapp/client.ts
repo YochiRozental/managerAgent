@@ -10,6 +10,9 @@ import makeWASocket, {
 import qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 import { logger } from "../../utils/logger.js";
+import { setSocket, setState } from "./connectionState.js";
+
+export { getSocket, getConnectionState, isReady } from "./connectionState.js";
 
 const AUTH_DIR = "auth/whatsapp";
 const VOICE_DIR = "data/voice";
@@ -85,6 +88,10 @@ export async function connectWhatsApp(
       version,
     });
 
+    // מרגע זה getSocket() משקף את המופע הזה — לפני שנרשם אף listener ולפני שהחיבור "open" בפועל,
+    // כדי שאף שולח לא ימשיך להחזיק socket ישן אחרי שהתחיל reconnect.
+    setSocket(sock, "connecting");
+
     sock.ev.on("creds.update", saveCreds);
 
     let watchdogInterval: NodeJS.Timeout | null = null;
@@ -103,6 +110,9 @@ export async function connectWhatsApp(
       }
 
       if (connection === "close") {
+        // מיד — לפני החלטת reconnect/logged-out — כדי שכל שולח שקורא ל-isReady() מהרגע הזה
+        // יקבל false ולא ינסה לשלוח על socket שכבר לא חי.
+        setState("closed");
         if (watchdogInterval) {
           clearInterval(watchdogInterval);
           watchdogInterval = null;
@@ -122,6 +132,7 @@ export async function connectWhatsApp(
       } else if (connection === "open") {
         console.log("[whatsapp] connected!");
         logger.info("מחובר/ת לוואטסאפ ✅");
+        setState("open");
         if (watchdogInterval) clearInterval(watchdogInterval);
         watchdogInterval = startHealthWatchdog(sock);
       }

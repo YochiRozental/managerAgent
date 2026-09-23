@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { WASocket } from "@whiskeysockets/baileys";
 import { google, type gmail_v1 } from "googleapis";
 import { allowedWhatsappJids } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
@@ -126,7 +125,7 @@ function parseLeadEmail(body: string): ParsedLeadEmail | null {
   };
 }
 
-async function notify(sock: WASocket, lead: ParsedLeadEmail) {
+async function notify(lead: ParsedLeadEmail) {
   const lines = [
     "🆕 ליד חדש מהאתר!",
     `שם: ${lead.name}`,
@@ -141,7 +140,7 @@ async function notify(sock: WASocket, lead: ParsedLeadEmail) {
   const jid = allowedWhatsappJids[0];
   if (jid) {
     try {
-      await sendText(sock, jid, text);
+      await sendText(jid, text);
     } catch (err) {
       logger.error(err, "שליחת התראת וואטסאפ על ליד חדש נכשלה");
     }
@@ -154,7 +153,7 @@ async function notify(sock: WASocket, lead: ParsedLeadEmail) {
   }
 }
 
-async function processMessage(gmail: gmail_v1.Gmail, sock: WASocket, messageId: string, labelId: string) {
+async function processMessage(gmail: gmail_v1.Gmail, messageId: string, labelId: string) {
   const { data } = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
   const body = decodeBody(data.payload);
   const parsed = parseLeadEmail(body);
@@ -174,11 +173,11 @@ async function processMessage(gmail: gmail_v1.Gmail, sock: WASocket, messageId: 
   // sitting in the inbox as the user's own reminder that this lead still needs handling.
   await gmail.users.messages.modify({ userId: "me", id: messageId, requestBody: { addLabelIds: [labelId] } });
 
-  await notify(sock, parsed);
+  await notify(parsed);
   logger.info({ messageId, name: parsed.name, leadId: lead.id }, "ליד חדש נוצר אוטומטית מפניה במייל");
 }
 
-async function poll(sock: WASocket) {
+async function poll() {
   try {
     const auth = await getGoogleClient();
     const gmail = google.gmail({ version: "v1", auth });
@@ -194,7 +193,7 @@ async function poll(sock: WASocket) {
     for (const message of data.messages ?? []) {
       if (!message.id) continue;
       try {
-        await processMessage(gmail, sock, message.id, labelId);
+        await processMessage(gmail, message.id, labelId);
       } catch (err) {
         logger.error({ err, messageId: message.id }, "עיבוד מייל פנייה מהאתר נכשל");
       }
@@ -204,7 +203,7 @@ async function poll(sock: WASocket) {
   }
 }
 
-export function startLeadEmailWatcher(sock: WASocket) {
-  void poll(sock);
-  setInterval(() => void poll(sock), POLL_INTERVAL_MS);
+export function startLeadEmailWatcher() {
+  void poll();
+  setInterval(() => void poll(), POLL_INTERVAL_MS);
 }

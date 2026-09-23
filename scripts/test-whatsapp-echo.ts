@@ -14,14 +14,14 @@ async function main() {
       : "ALLOWED_WHATSAPP_JIDS ריק — רק יתעד הודעות נכנסות בלוג, לא יענה לאף אחד",
   );
 
-  const sock = await connectWhatsApp((jid, text) => {
+  await connectWhatsApp((jid, text) => {
     logger.info({ jid, text }, "התקבלה הודעה");
 
     if (allowedWhatsappJids.length === 0 || !allowedWhatsappJids.includes(jid)) {
       return;
     }
 
-    void sendText(sock, jid, `הד: ${text}`).then(() => logger.info({ jid }, "תשובת הד נשלחה"));
+    void sendText(jid, `הד: ${text}`).then(() => logger.info({ jid }, "תשובת הד נשלחה"));
   });
 }
 

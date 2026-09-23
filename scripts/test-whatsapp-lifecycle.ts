@@ -158,9 +158,8 @@ async function main() {
     process.exit(1);
   }
   logger.info("\nכל בדיקות ה-lifecycle של WhatsApp עברו ✅ (בלי חיבור אמיתי, בלי לגעת ב-auth/whatsapp)");
-  // sendText שהצליח מזין markAsSentByBot, שמשאיר setTimeout של 60 שניות (לא unref) — בלי exit
-  // מפורש התהליך החד-פעמי הזה היה נשאר תלוי עד שהם נופלים לבד. לא רלוונטי לתהליך האמיתי (רץ תמיד).
-  process.exit(0);
+  process.exit(0); // exit מפורש — סקריפט חד-פעמי, לא תלוי בריקון event loop טבעי
+
 }
 
 main().catch((err) => {

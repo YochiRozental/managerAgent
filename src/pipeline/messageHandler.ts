@@ -3,6 +3,7 @@ import { resolveUserByWhatsappJid, type IdentifiedUser } from "../identity/index
 import { runOrchestrator, type ConversationMessage } from "../integrations/claude/orchestrator.js";
 import { getTool } from "../integrations/claude/tools.js";
 import { synthesizeHebrewVoiceNote } from "../integrations/tts/edgeTts.js";
+import { consumeCorrelationForReply } from "../integrations/whatsapp/replyCorrelation.js";
 import { sendText, sendVoiceNote, setTyping, WhatsAppNotReadyError } from "../integrations/whatsapp/send.js";
 import { logger } from "../utils/logger.js";
 import { classifyConfirmation, describeAction } from "./confirmation.js";
@@ -10,7 +11,24 @@ import { classifyConfirmation, describeAction } from "./confirmation.js";
 const MAX_HISTORY = 20;
 const conversations = new Map<string, ConversationMessage[]>();
 
-async function sendReply(jid: string, text: string, alsoVoice: boolean) {
+/**
+ * לכל היותר עיבוד אחד בכל רגע לכל jid — invariant מבני, לא heuristic: אין מצב שבו שתי קריאות
+ * חופפות ל-handleIncomingMessage עבור אותו jid מייצרות שתי תשובות "במקביל" (מה שהיה יכול לבלבל
+ * את היסטוריית השיחה גם בלי קשר לבעיית ה-echo). handleIncomingMessage הוא נקודת הכניסה היחידה
+ * ל-orchestrator מ-WhatsApp (מגיעה רק מ-client.ts's guardedForward, אחרי כל שכבות הסינון) —
+ * כל תשובה, לכן, ניתנת למעקב (correlationId) עד להודעת קלט אמיתית אחת שהתקבלה בזמן שהג'יד היה
+ * פנוי, ואף פעם לא מהתשובה של הבוט עצמו.
+ */
+const processingJids = new Set<string>();
+
+/**
+ * נקודת השער היחידה לתשובה אוטומטית (category A): צורכת את ה-correlation *לפני* השליחה —
+ * פעם אחת בדיוק לכל correlation. אם הוא לא תקף/כבר נוצל, consumeCorrelationForReply זורק
+ * InvalidCorrelationError ולא נשלח כלום; זו האכיפה בפועל של "לכל היותר תשובה אחת per inbound",
+ * לא רק תיעוד. תשובת קול היא חלק מאותה תשובה (לא צריכה correlation משלה).
+ */
+async function sendReply(jid: string, text: string, alsoVoice: boolean, correlationId: string | undefined) {
+  consumeCorrelationForReply(correlationId);
   await sendText(jid, text);
   if (!alsoVoice) return;
   try {
@@ -76,7 +94,7 @@ async function handlePendingConfirmation(
   return reply;
 }
 
-async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: boolean) {
+async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: boolean, correlationId: string | undefined) {
   await setTyping(jid, true);
   try {
     const history = conversations.get(jid) ?? [];
@@ -91,7 +109,7 @@ async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: 
     const pendingReply = await handlePendingConfirmation(jid, text, history, user);
     if (pendingReply !== null) {
       conversations.set(jid, history.slice(-MAX_HISTORY));
-      await sendReply(jid, pendingReply, isVoiceOrigin);
+      await sendReply(jid, pendingReply, isVoiceOrigin, correlationId);
       logger.info({ jid, reply: pendingReply }, "תשובה נשלחה (אישור/ביטול פעולה)");
       return;
     }
@@ -106,7 +124,7 @@ async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: 
       createPendingAction(jid, result.toolName, result.input, draft);
       history.push({ role: "assistant", content: `מציע לבצע: ${draft}\n\n(ממתין לאישור המשתמש - כן/לא)` });
       conversations.set(jid, history.slice(-MAX_HISTORY));
-      await sendReply(jid, `${draft}\n\nלאשר? (כן / לא)`, isVoiceOrigin);
+      await sendReply(jid, `${draft}\n\nלאשר? (כן / לא)`, isVoiceOrigin, correlationId);
       logger.info({ jid, toolName: result.toolName }, "טיוטת אישור נשלחה, ממתין לתשובה");
       return;
     }
@@ -115,7 +133,7 @@ async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: 
     conversations.set(jid, history.slice(-MAX_HISTORY));
 
     if (result.text) {
-      await sendReply(jid, result.text, isVoiceOrigin);
+      await sendReply(jid, result.text, isVoiceOrigin, correlationId);
       logger.info({ jid, reply: result.text }, "תשובה נשלחה");
     } else {
       logger.warn({ jid }, "לא נוצרה תשובה לשליחה");
@@ -140,12 +158,30 @@ async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: 
  * amount of catching fixes a truly dead-but-reports-open socket, so exit and let Docker's
  * `restart: unless-stopped` bring up a fresh process.
  */
-export async function handleIncomingMessage(jid: string, text: string, isVoiceOrigin = false) {
+export async function handleIncomingMessage(
+  jid: string,
+  text: string,
+  isVoiceOrigin = false,
+  correlationId?: string,
+) {
+  if (processingJids.has(jid)) {
+    // לא אמור לקרות בזרימה תקינה (guardedForward כבר ממתן קצב, ו-Node מריץ callbacks של אירוע
+    // בודד ברצף) — אם זה בכל זאת קורה, עדיף לדלג מאשר לייצר שתי תשובות חופפות לאותו jid.
+    logger.warn({ jid, correlationId }, "עיבוד חופף לאותו jid — מדלג, לא יוצר תשובה נוספת");
+    return;
+  }
+  processingJids.add(jid);
+  const log = correlationId ? logger.child({ correlationId }) : logger;
   try {
-    await processIncomingMessage(jid, text, isVoiceOrigin);
+    log.info({ jid }, "מטפל בהודעה נכנסת (מקור אמיתי, לא echo)");
+    await processIncomingMessage(jid, text, isVoiceOrigin, correlationId);
   } catch (err) {
     logger.error(err, "טיפול בהודעה נכשל");
     try {
+      // לא צורכים correlation נוסף כאן: אם sendReply כבר רץ ונכשל, ה"ניסיון" (השלישייה של
+      // withRetry) כבר נוצל — הודעת השגיאה הזו היא הדיווח על אותו ניסיון בודד, לא תשובה שנייה.
+      // אם sendReply אף לא הופעל (למשל runOrchestrator עצמו נכשל) — זו התשובה היחידה שתישלח
+      // ל-inbound הזה. processingJids כבר מבטיח שהפעולה הזו לא יכולה לרוץ פעמיים במקביל.
       await sendText(jid, "משהו השתבש אצלי בטיפול בהודעה - אפשר לנסות שוב?");
     } catch (sendErr) {
       if (sendErr instanceof WhatsAppNotReadyError) {
@@ -155,5 +191,7 @@ export async function handleIncomingMessage(jid: string, text: string, isVoiceOr
       logger.error(sendErr, "גם שליחת הודעת השגיאה נכשלה — כנראה החיבור לוואטסאפ תקוע, מפעיל מחדש");
       process.exit(1);
     }
+  } finally {
+    processingJids.delete(jid);
   }
 }

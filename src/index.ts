@@ -30,9 +30,9 @@ async function main() {
   }
 
   await connectWhatsApp(
-    (jid, text) => {
+    (jid, text, meta) => {
       if (!allowedWhatsappJids.includes(jid)) return;
-      void handleIncomingMessage(jid, text);
+      void handleIncomingMessage(jid, text, false, meta?.correlationId);
     },
     (jid, audioFilePath) => {
       if (!allowedWhatsappJids.includes(jid)) {

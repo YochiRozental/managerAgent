@@ -253,6 +253,20 @@ async function main() {
     check("10b. אחרי איפוס: onMessage שוב עובד כרגיל, בלי restart של התהליך", calls.length === 1);
   }
 
+  // 11. שלושה "עותקים" של אותו inbound בדיוק (אותו id), נשלחים כ-microtasks נפרדים (לא סינכרוני
+  //     טהור) — מדמה concurrency אמיתי יותר מקריאה רצופה פשוטה. חייב לצאת forward אחד בדיוק.
+  resetAll();
+  {
+    const { handler, calls } = mockHandler();
+    const msg = fakeMessage({ id: "CONCURRENT-SAME-ID", fromMe: false, text: "מה נשמע?", remoteJid: PN });
+    await Promise.all([
+      Promise.resolve().then(() => handleMessagesUpsert({ messages: [msg], type: "notify" }, sock, handler)),
+      Promise.resolve().then(() => handleMessagesUpsert({ messages: [msg], type: "notify" }, sock, handler)),
+      Promise.resolve().then(() => handleMessagesUpsert({ messages: [msg], type: "notify" }, sock, handler)),
+    ]);
+    check("11. שלושה עותקים מקבילים (אותו id בדיוק) → forward אחד בדיוק", calls.length === 1, `נקרא ${calls.length} פעמים`);
+  }
+
   // ============================================================
   // חלק ב׳ — replyCorrelation.ts: הוכחה שזו אכיפה, לא metadata
   // ============================================================

@@ -13,6 +13,8 @@
  * חדשה — נכשל. bot echo, אם בכלל יעבור את כל שכבות הסינון ב-client.ts (לא אמור), יקבל
  * correlation *חדש* משלו — אבל השליחה הבודדת הזו מוגבלת ל-response אחד, לא לשרשרת.
  */
+import { randomUUID } from "node:crypto";
+
 export class InvalidCorrelationError extends Error {
   constructor(reason: string) {
     super(`תשובה אוטומטית נדחתה — correlation לא תקף: ${reason}`);
@@ -28,8 +30,14 @@ interface CorrelationRecord {
 const CORRELATION_TTL_MS = 5 * 60_000;
 const correlations = new Map<string, CorrelationRecord>();
 
+/**
+ * מזהה אקראי טהור — אף פעם לא נגזר מ-jid/מספר טלפון (לא כתוכן, לא כ-prefix/suffix). הקישור
+ * לנמען נשמר רק *פנימית* ב-CorrelationRecord (jid, לא חשוף ב-id עצמו) — כל מה שמופיע בלוגים
+ * (whatsapp_inbound/whatsapp_send) הוא ה-correlationId האטום הזה, ולצדו jidHash/recipientHash
+ * נפרד; אף אחד מהם, גם ביחד, לא משחזר את ה-jid המקורי.
+ */
 export function createInboundCorrelation(jid: string): string {
-  const id = `${jid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = randomUUID();
   correlations.set(id, { jid, consumed: false });
   setTimeout(() => correlations.delete(id), CORRELATION_TTL_MS);
   return id;

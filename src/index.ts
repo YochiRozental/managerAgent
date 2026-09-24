@@ -42,7 +42,9 @@ async function main() {
 
       if (!env.ENABLE_VOICE_TRANSCRIPTION) {
         fs.unlink(audioFilePath, () => {});
-        void sendText(jid, "כרגע אני לא יכול להבין הודעות קוליות - תוכל בבקשה לכתוב לי בטקסט? 🙂");
+        void sendText(jid, "כרגע אני לא יכול להבין הודעות קוליות - תוכל בבקשה לכתוב לי בטקסט? 🙂", {
+          source: "voice_disabled",
+        });
         return;
       }
 

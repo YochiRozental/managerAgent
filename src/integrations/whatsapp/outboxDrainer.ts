@@ -24,7 +24,7 @@ export async function drainOnce(): Promise<void> {
   try {
     for (const msg of listUnsentWhatsapp()) {
       try {
-        await sendText(msg.jid, msg.body);
+        await sendText(msg.jid, msg.body, { source: "outbox" });
         markWhatsappSent(msg.id);
         logger.info({ id: msg.id, jid: msg.jid }, "הודעת תור WhatsApp נשלחה");
       } catch (err) {

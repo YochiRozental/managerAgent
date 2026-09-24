@@ -56,7 +56,7 @@ function fakeSlowSocket(id: string, delayMs: number) {
 async function expectNotReadyFast(label: string) {
   const start = Date.now();
   try {
-    await sendText("972500000000@s.whatsapp.net", "בדיקה");
+    await sendText("972500000000@s.whatsapp.net", "בדיקה", { source: "manual_test" });
     check(label, false, "sendText לא זרק שגיאה בכלל");
   } catch (err) {
     const elapsed = Date.now() - start;
@@ -83,7 +83,7 @@ async function main() {
   (sockA as unknown as { authState: { creds: { me: { id: string } } } }).authState.creds.me = { id: "111" };
   setSocket(sockA, "open");
   check("socket A מאומת + open → isReady()===true", isReady());
-  await sendText("972500000000@s.whatsapp.net", "שלום");
+  await sendText("972500000000@s.whatsapp.net", "שלום", { source: "manual_test" });
   check("sendText הצליח מול socket A", callsA.sendMessage === 1, `נקרא ${callsA.sendMessage} פעמים`);
 
   // 4. ניתוק — לפני שהוחלט אם זה reconnect או logged-out, isReady חייב לרדת מיד
@@ -99,7 +99,7 @@ async function main() {
   check("אחרי reconnect (connecting): isReady()===false עד שיגיע open", !isReady());
   setState("open");
   check("אחרי open מחדש: isReady()===true", isReady());
-  await sendText("972500000000@s.whatsapp.net", "אחרי reconnect");
+  await sendText("972500000000@s.whatsapp.net", "אחרי reconnect", { source: "manual_test" });
   check("השליחה הגיעה ל-socket B החדש", callsB.sendMessage === 1, `נקרא ${callsB.sendMessage} פעמים`);
   check("socket A הישן לא קיבל אף שליחה נוספת (לא stale reference)", callsA.sendMessage === 1);
 

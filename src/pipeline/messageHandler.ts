@@ -3,8 +3,10 @@ import { resolveUserByWhatsappJid, type IdentifiedUser } from "../identity/index
 import { runOrchestrator, type ConversationMessage } from "../integrations/claude/orchestrator.js";
 import { getTool } from "../integrations/claude/tools.js";
 import { synthesizeHebrewVoiceNote } from "../integrations/tts/edgeTts.js";
-import { consumeCorrelationForReply } from "../integrations/whatsapp/replyCorrelation.js";
+import { normalizeJid } from "../integrations/whatsapp/jid.js";
+import { consumeCorrelationForReply, InvalidCorrelationError } from "../integrations/whatsapp/replyCorrelation.js";
 import { sendText, sendVoiceNote, setTyping, WhatsAppNotReadyError } from "../integrations/whatsapp/send.js";
+import { logBlockedDuplicateReply, newSendTraceId } from "../integrations/whatsapp/trace.js";
 import { logger } from "../utils/logger.js";
 import { classifyConfirmation, describeAction } from "./confirmation.js";
 
@@ -17,27 +19,42 @@ const conversations = new Map<string, ConversationMessage[]>();
  * את היסטוריית השיחה גם בלי קשר לבעיית ה-echo). handleIncomingMessage הוא נקודת הכניסה היחידה
  * ל-orchestrator מ-WhatsApp (מגיעה רק מ-client.ts's guardedForward, אחרי כל שכבות הסינון) —
  * כל תשובה, לכן, ניתנת למעקב (correlationId) עד להודעת קלט אמיתית אחת שהתקבלה בזמן שהג'יד היה
- * פנוי, ואף פעם לא מהתשובה של הבוט עצמו.
+ * פנוי, ואף פעם לא מהתשובה של הבוט עצמו. מפתח מנורמל (normalizeJid) — לא raw jid — כדי שסטיית
+ * ייצוג jid (device suffix, @c.us) לא תיצור "שני jid-ים" מלאכותיים שחומקים מהנעילה הזו.
  */
 const processingJids = new Set<string>();
 
 /**
  * נקודת השער היחידה לתשובה אוטומטית (category A): צורכת את ה-correlation *לפני* השליחה —
  * פעם אחת בדיוק לכל correlation. אם הוא לא תקף/כבר נוצל, consumeCorrelationForReply זורק
- * InvalidCorrelationError ולא נשלח כלום; זו האכיפה בפועל של "לכל היותר תשובה אחת per inbound",
- * לא רק תיעוד. תשובת קול היא חלק מאותה תשובה (לא צריכה correlation משלה).
+ * InvalidCorrelationError — זו האכיפה בפועל של "לכל היותר תשובה אחת per inbound" (Section 7):
+ * ניסיון שני נחסם *בשקט* (נרשם blocked_duplicate_reply, לא נשלח כלום, ולא זולג ל-catch הכללי
+ * ב-handleIncomingMessage — אחרת היה יכול לצאת "משהו השתבש" כתשובה שנייה בפועל). תשובת קול היא
+ * חלק מאותה תשובה (sendTraceId נפרד משלה, אותו correlationId — לא צריכה guard משלה).
  */
 async function sendReply(jid: string, text: string, alsoVoice: boolean, correlationId: string | undefined) {
-  consumeCorrelationForReply(correlationId);
-  await sendText(jid, text);
+  const sendTraceId = newSendTraceId();
+  try {
+    consumeCorrelationForReply(correlationId);
+  } catch (err) {
+    if (err instanceof InvalidCorrelationError) {
+      logBlockedDuplicateReply({ correlationId, sendTraceId });
+      return;
+    }
+    throw err;
+  }
+  await sendText(jid, text, { source: "inbound_reply", correlationId, sendTraceId });
   if (!alsoVoice) return;
   try {
     const oggPath = await synthesizeHebrewVoiceNote(text);
-    await sendVoiceNote(jid, oggPath);
+    await sendVoiceNote(jid, oggPath, { source: "inbound_reply", correlationId, sendTraceId: newSendTraceId() });
   } catch (err) {
     logger.error(err, "סינתזת קול נכשלה, נשלח טקסט בלבד");
   }
 }
+
+/** לבדיקות בלבד — sendReply הוא ה-gate האמיתי של category A; חשוף כאן כדי לבדוק אותו ישירות. */
+export const _sendReplyForTests = sendReply;
 
 /**
  * Resolves an open pending confirmation, if any, and returns the reply to send — or null if
@@ -110,13 +127,13 @@ async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: 
     if (pendingReply !== null) {
       conversations.set(jid, history.slice(-MAX_HISTORY));
       await sendReply(jid, pendingReply, isVoiceOrigin, correlationId);
-      logger.info({ jid, reply: pendingReply }, "תשובה נשלחה (אישור/ביטול פעולה)");
+      logger.info({ jid }, "תשובה נשלחה (אישור/ביטול פעולה)");
       return;
     }
 
     history.push({ role: "user", content: text });
 
-    logger.info({ jid, text, user: user?.key ?? "unidentified" }, "מעבד הודעה נכנסת");
+    logger.info({ jid, user: user?.key ?? "unidentified" }, "מעבד הודעה נכנסת");
     const result = await runOrchestrator(history, user);
 
     if (result.type === "confirm") {
@@ -134,7 +151,7 @@ async function processIncomingMessage(jid: string, text: string, isVoiceOrigin: 
 
     if (result.text) {
       await sendReply(jid, result.text, isVoiceOrigin, correlationId);
-      logger.info({ jid, reply: result.text }, "תשובה נשלחה");
+      logger.info({ jid }, "תשובה נשלחה");
     } else {
       logger.warn({ jid }, "לא נוצרה תשובה לשליחה");
     }
@@ -164,13 +181,14 @@ export async function handleIncomingMessage(
   isVoiceOrigin = false,
   correlationId?: string,
 ) {
-  if (processingJids.has(jid)) {
+  const lockKey = normalizeJid(jid);
+  if (processingJids.has(lockKey)) {
     // לא אמור לקרות בזרימה תקינה (guardedForward כבר ממתן קצב, ו-Node מריץ callbacks של אירוע
     // בודד ברצף) — אם זה בכל זאת קורה, עדיף לדלג מאשר לייצר שתי תשובות חופפות לאותו jid.
     logger.warn({ jid, correlationId }, "עיבוד חופף לאותו jid — מדלג, לא יוצר תשובה נוספת");
     return;
   }
-  processingJids.add(jid);
+  processingJids.add(lockKey);
   const log = correlationId ? logger.child({ correlationId }) : logger;
   try {
     log.info({ jid }, "מטפל בהודעה נכנסת (מקור אמיתי, לא echo)");
@@ -182,7 +200,7 @@ export async function handleIncomingMessage(
       // withRetry) כבר נוצל — הודעת השגיאה הזו היא הדיווח על אותו ניסיון בודד, לא תשובה שנייה.
       // אם sendReply אף לא הופעל (למשל runOrchestrator עצמו נכשל) — זו התשובה היחידה שתישלח
       // ל-inbound הזה. processingJids כבר מבטיח שהפעולה הזו לא יכולה לרוץ פעמיים במקביל.
-      await sendText(jid, "משהו השתבש אצלי בטיפול בהודעה - אפשר לנסות שוב?");
+      await sendText(jid, "משהו השתבש אצלי בטיפול בהודעה - אפשר לנסות שוב?", { source: "inbound_error", correlationId });
     } catch (sendErr) {
       if (sendErr instanceof WhatsAppNotReadyError) {
         logger.warn({ jid }, "WhatsApp לא מחובר כרגע — לא ניתן לשלוח הודעת שגיאה, מוותרים על התשובה הזו");
@@ -192,6 +210,6 @@ export async function handleIncomingMessage(
       process.exit(1);
     }
   } finally {
-    processingJids.delete(jid);
+    processingJids.delete(lockKey);
   }
 }

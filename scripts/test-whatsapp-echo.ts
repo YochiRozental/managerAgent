@@ -21,7 +21,7 @@ async function main() {
       return;
     }
 
-    void sendText(jid, `הד: ${text}`).then(() => logger.info({ jid }, "תשובת הד נשלחה"));
+    void sendText(jid, `הד: ${text}`, { source: "manual_test" }).then(() => logger.info({ jid }, "תשובת הד נשלחה"));
   });
 }
 

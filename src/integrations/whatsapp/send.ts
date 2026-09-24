@@ -2,6 +2,18 @@ import fs from "node:fs";
 import type { WASocket } from "@whiskeysockets/baileys";
 import { logger } from "../../utils/logger.js";
 import { getSocket, isReady } from "./connectionState.js";
+import { logSendTrace, newSendTraceId, type SendSource } from "./trace.js";
+
+/**
+ * כל שליחה חייבת לספק מקור מפורש — כדי ש-whatsapp_send trace ידע בוודאות מי יצר אותה, בלי
+ * להסתמך על ניחוש/תוכן. sendTraceId אופציונלי: אם הקורא (כמו sendReply, שצריך אותו גם למקרה
+ * חסימת כפילות) כבר יצר אחד, נשתמש בו; אחרת ניצור כאן.
+ */
+export interface SendMeta {
+  source: SendSource;
+  correlationId?: string;
+  sendTraceId?: string;
+}
 
 /**
  * נזרקת כש-WhatsApp לא מחובר כרגע (עדיין מתחבר / באמצע reconnect / logged-out). מסמנת לקוראים
@@ -49,15 +61,29 @@ export async function setTyping(jid: string, typing: boolean) {
   }
 }
 
-export async function sendText(jid: string, text: string) {
+export async function sendText(jid: string, text: string, meta: SendMeta) {
   if (!isReady()) throw new WhatsAppNotReadyError();
-  await withRetry("שליחת טקסט", () => requireReadySocket().sendMessage(jid, { text }));
+  const sent = await withRetry("שליחת טקסט", () => requireReadySocket().sendMessage(jid, { text }));
+  logSendTrace({
+    sendTraceId: meta.sendTraceId ?? newSendTraceId(),
+    source: meta.source,
+    correlationId: meta.correlationId,
+    jid,
+    whatsappMessageId: sent?.key.id ?? null,
+  });
 }
 
-export async function sendVoiceNote(jid: string, oggFilePath: string) {
+export async function sendVoiceNote(jid: string, oggFilePath: string, meta: SendMeta) {
   if (!isReady()) throw new WhatsAppNotReadyError();
   const audio = fs.readFileSync(oggFilePath);
-  await withRetry("שליחת הודעת קול", () =>
+  const sent = await withRetry("שליחת הודעת קול", () =>
     requireReadySocket().sendMessage(jid, { audio, mimetype: "audio/ogg; codecs=opus", ptt: true }),
   );
+  logSendTrace({
+    sendTraceId: meta.sendTraceId ?? newSendTraceId(),
+    source: meta.source,
+    correlationId: meta.correlationId,
+    jid,
+    whatsappMessageId: sent?.key.id ?? null,
+  });
 }

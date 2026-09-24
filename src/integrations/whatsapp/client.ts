@@ -4,7 +4,6 @@ import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
-  jidNormalizedUser,
   useMultiFileAuthState,
   type WASocket,
 } from "@whiskeysockets/baileys";
@@ -12,9 +11,15 @@ import qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 import { logger } from "../../utils/logger.js";
 import { setSocket, setState } from "./connectionState.js";
+import { normalizeJid } from "./jid.js";
 import { createInboundCorrelation } from "./replyCorrelation.js";
+import { logInboundTrace, logProcessStarted } from "./trace.js";
 
 export { getSocket, getConnectionState, isReady } from "./connectionState.js";
+export { processInstanceId } from "./trace.js";
+
+// פעם אחת לכל חיי התהליך — נקודת הכניסה היחידה של המודול הזה (import יחיד, ES module singleton).
+logProcessStarted();
 
 const AUTH_DIR = "auth/whatsapp";
 const VOICE_DIR = "data/voice";
@@ -42,13 +47,6 @@ export type VoiceMessageHandler = (jid: string, audioFilePath: string) => void;
  * traffic (team members, clients) is unaffected: they're always a different WhatsApp account than
  * this one, so always fromMe:false.
  */
-function normalizedJid(jid: string): string {
-  try {
-    return jidNormalizedUser(jid) || jid;
-  } catch {
-    return jid;
-  }
-}
 
 /**
  * מזהים של הודעות (נכנסות *או* יוצאות) שכבר טופלו — בלי קשר ל-fromMe. WhatsApp/Baileys יכולים
@@ -115,13 +113,18 @@ export function isGloballyHalted(): boolean {
   return Date.now() < globalHaltUntil;
 }
 
-function guardedForward(jid: string, text: string, forward: MessageHandler) {
+/**
+ * מחזירה את ה-correlationId שנוצר אם ההודעה עברה את כל השכבות ונשלחה ל-forward, או null אם
+ * נחסמה (halt/breaker) — כדי ש-handleMessagesUpsert יוכל לרשום whatsapp_inbound עם ה-decision
+ * הנכון (accepted/drop_breaker) בלי לשכפל את הלוגיקה הזו.
+ */
+function guardedForward(jid: string, text: string, forward: MessageHandler): string | null {
   const now = Date.now();
-  const key = normalizedJid(jid);
+  const key = normalizeJid(jid);
 
   if (isGloballyHalted()) {
     logger.error({ jid: key }, "🚨 מגן fail-safe גלובלי פעיל — כל התשובות האוטומטיות מושהות, מתעלם מהודעה");
-    return;
+    return null;
   }
 
   const freshGlobal = globalForwardTimestamps.filter((t) => now - t < GLOBAL_BREAKER_WINDOW_MS);
@@ -133,14 +136,14 @@ function guardedForward(jid: string, text: string, forward: MessageHandler) {
       { count: freshGlobal.length, windowMs: GLOBAL_BREAKER_WINDOW_MS, haltMinutes: GLOBAL_HALT_MS / 60_000 },
       "🚨 מגן fail-safe גלובלי הופעל: יותר מדי הודעות 'חדשות' על פני כל ה-jid-ים תוך זמן קצר — לא תעבורה אנושית תקינה, נראה כמו לולאה. משהה תשובות אוטומטיות לכל ה-jid-ים (בלי restart)",
     );
-    return;
+    return null;
   }
 
   const trippedUntil = breakerTrippedUntil.get(key);
   if (trippedUntil) {
     if (now < trippedUntil) {
       logger.warn({ jid: key }, "מגן fail-safe פעיל — מתעלם מהודעה עד שהצינון מסתיים");
-      return;
+      return null;
     }
     breakerTrippedUntil.delete(key);
   }
@@ -155,7 +158,7 @@ function guardedForward(jid: string, text: string, forward: MessageHandler) {
       { jid: key, count: timestamps.length, windowMs: BREAKER_WINDOW_MS },
       "⚠️ מגן fail-safe הופעל: יותר מדי הודעות בזמן קצר מאותו jid — נראה כמו לולאת תשובות. מפסיק להגיב לג'יד הזה לכמה דקות",
     );
-    return;
+    return null;
   }
 
   forwardTimestamps.set(key, timestamps);
@@ -163,6 +166,7 @@ function guardedForward(jid: string, text: string, forward: MessageHandler) {
   // תגובה אוטומטית (messageHandler.ts's sendReply) תצטרך "לצרוך" אותו לפני שליחה — פעם אחת בדיוק.
   const correlationId = createInboundCorrelation(jid);
   forward(jid, text, { correlationId });
+  return correlationId;
 }
 
 let socketPromise: Promise<WASocket> | null = null;
@@ -213,12 +217,16 @@ type UpsertMessage = Parameters<typeof downloadMediaMessage>[0];
  *      ה-invariant המרכזי: פלט של החשבון הזה לעולם לא יכול להפוך לקלט. אין יותר תמיכה בפקודות
  *      self-chat (fromMe:true ממכשיר מקושר אחר) — decision מוצרי מכוון, לא באג: אין ל-Baileys
  *      metadata אמין (id/jid) שמבדיל בין זה לבין ה-echo של הבוט על עצמו (multi-device sync,
- *      deviceSentMessage rewrap — ראו את התיעוד מעל normalizedJid). תעבורה אמיתית (עובדים/
+ *      deviceSentMessage rewrap — ראו את ה-INVARIANT בראש הקובץ). תעבורה אמיתית (עובדים/
  *      לקוחות) היא תמיד fromMe:false, כי הם חשבון WhatsApp אחר משל הבוט — לא נפגעת.
  *   3. dedup (alreadyProcessed) — upsert כפול/redelivery של אותה הודעה נכנסת אמיתית.
  *   4. breakers (בתוך guardedForward) — per-jid וגלובלי.
  *   5. יצירת correlation (בתוך guardedForward, אחרי כל השאר).
  *   6. forward ל-handler/orchestrator.
+ *
+ * כל הודעה שנבדקת (כולל כל מה שנדחה, כולל fromMe) מקבלת whatsapp_inbound trace — metadata בלבד
+ * (id/jid מ-hash, לא raw; בלי טקסט) — כדי שאפשר יהיה בניסוי לדעת בוודאות כמה הודעות באמת התקבלו
+ * ומה הוחלט על כל אחת, בלי לנחש מתוך תוכן.
  */
 export function handleMessagesUpsert(
   update: { messages: UpsertMessage[]; type: string },
@@ -228,30 +236,56 @@ export function handleMessagesUpsert(
 ): void {
   if (update.type !== "notify") return;
   for (const msg of update.messages) {
-    if (msg.key.fromMe) continue; // (2) invariant — ראו התיעוד מעל הפונקציה
-
     const id = msg.key.id ?? "";
-    if (alreadyProcessed(id)) continue; // (3) upsert כפול / redelivery — טופלה כבר
+    const fromMe = !!msg.key.fromMe;
+    const jidForTrace = msg.key.remoteJidAlt ?? msg.key.remoteJid ?? "";
+    const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
+    const hasAudio = !!msg.message?.audioMessage;
+    const messageType = text ? "text" : hasAudio ? "audio" : "unsupported";
+
+    if (fromMe) {
+      // (2) INVARIANT — ראו התיעוד מעל. הלוג הזה קורה *לפני* ה-continue, בדיוק כדי שאפשר יהיה
+      // לראות אם הודעת echo של הבוט עצמו אי-פעם חוזרת דרך Baileys — אבל ה-drop עצמו לא מותנה בכלום.
+      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: true, messageType, decision: "drop_from_me" });
+      continue;
+    }
+
+    if (alreadyProcessed(id)) {
+      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: false, messageType, decision: "drop_duplicate_id" });
+      continue; // (3) upsert כפול / redelivery — טופלה כבר
+    }
 
     // Prefer the phone-number JID (remoteJidAlt) over the @lid form when available — replying
     // to a fresh contact's @lid address can throw inside Baileys before its LID<->PN mapping
     // has synced, while the phone-number JID works immediately.
     const jid = msg.key.remoteJidAlt ?? msg.key.remoteJid;
-    if (!jid) continue;
-
-    const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
-
-    if (text && onMessage) {
-      if (id) markProcessed(id);
-      guardedForward(jid, text, onMessage); // (4)+(5)+(6)
+    if (!jid) {
+      logInboundTrace({ messageId: id, jid: "", fromMe: false, messageType, decision: "drop_unsupported" });
       continue;
     }
 
-    if (msg.message?.audioMessage && onVoiceMessage) {
+    if (text && onMessage) {
       if (id) markProcessed(id);
+      const correlationId = guardedForward(jid, text, onMessage); // (4)+(5)+(6)
+      logInboundTrace({
+        correlationId: correlationId ?? undefined,
+        messageId: id,
+        jid,
+        fromMe: false,
+        messageType: "text",
+        decision: correlationId ? "accepted" : "drop_breaker",
+      });
+      continue;
+    }
+
+    if (hasAudio && onVoiceMessage) {
+      if (id) markProcessed(id);
+      logInboundTrace({ messageId: id, jid, fromMe: false, messageType: "audio", decision: "accepted" });
       void downloadVoiceNote(sock, msg)
         .then((filePath) => onVoiceMessage(jid, filePath))
         .catch((err) => logger.error(err, "הורדת הודעת קול נכשלה"));
+    } else {
+      logInboundTrace({ messageId: id, jid, fromMe: false, messageType, decision: "drop_unsupported" });
     }
   }
 }

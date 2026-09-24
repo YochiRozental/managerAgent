@@ -140,7 +140,7 @@ async function notify(lead: ParsedLeadEmail) {
   const jid = allowedWhatsappJids[0];
   if (jid) {
     try {
-      await sendText(jid, text);
+      await sendText(jid, text, { source: "lead_email_watcher" });
     } catch (err) {
       logger.error(err, "שליחת התראת וואטסאפ על ליד חדש נכשלה");
     }

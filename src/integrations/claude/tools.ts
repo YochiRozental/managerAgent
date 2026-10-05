@@ -20,9 +20,8 @@ import {
   type UpdateEventInput,
 } from "../google/calendar.js";
 import { sendEmail } from "../google/gmail.js";
-import { createLead, LEAD_PRODUCT_OPTIONS, LEAD_SOURCE_OPTIONS, type CreateLeadInput } from "../monday/leads.js";
+import { LEAD_PRODUCT_OPTIONS, LEAD_SOURCE_OPTIONS } from "../monday/leads.js";
 import {
-  addUpdate,
   assignTask,
   createTask,
   deleteTask,
@@ -34,6 +33,7 @@ import {
 } from "../monday/tasks.js";
 import { findUsersByName } from "../monday/users.js";
 import { getMyWorkBrief } from "../../ops/myWorkBrief.js";
+import { AGENT_TOOLS } from "../../ops/agentTools.js";
 
 /** הקשר הרצה שה-orchestrator מזריק לכלי — מי המשתמש ששאל. */
 export interface ToolContext {
@@ -53,6 +53,33 @@ export interface ToolDefinition {
   requiredPermission?: Permission;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute: (input: any, ctx: ToolContext) => Promise<unknown>;
+}
+
+/**
+ * שלב 3B (2026-10-05, תוכנית איחוד Web/WhatsApp) — add_monday_update/create_lead מחוברים
+ * ל-AgentTool המשותף (ops/agentTools.ts) במקום implementation עצמאי. מאתר לפי שם ב-registry,
+ * זורק מיידית אם חסר — תקלת-חיווט תיתפס בעליית השרת, לא בשקט באמצע שיחה (אותו דפוס בדיוק
+ * כמו requireAgentTool ב-ops/chat.ts).
+ */
+function requireAgentTool(name: string) {
+  const tool = AGENT_TOOLS.find((t) => t.name === name);
+  if (!tool) throw new Error(`AgentTool '${name}' לא נמצא ב-registry המשותף (ops/agentTools.ts) — חיבור WhatsApp שבור.`);
+  return tool;
+}
+/** מיוצאים כדי שבדיקות (test-whatsapp-agent-tools.ts) יוכיחו === מול AGENT_TOOLS — אותו אובייקט
+ *  שגם ops/chat.ts (Web) משתמש בו, לא עותק. */
+export const ADD_UPDATE_AGENT_TOOL = requireAgentTool("add_update");
+export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead");
+
+/**
+ * בפועל לא אמור לקרות — toAnthropicTools(null) מחזיר מערך כלים ריק, אז executeToolCall לא
+ * אמור להגיע לכאן בלי משתמש מזוהה. שמירה מפורשת (לא bypass, לא ניחוש) כדי שה-AgentTool יקבל
+ * user: IdentifiedUser תקין, לא IdentifiedUser|null. מיוצא כדי שבדיקות יוכלו לבחון אותה ישירות
+ * כפונקציה טהורה, בלי להריץ שום AgentTool אמיתי (שהיה מגיע ל-Monday).
+ */
+export function requireIdentifiedUser(ctx: ToolContext): IdentifiedUser {
+  if (!ctx.user) throw new Error("חסר הקשר משתמש — לא ניתן לבצע את הפעולה בלי לדעת מי שואל.");
+  return ctx.user;
 }
 
 export const tools: ToolDefinition[] = [
@@ -191,6 +218,10 @@ export const tools: ToolDefinition[] = [
       assignTask(input.boardId, input.itemId, input.userId),
   },
   {
+    // שלב 3B: שם/description/input_schema זהים ל-WhatsApp model שכבר מכיר (אפס שינוי prompt) —
+    // רק ה-execute עובר ל-shared AgentTool. label (שדה אופציונלי קיים ב-AGENT_TOOLS's add_update,
+    // משמש רק ל-actions.push התצוגתי ב-chat.ts) לא נחשף כאן בכוונה — WhatsApp לא שלח אותו קודם
+    // ואינו צריך אותו לשום דבר ב-execute עצמו (addUpdateToItem לא קורא אותו בכלל).
     name: "add_monday_update",
     description: "מוסיף תגובה/הערה (Update) לפריט קיים ב-Monday.com.",
     input_schema: {
@@ -202,10 +233,28 @@ export const tools: ToolDefinition[] = [
       required: ["itemId", "body"],
     },
     requiresConfirmation: false,
+    // דיון נוסף (audit Step 3B — "אל תרחיב capability surface בשקט"): requiredPermission נשאר
+    // "task:update_own" בכוונה — אותו gate בדיוק כמו לפני המעבר ל-shared AgentTool. ל-
+    // addUpdateToItem (ops/actions.ts) יש ANY-of עשיר יותר (5 הרשאות) — זה *נשאר* כהגנה נוספת
+    // בתוך ה-business action המשותף, בלי שינוי. אבל ה-gate החיצוני הזה (visibility + execution-
+    // time pre-check ב-orchestrator.ts's canUseTool) הוא מה ש-WhatsApp חשף/אכף *לפני* המעבר —
+    // הרחבתו ל-ANY-of (ע"י השמטתו) הייתה משנה בשקט מי יכול להשתמש בכלי הזה דרך WhatsApp
+    // (בפועל: תפקיד finance, אם יקבל אי-פעם WhatsApp JID — היום אין לו), גם אם זה "תקין" לפי
+    // המדיניות העסקית של add_update עצמו. שלב 3B הוא migration של execution, לא הרחבת capability
+    // surface — minimum behavioral change. אם בעתיד יוחלט במפורש להרחיב את ה-gate הזה (או
+    // להסירו) — זו החלטה נפרדת, לא side-effect של ה-wiring.
     requiredPermission: "task:update_own",
-    execute: async (input: { itemId: string; body: string }) => addUpdate(input.itemId, input.body),
+    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
+      const user = requireIdentifiedUser(ctx);
+      return ADD_UPDATE_AGENT_TOOL.execute(input, { user });
+    },
   },
   {
+    // שלב 3B: שם/description/input_schema זהים ל-WhatsApp model שכבר מכיר. AGENT_TOOLS's
+    // create_lead מוסיף שדה assignee אופציונלי שלא נחשף כאן — WhatsApp לא שולח אותו, כך
+    // שה-ברירת-מחדל של createLeadAction (אחראי = היוצר) חלה אוטומטית. זה שינוי התנהגות מכוון
+    // (ר' audit Step 3B §H) — לא bypass: היוצר יסומן כאחראי/ת, מה שלא קרה קודם ב-create_lead
+    // הישן (tools.ts's createLead() לא קיבל assigneeId בכלל, אז ליד נוצר תמיד בלי אחראי).
     name: "create_lead",
     description:
       "פותח ליד חדש (לקוח פוטנציאלי) בלוח \"לידים 💰\" ב-Monday.com, עם פרטי הקשר ומקור ההגעה.",
@@ -224,7 +273,10 @@ export const tools: ToolDefinition[] = [
     },
     requiresConfirmation: false,
     requiredPermission: "lead:manage",
-    execute: async (input: CreateLeadInput) => createLead(input),
+    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
+      const user = requireIdentifiedUser(ctx);
+      return CREATE_LEAD_AGENT_TOOL.execute(input, { user });
+    },
   },
   {
     name: "list_calendar_events",

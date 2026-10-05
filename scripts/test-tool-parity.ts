@@ -23,8 +23,8 @@
  * שלוש שאלות נפרדות שלא מתטשטשות זו בזו:
  *   1. קיים ב-registry?        ← חברות ב-AGENT_TOOLS.
  *   2. מחובר בפועל ל-Web?       ← חברות ב-(WEB_CHAT_LOCAL_TOOL_NAMES ∪ WIRED_AGENT_TOOL_NAMES).
- *   3. מחובר בפועל ל-WhatsApp?  ← חברות ב-whatsappTools (tools.ts עדיין לא צורך מה-registry
- *      בסבב הזה בכלל — ר' whatsappWiredAgentToolNames למטה, placeholder מכוון ל-[]).
+ *   3. מחובר בפועל ל-WhatsApp?  ← חברות ב-whatsappWiredAgentToolNames (שלב 3B: add_update/
+ *      create_lead — מיובאים בפועל מ-tools.ts, לא retype; שאר הכלים עדיין local ב-WhatsApp).
  * "קיים ב-registry" *אינו* מספיק כדי להסיק "מחובר": 8 מתוך 9 ה-AgentTools כיום (כל מה שאינו
  * create_task) כבר הועתקו לרגיסטרי (שלב 1) אבל chat.ts עדיין לא מחובר דרכם בפועל — זה דווח
  * כ"סטטוס מעבר" (informational), לא כ-❌. CORE_CAPABILITIES (היעד המוצרי, מה *אמור* להיות
@@ -37,19 +37,19 @@
  *   npm run test:tool-parity
  */
 
-import { tools as whatsappTools } from "../src/integrations/claude/tools.js";
+import { tools as whatsappTools, ADD_UPDATE_AGENT_TOOL, CREATE_LEAD_AGENT_TOOL } from "../src/integrations/claude/tools.js";
 import { AGENT_TOOLS } from "../src/ops/agentTools.js";
 import { WEB_CHAT_LOCAL_TOOL_NAMES, WIRED_AGENT_TOOL_NAMES } from "../src/ops/chat.js";
 import { logger } from "../src/utils/logger.js";
 
 /**
- * placeholder מכוון: ה-WhatsApp (integrations/claude/tools.ts) לא צורך מה-AgentTools registry
- * בסבב הזה בכלל (לא נשנה שם עד שתאשר שלב נפרד). לכן אין היום שום "שם כלי ב-WhatsApp שבאמת
- * מגיע מה-registry" — למרות ש-whatsappTools כבר מכיל "create_lead" (שם זהה, אבל implementation
- * נפרדת לגמרי ב-tools.ts, לא קשורה ל-createLeadAction/registry). להשאיר ריק עד שזה באמת יקרה —
- * מתי שזה יקרה, tools.ts עצמו ישתנה כחלק מאותו שלב, וזה ייהפך לייבוא אמיתי משם, לא המצאה כאן.
+ * שלב 3B (2026-10-05): זה בדיוק היום שה-placeholder הקודם ("ריק עד שזה באמת יקרה") חיכה לו —
+ * add_monday_update/create_lead ב-tools.ts מחוברים עכשיו בפועל ל-AgentTools (ADD_UPDATE_AGENT_
+ * TOOL/CREATE_LEAD_AGENT_TOOL, מיובאים משם — לא retype). נגזר מהאובייקטים האמיתיים, בדיוק כמו
+ * WIRED_AGENT_TOOL_NAMES ב-chat.ts. שאר הכלים (reassign_item/create_task/mark_done/וכו') עדיין
+ * לא מחוברים ל-WhatsApp — לא נוספו כאן, כי לא עברו migration בפועל.
  */
-const whatsappWiredAgentToolNames: readonly string[] = [];
+const whatsappWiredAgentToolNames: readonly string[] = [ADD_UPDATE_AGENT_TOOL.name, CREATE_LEAD_AGENT_TOOL.name];
 
 interface CoreCapability {
   label: string;

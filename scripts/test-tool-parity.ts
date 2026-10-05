@@ -7,29 +7,49 @@
  * לגמרי. יוכי ביקש במפורש *לא* לאחד את שתי הרשימות (הן שונות בכוונה — tools.ts חושף
  * boardId/itemId גולמיים, chat.ts מפשט הכל למשתמש) — רק להימנע מפער *לא-מכוון* שנשכח.
  *
- * לא בודקת קוד חי: chat.ts בונה את רשימת הכלים שלו בתוך runOpsChat, תלוי בנתוני Monday/AI
- * חיים. במקום זאת סורקת את שמות הכלים ישירות מקוד המקור (regex על "name: "...""), בלי להריץ
- * כלום. תוצאה: דוח יכולות-ליבה לסקירה תקופתית — עוברת (exit 0) אם כל פער חד-צדדי מסומן
- * במפורש כמכוון (windowExempt/whatsappExempt); נכשלת (exit 1) על פער חדש שלא סומן, כדי
- * שהוא "יוצג בדוח" ולא יתגלה שוב במקרה על ידי משתמש.
+ * שלב 2B (2026-10-05): עד כאן המטרה לא השתנתה. מה שהשתנה הוא *איך* מזהים מה קיים ב-Web —
+ * קודם זה היה regex על טקסט המקור הגולמי של chat.ts (`name:\s*"([a-z_]+)"`), ששבר ברגע
+ * ש-create_task עבר לבוא מ-AgentTool registry (ops/agentTools.ts) במקום מ-string literal
+ * מקומי (ר' שלב 2A) — הכלי עובד זהה, אבל ה-regex לא "ראה" אותו יותר בטקסט של chat.ts.
+ * זו תקלת-שיטה שהייתה חוזרת על עצמה בכל מעבר עתידי של כלי לרגיסטרי.
+ *
+ * עכשיו: אפס regex. שלושה exports אמיתיים בזמן ריצה, בלי Monday/AI/WhatsApp/DB-writes:
+ *   - whatsappTools             (tools.ts)   — מה ה-WhatsApp בפועל חושף.
+ *   - AGENT_TOOLS               (agentTools.ts) — מה *קיים* ב-registry המשותף (capability).
+ *   - WEB_CHAT_LOCAL_TOOL_NAMES + WIRED_AGENT_TOOL_NAMES (chat.ts) — מה ה-Web *בפועל* חושף:
+ *       local = עדיין מוגדר inline ב-chat.ts (לא עבר migration).
+ *       wired = מגיע בפועל מ-AGENT_TOOLS (נגזר מ-.name של אובייקט אמיתי, לא retype).
+ *
+ * שלוש שאלות נפרדות שלא מתטשטשות זו בזו:
+ *   1. קיים ב-registry?        ← חברות ב-AGENT_TOOLS.
+ *   2. מחובר בפועל ל-Web?       ← חברות ב-(WEB_CHAT_LOCAL_TOOL_NAMES ∪ WIRED_AGENT_TOOL_NAMES).
+ *   3. מחובר בפועל ל-WhatsApp?  ← חברות ב-whatsappTools (tools.ts עדיין לא צורך מה-registry
+ *      בסבב הזה בכלל — ר' whatsappWiredAgentToolNames למטה, placeholder מכוון ל-[]).
+ * "קיים ב-registry" *אינו* מספיק כדי להסיק "מחובר": 8 מתוך 9 ה-AgentTools כיום (כל מה שאינו
+ * create_task) כבר הועתקו לרגיסטרי (שלב 1) אבל chat.ts עדיין לא מחובר דרכם בפועל — זה דווח
+ * כ"סטטוס מעבר" (informational), לא כ-❌. CORE_CAPABILITIES (היעד המוצרי, מה *אמור* להיות
+ * זהה בין הערוצים) לא השתנה כלל — רק מקור השמות של כל צד.
+ *
+ * אפס side effects: כל המקורות הם imports של קבועים/exports סטטיים שכבר נבדקו גם ב-
+ * test-agent-tools.ts (import chat.ts טוען גם את ה-db/* repositories שלו כרגיל — בלי שום
+ * query/write בזמן import עצמו). אין Monday, אין AI, אין WhatsApp, אין שינוי DB.
  *
  *   npm run test:tool-parity
  */
 
-import fs from "node:fs";
 import { tools as whatsappTools } from "../src/integrations/claude/tools.js";
+import { AGENT_TOOLS } from "../src/ops/agentTools.js";
+import { WEB_CHAT_LOCAL_TOOL_NAMES, WIRED_AGENT_TOOL_NAMES } from "../src/ops/chat.js";
 import { logger } from "../src/utils/logger.js";
 
-const CHAT_TS_PATH = new URL("../src/ops/chat.ts", import.meta.url);
-
-function extractWindowToolNames(): Set<string> {
-  const src = fs.readFileSync(CHAT_TS_PATH, "utf-8");
-  const names = new Set<string>();
-  const re = /name:\s*"([a-z_]+)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src))) names.add(m[1]!);
-  return names;
-}
+/**
+ * placeholder מכוון: ה-WhatsApp (integrations/claude/tools.ts) לא צורך מה-AgentTools registry
+ * בסבב הזה בכלל (לא נשנה שם עד שתאשר שלב נפרד). לכן אין היום שום "שם כלי ב-WhatsApp שבאמת
+ * מגיע מה-registry" — למרות ש-whatsappTools כבר מכיל "create_lead" (שם זהה, אבל implementation
+ * נפרדת לגמרי ב-tools.ts, לא קשורה ל-createLeadAction/registry). להשאיר ריק עד שזה באמת יקרה —
+ * מתי שזה יקרה, tools.ts עצמו ישתנה כחלק מאותו שלב, וזה ייהפך לייבוא אמיתי משם, לא המצאה כאן.
+ */
+const whatsappWiredAgentToolNames: readonly string[] = [];
 
 interface CoreCapability {
   label: string;
@@ -91,11 +111,46 @@ const CORE_CAPABILITIES: CoreCapability[] = [
 ];
 
 function main() {
-  const waNames = new Set(whatsappTools.map((t) => t.name));
-  const winNames = extractWindowToolNames();
+  let problems = 0;
 
-  let unexpectedGaps = 0;
-  logger.info("— דוח tool-parity (WhatsApp ⇄ חלונית) —");
+  // ── 0. עקביות פנימית של המקורות עצמם (defensive — תופס טעות הקלדה/registry drift) ──
+  logger.info("— עקביות מקורות (WIRED_AGENT_TOOL_NAMES מול AGENT_TOOLS) —");
+  const agentToolNames = new Set(AGENT_TOOLS.map((t) => t.name));
+  for (const name of WIRED_AGENT_TOOL_NAMES) {
+    if (!agentToolNames.has(name)) {
+      logger.error(`❌ WIRED_AGENT_TOOL_NAMES מכיל "${name}" שלא קיים ב-AGENT_TOOLS בכלל — טעות הקלדה או registry drift.`);
+      problems++;
+    }
+  }
+  for (const name of WEB_CHAT_LOCAL_TOOL_NAMES) {
+    if (WIRED_AGENT_TOOL_NAMES.includes(name)) {
+      logger.error(`❌ "${name}" מופיע גם ב-WEB_CHAT_LOCAL_TOOL_NAMES וגם ב-WIRED_AGENT_TOOL_NAMES — תעדכן רק אחד מהם.`);
+      problems++;
+    }
+  }
+  if (problems === 0) logger.info("✅ אין התנגשות/drift בין רשימות המקור של chat.ts");
+
+  const waNames = new Set(whatsappTools.map((t) => t.name));
+  const winNames = new Set<string>([...WEB_CHAT_LOCAL_TOOL_NAMES, ...WIRED_AGENT_TOOL_NAMES]);
+
+  // ── 1. דוח סטטוס מעבר — informational בלבד, לא משפיע על pass/fail ──
+  logger.info("\n— סטטוס מעבר ל-AgentTools registry (כל כלי שקיים ב-registry) —");
+  for (const tool of AGENT_TOOLS) {
+    const webStatus = WIRED_AGENT_TOOL_NAMES.includes(tool.name)
+      ? "registry ✅"
+      : winNames.has(tool.name)
+        ? "local (עדיין inline, לא migrated)"
+        : "⚠️ לא נחשף ב-Web בכלל";
+    const waStatus = whatsappWiredAgentToolNames.includes(tool.name)
+      ? "registry ✅"
+      : waNames.has(tool.name)
+        ? "local (שם זהה, implementation נפרדת — לא ה-registry)"
+        : "לא נחשף ב-WhatsApp";
+    logger.info(`   ${tool.name.padEnd(20)} Web: ${webStatus} · WhatsApp: ${waStatus}`);
+  }
+
+  // ── 2. דוח ה-core capabilities (המטרה המוצרית — ללא שינוי לוגיקה) ──
+  logger.info("\n— דוח tool-parity (WhatsApp ⇄ Web) —");
   for (const cap of CORE_CAPABILITIES) {
     const waHas = cap.whatsappNames.some((n) => waNames.has(n));
     const winHas = cap.windowNames.some((n) => winNames.has(n));
@@ -113,23 +168,23 @@ function main() {
         logger.info(`◻️  ${cap.label} — חסר בחלונית (מכוון: ${cap.windowExempt})`);
       } else {
         logger.error(`❌ ${cap.label} — חסר בחלונית ולא מסומן כפער מכוון!`);
-        unexpectedGaps++;
+        problems++;
       }
     } else if (missingOnWhatsapp) {
       if (cap.whatsappExempt) {
         logger.info(`◻️  ${cap.label} — חסר ב-WhatsApp (מכוון: ${cap.whatsappExempt})`);
       } else {
         logger.error(`❌ ${cap.label} — חסר ב-WhatsApp ולא מסומן כפער מכוון!`);
-        unexpectedGaps++;
+        problems++;
       }
     } else {
       logger.warn(`⚠️  ${cap.label} — לא נמצא באף צד. ייתכן ששם הכלי השתנה — עדכן את CORE_CAPABILITIES.`);
-      unexpectedGaps++;
+      problems++;
     }
   }
 
-  if (unexpectedGaps > 0) {
-    logger.error(`\n${unexpectedGaps} פערים לא-מוסברים. עדכן את CORE_CAPABILITIES (סימון exempt) או הוסף/תקן את הכלי החסר.`);
+  if (problems > 0) {
+    logger.error(`\n${problems} פערים/בעיות לא-מוסברות. עדכן את CORE_CAPABILITIES (סימון exempt), את WEB_CHAT_LOCAL_TOOL_NAMES/WIRED_AGENT_TOOL_NAMES ב-chat.ts, או הוסף/תקן את הכלי החסר.`);
     process.exit(1);
   }
   logger.info("\nאין פערים בלתי-מוסברים ✅");

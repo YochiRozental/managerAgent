@@ -28,15 +28,7 @@ import {
 import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
-import {
-  addUpdateToItem,
-  createLeadAction,
-  createProjectStageAction,
-  createTaskAction,
-  reassignItem,
-  updateTask,
-} from "./actions.js";
-import { LEAD_PRODUCT_OPTIONS, LEAD_SOURCE_OPTIONS } from "../integrations/monday/leads.js";
+import { AGENT_TOOLS, type AgentTool } from "./agentTools.js";
 import { getApproval } from "../db/repositories/managerApprovals.js";
 import { replyToApprovalInstruction } from "./approvalActions.js";
 import {
@@ -60,6 +52,114 @@ import { getOversightReport } from "./oversight.js";
 const MAX_TURNS = 7;
 
 /**
+ * מאתר AgentTool לפי שם ב-registry המשותף, וזורק מיידית אם חסר — תקלת-חיווט תיתפס בעליית
+ * השרת, לא בשקט באמצע שיחה עם עובד. טיפוס ההחזרה המוצהר (AgentTool, לא AgentTool|undefined)
+ * מבטל את הצורך בבדיקת null/non-null assertion בכל מקום שמשתמש בתוצאה (כולל בתוך closures
+ * שמוגדרים אחרי הבדיקה, כמו runOpsChat למטה) — ה-throw כאן הוא ההוכחה היחידה שצריכה.
+ */
+function requireAgentTool(name: string): AgentTool {
+  const tool = AGENT_TOOLS.find((t) => t.name === name);
+  if (!tool) throw new Error(`AgentTool '${name}' לא נמצא ב-registry המשותף (ops/agentTools.ts) — חיבור Web שבור.`);
+  return tool;
+}
+
+/**
+ * ה-AgentTool המשותף בפועל (לא עותק) — ר' ops/agentTools.ts. מיוצא (לא רק מקומי) כדי שבדיקת
+ * parity (test-agent-tools.ts) תוכל להוכיח === מול AGENT_TOOLS.find(...) — שזה באמת האובייקט
+ * המשותף, לא עותק.
+ */
+export const CREATE_TASK_AGENT_TOOL: AgentTool = requireAgentTool("create_task");
+
+/**
+ * שלב 2C (2026-10-05): אותו דפוס בדיוק כמו CREATE_TASK_AGENT_TOOL, ל-create_lead. ה-AgentTool
+ * המשותף בפועל — לא עותק. מיוצא כדי ש-test-agent-tools.ts יוכל להוכיח === מול
+ * AGENT_TOOLS.find("create_lead").
+ */
+export const CREATE_LEAD_AGENT_TOOL: AgentTool = requireAgentTool("create_lead");
+
+/**
+ * שלב 2D (2026-10-05): אותו דפוס, למשפחת updateTask (mark_done/set_status/add_note/
+ * report_blocker) + add_update (addUpdateToItem, לא updateTask — הרשאה/business action שונה).
+ * חמישה AgentTool נפרדים, לא אחד משולב — ה-action/source/note mapping שונה בין כל אחד,
+ * ו-chat.ts's adapter (למטה) ממשיך לבנות כל הודעת actions.push ואת refresh()-or-not בדיוק
+ * כפי שהיה (ר' Inspection ב-audit 2026-10-05: add_note ו-add_update לא קראו ל-refresh() מעולם
+ * — ליצור/לעדכן הערה לא משפיע על cache המשימות; mark_done/set_status/report_blocker כן).
+ */
+export const MARK_DONE_AGENT_TOOL: AgentTool = requireAgentTool("mark_done");
+export const SET_STATUS_AGENT_TOOL: AgentTool = requireAgentTool("set_status");
+export const ADD_NOTE_AGENT_TOOL: AgentTool = requireAgentTool("add_note");
+export const REPORT_BLOCKER_AGENT_TOOL: AgentTool = requireAgentTool("report_blocker");
+export const ADD_UPDATE_AGENT_TOOL: AgentTool = requireAgentTool("add_update");
+
+/**
+ * שלב 2E (2026-10-05): אותו דפוס, ל-create_project_stage. permission gate בודד (project:manage,
+ * לא ANY-of) — זו הסיבה שהוא עבר לפני reassign_item (task:manage||lead:manage||project:manage).
+ */
+export const CREATE_PROJECT_STAGE_AGENT_TOOL: AgentTool = requireAgentTool("create_project_stage");
+
+/**
+ * שלב 2F (2026-10-05) — הכלי התשיעי והאחרון מתוך ה-9 שבתוכנית. permission gate ANY-of
+ * (task:manage || lead:manage || project:manage) — requiredPermission כבר מערך מ-Step 1,
+ * ו-userCanUseAgentTool משתמש ב-.some() (ANY-of), לא .every() — אומת ב-test-agent-tools.ts.
+ */
+export const REASSIGN_ITEM_AGENT_TOOL: AgentTool = requireAgentTool("reassign_item");
+
+/**
+ * מקור אמת אמיתי (לא regex על טקסט!) לבדיקת tool-parity (test-tool-parity.ts, שלב 2B,
+ * 2026-10-05): אילו שמות כלים ה-Web בפועל יכול לחשוף למשתמש כלשהו, מחולק לפי המקור —
+ *
+ *   WIRED_AGENT_TOOL_NAMES — מגיעים בפועל מה-AgentTool registry המשותף (ops/agentTools.ts),
+ *     בדיוק כמו create_task/create_lead. נגזר מ-`.name` של האובייקטים האמיתיים
+ *     (למשל CREATE_TASK_AGENT_TOOL.name), לא retype של מחרוזת — אי אפשר שזה "יתפזר" בלי לשים לב.
+ *
+ *   WEB_CHAT_LOCAL_TOOL_NAMES — עדיין מוגדרים inline כאן ב-runOpsChat; כל 9 ה-AgentTools כבר
+ *     עברו (ר' למטה) — מה שנשאר ברשימה הזו הם כלים שאינם חלק מ-9 ה-AgentTools בכלל (get_today_
+ *     tasks, find_task, commitments, reply_X (סגירת לולאה), כלי בקרת-משרד) ולא מועמדים ל-migration בשלב הזה.
+ *
+ * כל 9 ה-AgentTools עברו: create_task (2A), create_lead (2C), mark_done/set_status/add_note/
+ * report_blocker/add_update (2D), create_project_stage (2E), reassign_item (2F — האחרון,
+ * כל השלבים 2026-10-05). migration עתידי של כלי *חדש* (לא אחד מה-9) יצטרך תחילה AgentTool
+ * חדש ב-agentTools.ts, ואז להעביר שם מכאן ל-WIRED_AGENT_TOOL_NAMES באותו commit.
+ */
+export const WIRED_AGENT_TOOL_NAMES: readonly string[] = [
+  CREATE_TASK_AGENT_TOOL.name,
+  CREATE_LEAD_AGENT_TOOL.name,
+  MARK_DONE_AGENT_TOOL.name,
+  SET_STATUS_AGENT_TOOL.name,
+  ADD_NOTE_AGENT_TOOL.name,
+  REPORT_BLOCKER_AGENT_TOOL.name,
+  ADD_UPDATE_AGENT_TOOL.name,
+  CREATE_PROJECT_STAGE_AGENT_TOOL.name,
+  REASSIGN_ITEM_AGENT_TOOL.name,
+];
+
+export const WEB_CHAT_LOCAL_TOOL_NAMES: readonly string[] = [
+  // "מה יש לי היום" + זיהוי משימה
+  "get_today_tasks",
+  "find_task",
+  // התחייבויות
+  "record_commitment",
+  "list_my_commitments",
+  "close_commitment",
+  // סגירת הלולאה (נחשף רק כשיש about — פנייה יזומה של הבקרה)
+  "reply_done",
+  "reply_progress",
+  "reply_finishing_today",
+  "reply_defer",
+  "reply_waiting",
+  "reply_blocked",
+  "reply_await_manager",
+  "reply_not_relevant",
+  // בקרה על כל המשרד — view:all_work בלבד
+  "office_overview",
+  "person_status",
+  "project_status",
+  "list_findings",
+  "sales_and_collection",
+  "find_lead_or_deal",
+];
+
+/**
  * תנאי חשיפת create_task/create_lead בחלונית — פונקציות בשם משלהן (לא inline) כדי שבדיקות
  * (test-task-creation.ts) יוכלו לאמת "הכלי נחשף כשיש הרשאה" בלי להריץ את כל runOpsChat
  * (שדורש Monday+AI חיים). נקראות גם בבניית ה-system prompt וגם בגייטינג של תוספת הכלי בפועל.
@@ -81,76 +181,24 @@ export function canManageProjectStages(user: IdentifiedUser): boolean {
 }
 
 /**
- * הצהרת הכלי (בלי run — זה מצורף בתוך runOpsChat, שם יש גישה ל-closures כמו actions/refresh).
- * מיוצא בנפרד כדי שבדיקות (test-create-task-prompt.ts) יוכלו להשתמש באותו schema אמיתי בדיוק
- * שהמודל רואה בפועל, בלי לשכפל אותו וליצור סיכון לסטייה בין הבדיקה לקוד האמיתי.
- *
- * taskName חייב להגיע מהמשתמש בפועל — ר' האירוע מ-2026-09-22: "תיצור לרוחי משימה" (בלי המשך)
- * גרם למודל למלא taskName="משימה חדשה" כדי לספק שדה חובה, במקום לשאול. אין לזה ברירת מחדל
- * הגיונית (בשונה מ-project/stage/assignee/dueDate/priority), אז זה מנוסח כאן וב-system prompt
- * (systemPrompt) פעמיים בכוונה — גם ב-tool schema וגם בהוראה מפורשת.
+ * create_task — ה-AgentTool המשותף (name/description/input_schema/execute) מוגדר ומיוצא עכשיו
+ * מ-ops/agentTools.ts (שלב 2A, תוכנית איחוד Web/WhatsApp, 2026-10-05), לא כאן. הוזז לשם כדי
+ * ש-agentTools.ts לא יהיה תלוי ב-chat.ts (היה גורם ל-import מעגלי ברגע שגם chat.ts צריך לצרוך
+ * משם את create_task בפועל — ר' audit 2026-10-05). מיוצא כאן מחדש (re-export) כדי שבדיקות
+ * קיימות (test-create-task-prompt.ts/test-create-task-behavior.ts) שמייבאות CREATE_TASK_TOOL_DECL
+ * מ-"./chat.js" ימשיכו לעבוד בלי שום שינוי — התוכן של ה-schema עצמו לא שונה כלל, רק מיקומו.
+ * ההיסטוריה של דרישת taskName האמיתי (אירוע 2026-09-22) מתועדת כעת בתוך agentTools.ts.
  */
-export const CREATE_TASK_TOOL_DECL = {
-  name: "create_task",
-  description:
-    "פותח משימה חדשה ב-Monday. שלושה סוגי יצירה: (1) בלי project — משימה כללית בלוח המשימות, בלי שום קישור, נוצרת מיד. (2) עם project ו-taskKind='project' — item באותו לוח, אבל *עם* קישור (project relation) לפרויקט; לא subitem, לא שלב. נבחר רק כשהמשתמש ביקש 'לקשר' את המשימה לפרויקט — לא כשהוא אמר 'תחת' (זו מילת היררכיה, לא קישור — ר' taskKind). (3) עם project ו-stage מפורש (או taskKind='stage') — subitem תחת השלב; זה מה שמילת 'תחת' מתארת (Project→Stage→Task). כש-project ניתן בלי stage מפורש צריך גם taskKind כדי לדעת אם מדובר ב-(2) או ב-(3); בלי אף אחד מהשניים הכלי יזרוק שגיאה עם השאלה שצריך לשאול את המשתמש — זה תקין ומצופה, לא כשל. חובה: אם ניתן project, הוא חייב להינתן *בכל קריאה* שעוסקת באותה משימה, כולל קריאות המשך אחרי ששאלת taskKind/stage — אחרת המשימה עלולה להיווצר בלי הקישור לפרויקט. בלי assignee — מוקצית למשתמש עצמו. חובה שיהיה taskName אמיתי לפני הקריאה — אל תקרא לכלי הזה כדי 'לבדוק' מה קורה בלי תוכן משימה אמיתי.",
-  input_schema: {
-    type: "object",
-    properties: {
-      taskName: {
-        type: "string",
-        description:
-          "תוכן המשימה בפועל (מה צריך לעשות), בדיוק כמו שהמשתמש תיאר — לא כותרת פורמלית נפרדת. חובה שיגיע מהמשתמש בעצמו. אם המשתמש ביקש ליצור משימה בלי לומר מה היא — אל תמלא כאן ערך מומצא/placeholder (כמו 'משימה חדשה', 'משימה', 'ללא שם', 'משימה כללית') ואל תקרא לכלי הזה בכלל; שאל את המשתמש מה המשימה לפני שאתה קורא לכלי.",
-      },
-      project: {
-        type: "string",
-        description:
-          "שם הפרויקט, אם המשימה קשורה לפרויקט כלשהו. השמט למשימה כללית שלא קשורה לשום פרויקט. חשוב: אם צוין פרויקט בהודעה כלשהי בשיחה — חובה להעביר אותו כאן **בכל קריאה עוקבת** שעוסקת באותה משימה (כולל אחרי ששאלת taskKind/stage), לא רק בקריאה הראשונה שבה הוא הוזכר.",
-      },
-      taskKind: {
-        type: "string",
-        enum: ["project", "stage"],
-        description:
-          "רק כש-project ניתן וגם stage לא ניתן מפורש. **חשוב — שתי מילים שונות לגמרי בעברית:** 'תחת' (כמו 'תחת הפרויקט', 'תחת שלב') היא מילת **היררכיה** (Project→Stage→Task) ותמיד אומרת 'stage', לעולם לא 'project'. 'מקושר/לקשר לפרויקט' היא מילת **קישור/relation** ואומרת 'project'. 'project' = item בלוח המשימות הכלליות עם project relation (לא subitem, לא שלב) — רק כשהמשתמש ביקש 'לקשר'/'קישור' במפורש. 'stage' = subitem תחת אחד משלבי הפרויקט — זה מה ש'תחת הפרויקט'/'תחת שלב' מתארים, גם בלי שם שלב ספציפי. אל תמלא לבד — זו החלטה עסקית של המשתמש: אם לא ברור מהניסוח (אין 'תחת' ואין 'לקשר'), אל תקרא לכלי, שאל 'האם לקשר את המשימה לפרויקט, או ליצור אותה תחת אחד משלבי הפרויקט?' וחכה לתשובה.",
-      },
-      stage: {
-        type: "string",
-        description:
-          "שם/מספר השלב בפרויקט. תן ערך כאן רק אם העובד ציין שלב במפורש בהודעה (כולל בתשובה לשאלה 'באיזה שלב?') — אז זה מכריע בלי צורך ב-taskKind. אחרת השמט; אל תנחש שלב ואל תבחר את 'השלב הפעיל' לבד.",
-      },
-      assignee: { type: "string", description: "שם העובד/ת שיבצע/תבצע את המשימה. השמט כדי להקצות למשתמש עצמו." },
-      dueDate: { type: "string", description: "תאריך יעד בפורמט YYYY-MM-DD, אם ניתן תאריך." },
-      priority: { type: "string", description: "תעדוף — רק אם העובד ציין במפורש (למשל 'קריטי', 'דחוף'). אחרת השמט." },
-    },
-    required: ["taskName"],
-  },
-};
+export { CREATE_TASK_TOOL_DECL } from "./agentTools.js";
 
 /**
- * יצירת **שלב** חדש בפרויקט — לא task/subitem (זה create_task). פער production (2026-09-22):
- * "תוסיף את המשימה בתור עוד שלב" לא היה נתמך — create_task יודע רק ליצור task תחת שלב *קיים*,
- * לא ליצור שלב חדש. מיוצא בנפרד באותה סיבה כמו CREATE_TASK_TOOL_DECL — בדיקות (test-create-
- * task-prompt.ts style) יכולות לבחון את אותו schema בדיוק שהמודל מקבל.
+ * create_project_stage — ה-AgentTool המשותף מוגדר ומיוצא עכשיו מ-ops/agentTools.ts (שלב 2E,
+ * 2026-10-05), באותה סיבה בדיוק כמו create_task (2A): כדי ש-agentTools.ts לא יהיה תלוי
+ * ב-chat.ts. התוכן לא שונה אות אחת (אומת byte-for-byte לפני ההעברה). מיוצא כאן מחדש כדי
+ * ש-test-project-stage-behavior.ts (שמייבא CREATE_PROJECT_STAGE_TOOL_DECL מ-"./chat.js")
+ * ימשיך לעבוד בלי שינוי.
  */
-export const CREATE_PROJECT_STAGE_TOOL_DECL = {
-  name: "create_project_stage",
-  description:
-    "יוצר שלב חדש (לא משימה!) בתוך פרויקט — item עצמאי בבורד השלבים של הפרויקט, לא subitem/task. השתמש בזה רק כשהמשתמש ביקש להוסיף/לפתוח 'שלב' חדש במפורש (למשל 'תוסיף שלב חדש בשם X', 'תעשה את זה שלב', 'תוסיף את זה בתור עוד שלב') — לא לבקשת 'משימה'/'task' רגילה (זה create_task). אם המשתמש התחיל לתאר משימה ואז אמר במפורש שזה שלב — הכוונה האחרונה גוברת: קרא create_project_stage, לא create_task. חובה project ו-name אמיתיים; אם אחד מהם לא ברור מההודעה/מההקשר שנשמר בשיחה — אל תקרא לכלי, שאל.",
-  input_schema: {
-    type: "object",
-    properties: {
-      project: {
-        type: "string",
-        description: "שם הפרויקט שאליו מוסיפים את השלב. אם לא ברור/לא נאמר — אל תנחש, שאל.",
-      },
-      name: {
-        type: "string",
-        description: "שם השלב החדש, כפי שהמשתמש תיאר. חובה שיגיע מהמשתמש — אל תמציא/תשלים לבד.",
-      },
-    },
-    required: ["project", "name"],
-  },
-};
+export { CREATE_PROJECT_STAGE_TOOL_DECL } from "./agentTools.js";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -475,111 +523,64 @@ export async function runOpsChat(
       },
     },
     {
-      name: "mark_done",
-      description: "מסמן משימה כבוצעה ב-Monday. השתמש רק אחרי שהעובד אמר מפורשות שסיים אותה.",
-      input_schema: {
-        type: "object",
-        properties: { itemId: { type: "string" }, source: { type: "string", enum: ["general", "project_stage"] } },
-        required: ["itemId", "source"],
-      },
+      // name/description/input_schema/execute מה-AgentTool המשותף (ops/agentTools.ts, שלב 2D).
+      // ה-run כאן הוא adapter דק: findTask (לשם התצוגה), execute המשותף (קורא ל-updateTask,
+      // בדיוק כמו קודם), ואז actions.push + refresh() בדיוק כמו שהיה — כולל ה-emoji/טקסט המדויק.
+      name: MARK_DONE_AGENT_TOOL.name,
+      description: MARK_DONE_AGENT_TOOL.description,
+      input_schema: MARK_DONE_AGENT_TOOL.input_schema,
       run: async (input) => {
         const t = findTask(String(input.itemId));
-        const r = await updateTask(user, { action: "done", source: input.source as OpsTask["source"], itemId: String(input.itemId) });
+        const r = await MARK_DONE_AGENT_TOOL.execute(input, { user });
         actions.push(`✅ ${t?.name ?? input.itemId} — בוצע`);
         await refresh();
         return r;
       },
     },
     {
-      name: "set_status",
-      description: "מעדכן סטטוס משימה ב-Monday (למשל 'בעבודה' כשהעובד מתחיל לעבוד עליה).",
-      input_schema: {
-        type: "object",
-        properties: {
-          itemId: { type: "string" },
-          source: { type: "string", enum: ["general", "project_stage"] },
-          status: { type: "string", description: "תווית סטטוס, למשל 'בעבודה'" },
-        },
-        required: ["itemId", "source", "status"],
-      },
+      name: SET_STATUS_AGENT_TOOL.name,
+      description: SET_STATUS_AGENT_TOOL.description,
+      input_schema: SET_STATUS_AGENT_TOOL.input_schema,
       run: async (input) => {
         const t = findTask(String(input.itemId));
-        const r = await updateTask(user, {
-          action: "state",
-          source: input.source as OpsTask["source"],
-          itemId: String(input.itemId),
-          label: String(input.status),
-        });
+        const r = await SET_STATUS_AGENT_TOOL.execute(input, { user });
         actions.push(`↻ ${t?.name ?? input.itemId} — ${input.status}`);
         await refresh();
         return r;
       },
     },
     {
-      name: "add_note",
-      description: "מוסיף הערת עדכון למשימה ב-Monday (עדכון ביניים מהעובד).",
-      input_schema: {
-        type: "object",
-        properties: {
-          itemId: { type: "string" },
-          source: { type: "string", enum: ["general", "project_stage"] },
-          note: { type: "string" },
-        },
-        required: ["itemId", "source", "note"],
-      },
+      name: ADD_NOTE_AGENT_TOOL.name,
+      description: ADD_NOTE_AGENT_TOOL.description,
+      input_schema: ADD_NOTE_AGENT_TOOL.input_schema,
       run: async (input) => {
         const t = findTask(String(input.itemId));
-        const r = await updateTask(user, {
-          action: "note",
-          source: input.source as OpsTask["source"],
-          itemId: String(input.itemId),
-          note: String(input.note),
-        });
+        const r = await ADD_NOTE_AGENT_TOOL.execute(input, { user });
         actions.push(`✎ ${t?.name ?? input.itemId} — הערה`);
+        // כמו במקור: בלי refresh() — הערה לא משנה את תצוגת/cache המשימות.
         return r;
       },
     },
     {
-      name: "report_blocker",
-      description: "מסמן משימה כתקועה ב-Monday ומוסיף הערה עם תיאור החסם.",
-      input_schema: {
-        type: "object",
-        properties: {
-          itemId: { type: "string" },
-          source: { type: "string", enum: ["general", "project_stage"] },
-          note: { type: "string", description: "מה חוסם" },
-        },
-        required: ["itemId", "source", "note"],
-      },
+      name: REPORT_BLOCKER_AGENT_TOOL.name,
+      description: REPORT_BLOCKER_AGENT_TOOL.description,
+      input_schema: REPORT_BLOCKER_AGENT_TOOL.input_schema,
       run: async (input) => {
         const t = findTask(String(input.itemId));
-        const r = await updateTask(user, {
-          action: "blocker",
-          source: input.source as OpsTask["source"],
-          itemId: String(input.itemId),
-          note: String(input.note),
-        });
+        const r = await REPORT_BLOCKER_AGENT_TOOL.execute(input, { user });
         actions.push(`🚧 ${t?.name ?? input.itemId} — תקוע`);
         await refresh();
         return r;
       },
     },
     {
-      name: "add_update",
-      description:
-        "מוסיף הערת עדכון (Update) לכל פריט ב-Monday — ליד / משימה / פרויקט / עסקה / גבייה. קבל את itemId מ-find_task / find_lead_or_deal / project_status. לבקשות כמו 'תכתוב בעדכונים של הליד X ש…', 'תוסיף הערה לפרויקט Y'.",
-      input_schema: {
-        type: "object",
-        properties: {
-          itemId: { type: "string", description: "מזהה הפריט ב-Monday" },
-          body: { type: "string", description: "תוכן ההערה" },
-          label: { type: "string", description: "שם הפריט, לאישור בלבד" },
-        },
-        required: ["itemId", "body"],
-      },
+      name: ADD_UPDATE_AGENT_TOOL.name,
+      description: ADD_UPDATE_AGENT_TOOL.description,
+      input_schema: ADD_UPDATE_AGENT_TOOL.input_schema,
       run: async (input) => {
-        const r = await addUpdateToItem(user, String(input.itemId), String(input.body));
+        const r = await ADD_UPDATE_AGENT_TOOL.execute(input, { user });
         actions.push(`✎ הערה נוספה${input.label ? `: ${input.label}` : ""}`);
+        // כמו במקור: בלי refresh().
         return r;
       },
     },
@@ -782,22 +783,17 @@ export async function runOpsChat(
   }
 
   // ---- שינוי אחראי/ת — למי שמנהל משימות/לידים/פרויקטים ----
+  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts, שלב
+  // 2F) — לא עותק מקומי. ה-run כאן הוא adapter דק: מריץ את ה-execute המשותף (שקורא בפועל
+  // ל-reassignItem — resolution דו-שכבתית + scope + addTaskNote, הכל בלתי משתנה) ואז מוסיף
+  // actions.push לפי r.message, בדיוק כמו קודם. אין refresh() — גם בגרסה המקורית לא היה.
   if (userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")) {
     tools.push({
-      name: "reassign_item",
-      description:
-        "מחליף את האחראי/ת של פריט ב-Monday — ליד / עסקה / משימה / פרויקט / שלב. קבל את itemId מ-find_task / find_lead_or_deal / project_status. לבקשות כמו 'תעביר את האחריות על הליד X ליוכי', 'תשייך את הפרויקט לדוב'. משנה בפועל את שדה האחראי ומתעד ב-Updates.",
-      input_schema: {
-        type: "object",
-        properties: {
-          itemId: { type: "string", description: "מזהה הפריט ב-Monday" },
-          person: { type: "string", description: "שם מלא או פרטי של מי שיהיה האחראי/ת החדש/ה" },
-          label: { type: "string", description: "שם הפריט, לאישור בלבד" },
-        },
-        required: ["itemId", "person"],
-      },
+      name: REASSIGN_ITEM_AGENT_TOOL.name,
+      description: REASSIGN_ITEM_AGENT_TOOL.description,
+      input_schema: REASSIGN_ITEM_AGENT_TOOL.input_schema,
       run: async (input) => {
-        const r = await reassignItem(user, String(input.itemId), String(input.person));
+        const r = (await REASSIGN_ITEM_AGENT_TOOL.execute(input, { user })) as { message: string };
         actions.push(`👤 ${r.message}`);
         return r;
       },
@@ -805,20 +801,18 @@ export async function runOpsChat(
   }
 
   // ---- יצירת משימה חדשה — למי שיש הרשאת יצירה (task:create לעצמי, task:manage גם לאחרים) ----
+  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts) —
+  // לא עותק מקומי. ה-run כאן הוא adapter דק בלבד: מריץ את ה-execute המשותף (שקורא בפועל
+  // ל-createTaskAction, בדיוק כמו קודם), ואז מוסיף את תופעות הלוואי הספציפיות לצ'אט הזה —
+  // actions.push לתצוגה/ל-sideEffectCount, ו-refresh() שמרענן את מטמון המשימות של הסבב הנוכחי.
+  // אלה תופעות לוואי של runOpsChat עצמו, לא חלק מהפעולה העסקית המשותפת — נשארות כאן בכוונה.
   if (canCreateTask(user)) {
     tools.push({
-      ...CREATE_TASK_TOOL_DECL,
+      name: CREATE_TASK_AGENT_TOOL.name,
+      description: CREATE_TASK_AGENT_TOOL.description,
+      input_schema: CREATE_TASK_AGENT_TOOL.input_schema,
       run: async (input) => {
-        const taskKind = input.taskKind === "project" || input.taskKind === "stage" ? input.taskKind : undefined;
-        const r = await createTaskAction(user, {
-          taskName: String(input.taskName ?? ""),
-          project: input.project ? String(input.project) : undefined,
-          taskKind,
-          stage: input.stage ? String(input.stage) : undefined,
-          assignee: input.assignee ? String(input.assignee) : undefined,
-          dueDate: input.dueDate ? String(input.dueDate) : undefined,
-          priority: input.priority ? String(input.priority) : undefined,
-        });
+        const r = (await CREATE_TASK_AGENT_TOOL.execute(input, { user })) as { message: string };
         actions.push(`🆕 ${r.message}`);
         await refresh();
         return r;
@@ -827,14 +821,17 @@ export async function runOpsChat(
   }
 
   // ---- יצירת שלב חדש בפרויקט — רק למי שיש project:manage (owner/admin/project_manager) ----
+  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts, שלב
+  // 2E) — לא עותק מקומי. ה-run כאן הוא adapter דק: מריץ את ה-execute המשותף (שקורא בפועל
+  // ל-createProjectStageAction, בדיוק כמו קודם) ואז מוסיף actions.push לפי r.message — בדיוק
+  // כמו שהיה. אין refresh() — גם בגרסה המקורית לא היה (יצירת שלב לא משפיעה על מטמון המשימות).
   if (canManageProjectStages(user)) {
     tools.push({
-      ...CREATE_PROJECT_STAGE_TOOL_DECL,
+      name: CREATE_PROJECT_STAGE_AGENT_TOOL.name,
+      description: CREATE_PROJECT_STAGE_AGENT_TOOL.description,
+      input_schema: CREATE_PROJECT_STAGE_AGENT_TOOL.input_schema,
       run: async (input) => {
-        const r = await createProjectStageAction(user, {
-          project: String(input.project ?? ""),
-          stageName: String(input.name ?? ""),
-        });
+        const r = (await CREATE_PROJECT_STAGE_AGENT_TOOL.execute(input, { user })) as { message: string };
         actions.push(`🆕 ${r.message}`);
         return r;
       },
@@ -842,36 +839,18 @@ export async function runOpsChat(
   }
 
   // ---- יצירת ליד חדש — רק למי שיש lead:manage ----
+  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts, שלב
+  // 2C) — לא עותק מקומי. ה-run כאן הוא adapter דק: מריץ את ה-execute המשותף (שקורא בפועל
+  // ל-createLeadAction, בדיוק כמו קודם) ואז מוסיף actions.push — תופעת הלוואי הספציפית לצ'אט
+  // הזה. בניגוד ל-create_task, אין כאן refresh() — גם בגרסה המקורית לא היה (יצירת ליד לא
+  // משפיעה על מטמון המשימות), אז לא נוסף כעת כדי לא לשנות התנהגות.
   if (canCreateLead(user)) {
     tools.push({
-      name: "create_lead",
-      description:
-        "פותח ליד חדש (לקוח פוטנציאלי) בלוח הלידים. לבקשות כמו 'תפתח ליד...', 'יש לי ליד חדש...'. source/product חייבים להתאים בדיוק לאפשרויות הקיימות (enum) — אם לא ברור מה המשתמש התכוון, השמט את השדה במקום לנחש.",
-      input_schema: {
-        type: "object",
-        properties: {
-          firstName: { type: "string", description: "שם פרטי" },
-          lastName: { type: "string", description: "שם משפחה" },
-          phone: { type: "string", description: "מספר טלפון/נייד" },
-          email: { type: "string", description: "כתובת מייל" },
-          source: { type: "string", enum: [...LEAD_SOURCE_OPTIONS], description: "מקור הגעת הליד" },
-          product: { type: "string", enum: [...LEAD_PRODUCT_OPTIONS], description: "תחום העניין / סוג השירות" },
-          referredBy: { type: "string", description: "שם הממליץ/מפנה הליד, אם רלוונטי" },
-          assignee: { type: "string", description: "מי אחראי/ת על הליד. השמט כדי לשייך למשתמש עצמו." },
-        },
-        required: ["firstName"],
-      },
+      name: CREATE_LEAD_AGENT_TOOL.name,
+      description: CREATE_LEAD_AGENT_TOOL.description,
+      input_schema: CREATE_LEAD_AGENT_TOOL.input_schema,
       run: async (input) => {
-        const r = await createLeadAction(user, {
-          firstName: String(input.firstName ?? ""),
-          lastName: input.lastName ? String(input.lastName) : undefined,
-          phone: input.phone ? String(input.phone) : undefined,
-          email: input.email ? String(input.email) : undefined,
-          source: input.source ? String(input.source) : undefined,
-          product: input.product ? String(input.product) : undefined,
-          referredBy: input.referredBy ? String(input.referredBy) : undefined,
-          assignee: input.assignee ? String(input.assignee) : undefined,
-        });
+        const r = (await CREATE_LEAD_AGENT_TOOL.execute(input, { user })) as { message: string };
         actions.push(`🆕 ${r.message}`);
         return r;
       },

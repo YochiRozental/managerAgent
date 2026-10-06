@@ -13,7 +13,7 @@ import { logger } from "../../utils/logger.js";
 import { setSocket, setState } from "./connectionState.js";
 import { classifyJidType, normalizeJid } from "./jid.js";
 import { createInboundCorrelation } from "./replyCorrelation.js";
-import { logInboundTrace, logProcessStarted } from "./trace.js";
+import { logInboundTrace, logProcessStarted, logUpsertTypeSkipped } from "./trace.js";
 
 export { getSocket, getConnectionState, isReady } from "./connectionState.js";
 export { processInstanceId } from "./trace.js";
@@ -234,7 +234,12 @@ export function handleMessagesUpsert(
   onMessage?: MessageHandler,
   onVoiceMessage?: VoiceMessageHandler,
 ): void {
-  if (update.type !== "notify") return;
+  if (update.type !== "notify") {
+    // אבחון בלבד — ראו התיעוד ב-trace.ts's logUpsertTypeSkipped. אסור שום forward/processing
+    // לענף הזה כרגע (לא מאפשרים עדיין טיפול ב-"append" — החלטה מוצרית ממתינה לתוצאת הדגימה).
+    logUpsertTypeSkipped({ upsertType: update.type, messageCount: update.messages.length });
+    return;
+  }
   for (const msg of update.messages) {
     const id = msg.key.id ?? "";
     const fromMe = !!msg.key.fromMe;

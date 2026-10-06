@@ -29,6 +29,7 @@ import {
   _setBlockedReplySinkForTests,
   _setInboundTraceSinkForTests,
   _setSendTraceSinkForTests,
+  _setUpsertSkippedSinkForTests,
   processInstanceId,
 } from "../src/integrations/whatsapp/trace.js";
 import { logger } from "../src/utils/logger.js";
@@ -73,17 +74,21 @@ function captureTraces() {
   const inbound: Record<string, unknown>[] = [];
   const send: Record<string, unknown>[] = [];
   const blocked: Record<string, unknown>[] = [];
+  const upsertSkipped: Record<string, unknown>[] = [];
   _setInboundTraceSinkForTests((r) => inbound.push(r));
   _setSendTraceSinkForTests((r) => send.push(r));
   _setBlockedReplySinkForTests((r) => blocked.push(r));
+  _setUpsertSkippedSinkForTests((r) => upsertSkipped.push(r));
   return {
     inbound,
     send,
     blocked,
+    upsertSkipped,
     stop() {
       _setInboundTraceSinkForTests(null);
       _setSendTraceSinkForTests(null);
       _setBlockedReplySinkForTests(null);
+      _setUpsertSkippedSinkForTests(null);
     },
   };
 }
@@ -218,11 +223,54 @@ async function main() {
     setSocket(sock, "open");
   }
 
-  // 8. שני processInstanceId שונים בשתי הרצות process נפרדות (לא רק ערך תיאורטי) — מוכיח בפועל
+  // 9. messages.upsert עם type שאינו "notify" (למשל "append" — Baileys משתמש בזה כש-
+  //    node.attrs.offline=true, ה-root cause שחקירת ה-inbound-שקט-אחרי-re-link הובילה אליו):
+  //    חובה שזה יירשם (אבחון), ושזה *לא* יעבד/יעביר את ההודעה — ההחלטה אם "append" צריך להיכנס
+  //    ל-AI ממתינה לתוצאת הדגימה בפרודקשן, לא מוכרעת כאן.
+  resetAll();
+  {
+    const traces = captureTraces();
+    const { handler, calls } = mockHandler();
+    handleMessagesUpsert(
+      {
+        messages: [
+          fakeMessage({ id: "APPEND-1", fromMe: false, text: "הודעה שהגיעה כ-append", remoteJid: PN }),
+          fakeMessage({ id: "APPEND-2", fromMe: false, text: "הודעה שנייה", remoteJid: PN }),
+        ],
+        type: "append",
+      },
+      sock,
+      handler,
+    );
+    check("9a. onMessage לא נקרא בכלל עבור batch מסוג append — אין processing/forward", calls.length === 0);
+    check("9b. אין אף whatsapp_inbound אחד (הלולאה לא רצה כלל, לא רק שהוחלט לדחות)", traces.inbound.length === 0);
+    check("9c. נרשם whatsapp_upsert_skipped יחיד עם upsertType ו-messageCount נכונים", traces.upsertSkipped.length === 1 && traces.upsertSkipped[0]?.upsertType === "append" && traces.upsertSkipped[0]?.messageCount === 2, JSON.stringify(traces.upsertSkipped[0]));
+    const record = traces.upsertSkipped[0] ?? {};
+    check(
+      "9d. הרשומה לא מכילה jid/טקסט/messageId גולמי — רק upsertType/messageCount/metadata",
+      !("jid" in record) && !("text" in record) && !("messageId" in record) && !("id" in record),
+      JSON.stringify(record),
+    );
+    traces.stop();
+  }
+
+  // 9e. type: "notify" (ברירת המחדל הרגילה) לא אמור לרשום whatsapp_upsert_skipped בכלל — מוכיח
+  //     שההוספה האבחנתית לא שינתה את מסלול ה-notify הקיים.
+  resetAll();
+  {
+    const traces = captureTraces();
+    const { handler, calls } = mockHandler();
+    handleMessagesUpsert({ messages: [fakeMessage({ id: "NOTIFY-1", fromMe: false, text: "הודעה רגילה", remoteJid: PN })], type: "notify" }, sock, handler);
+    check("9e. type=notify: onMessage כן נקרא (ללא רגרסיה)", calls.length === 1);
+    check("9f. type=notify: אין אף whatsapp_upsert_skipped", traces.upsertSkipped.length === 0);
+    traces.stop();
+  }
+
+  // 10. שני processInstanceId שונים בשתי הרצות process נפרדות (לא רק ערך תיאורטי) — מוכיח בפועל
   //    ששני תהליכי whatsapp-agent (production ישן/חדש, או production מול הרצה מקומית) יהיו
   //    ניתנים להבחנה בלוגים, בדיוק המטרה שהובילה ל-instrumentation הזה.
   {
-    check("8a. processInstanceId בתהליך הנוכחי הוא מחרוזת לא ריקה", typeof processInstanceId === "string" && processInstanceId.length > 0);
+    check("10a. processInstanceId בתהליך הנוכחי הוא מחרוזת לא ריקה", typeof processInstanceId === "string" && processInstanceId.length > 0);
 
     const tmpDir = mkdtempSync(path.join(tmpdir(), "wa-instance-id-"));
     const probeScript = path.join(tmpDir, "probe.mjs");
@@ -235,7 +283,7 @@ async function main() {
     const idRun1 = runOnce();
     const idRun2 = runOnce();
     check(
-      "8b. שתי הרצות process נפרדות מייצרות processInstanceId שונה זה מזה",
+      "10b. שתי הרצות process נפרדות מייצרות processInstanceId שונה זה מזה",
       !!idRun1 && !!idRun2 && idRun1 !== idRun2,
       `run1=${idRun1} run2=${idRun2}`,
     );

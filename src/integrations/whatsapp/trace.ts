@@ -50,6 +50,7 @@ type TraceSink = (record: Record<string, unknown>) => void;
 let inboundSink: TraceSink | null = null;
 let sendSink: TraceSink | null = null;
 let blockedSink: TraceSink | null = null;
+let upsertSkippedSink: TraceSink | null = null;
 
 export function _setInboundTraceSinkForTests(sink: TraceSink | null): void {
   inboundSink = sink;
@@ -61,6 +62,10 @@ export function _setSendTraceSinkForTests(sink: TraceSink | null): void {
 
 export function _setBlockedReplySinkForTests(sink: TraceSink | null): void {
   blockedSink = sink;
+}
+
+export function _setUpsertSkippedSinkForTests(sink: TraceSink | null): void {
+  upsertSkippedSink = sink;
 }
 
 export function logProcessStarted(): void {
@@ -123,6 +128,24 @@ export function logSendTrace(params: {
   };
   logger.info(record, `whatsapp send: ${params.source}`);
   sendSink?.(record);
+}
+
+/**
+ * אבחון: messages.upsert עם type שאינו "notify" (למשל "append" — Baileys משתמש בזה כש-
+ * node.attrs.offline=true על ה-stanza, decode לא נראה בקוד שלנו) נזרק כרגע ב-handleMessagesUpsert
+ * *לפני* הלולאה, בלי שום לוג — חקירת ה-root cause של inbound שקט אחרי clean re-link הראתה שזו
+ * הנקודה העיוורת היחידה שמסבירה היעדר מוחלט של whatsapp_inbound trace. לוג בלבד, לא מעבד/forward.
+ */
+export function logUpsertTypeSkipped(params: { upsertType: string; messageCount: number }): void {
+  const record = {
+    event: "whatsapp_upsert_skipped",
+    processInstanceId,
+    upsertType: params.upsertType,
+    messageCount: params.messageCount,
+    timestamp: new Date().toISOString(),
+  };
+  logger.info(record, `whatsapp upsert skipped: type=${params.upsertType}`);
+  upsertSkippedSink?.(record);
 }
 
 export function logBlockedDuplicateReply(params: { correlationId: string | undefined; sendTraceId: string }): void {

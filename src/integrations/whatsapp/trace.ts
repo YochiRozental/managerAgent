@@ -77,6 +77,14 @@ export function logInboundTrace(params: {
   fromMe: boolean;
   messageType: string;
   decision: InboundDecision;
+  /**
+   * אבחון LID-vs-PN (Baileys 7 / WhatsApp addressing mode חדש) — כולם מסווגים/בוליאניים
+   * גסים, לא ה-jid/המספר עצמו. ראו jid.ts's classifyJidType ו-decode-wa-message.js של Baileys
+   * (remoteJid/remoteJidAlt/addressingMode) למקור השדות.
+   */
+  remoteJidType?: string;
+  hasRemoteJidAlt?: boolean;
+  addressingMode?: string;
 }): void {
   const record = {
     event: "whatsapp_inbound",
@@ -87,6 +95,9 @@ export function logInboundTrace(params: {
     fromMe: params.fromMe,
     messageType: params.messageType,
     decision: params.decision,
+    remoteJidType: params.remoteJidType,
+    hasRemoteJidAlt: params.hasRemoteJidAlt,
+    addressingMode: params.addressingMode,
     timestamp: new Date().toISOString(),
   };
   logger.info(record, `whatsapp inbound: ${params.decision}`);

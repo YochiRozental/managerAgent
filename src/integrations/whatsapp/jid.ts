@@ -14,3 +14,21 @@ export function normalizeJid(jid: string): string {
     return jid;
   }
 }
+
+export type JidType = "lid" | "pn" | "group" | "status" | "broadcast" | "newsletter" | "unknown";
+
+/**
+ * מסווגת jid לקטגוריה גסה לפי ה-suffix שלו בלבד (לא חושפת את המספר/ה-id עצמו) — לאבחון
+ * אבחון LID-vs-PN (Baileys 7, addressing mode חדש ל-WhatsApp) מעל הודעות נכנסות, בלי לרשום
+ * jid גולמי בלוגים.
+ */
+export function classifyJidType(jid: string | null | undefined): JidType {
+  if (!jid) return "unknown";
+  if (jid === "status@broadcast") return "status";
+  if (jid.endsWith("@g.us")) return "group";
+  if (jid.endsWith("@broadcast")) return "broadcast";
+  if (jid.endsWith("@lid")) return "lid";
+  if (jid.endsWith("@s.whatsapp.net")) return "pn";
+  if (jid.endsWith("@newsletter")) return "newsletter";
+  return "unknown";
+}

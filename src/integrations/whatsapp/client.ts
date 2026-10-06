@@ -11,7 +11,7 @@ import qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 import { logger } from "../../utils/logger.js";
 import { setSocket, setState } from "./connectionState.js";
-import { normalizeJid } from "./jid.js";
+import { classifyJidType, normalizeJid } from "./jid.js";
 import { createInboundCorrelation } from "./replyCorrelation.js";
 import { logInboundTrace, logProcessStarted } from "./trace.js";
 
@@ -242,16 +242,24 @@ export function handleMessagesUpsert(
     const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
     const hasAudio = !!msg.message?.audioMessage;
     const messageType = text ? "text" : hasAudio ? "audio" : "unsupported";
+    // אבחון LID-vs-PN (Baileys 7 / addressing mode חדש) — נספח לכל whatsapp_inbound מעל ההודעה
+    // הזו, בלי קשר ל-decision. remoteJidType נגזר מ-msg.key.remoteJid הגולמי (לא jidForTrace,
+    // שמעדיף כבר את ה-alt) כדי לראות בדיוק באיזו כתובת Baileys/השרת כתבו את ההודעה.
+    const diag = {
+      remoteJidType: classifyJidType(msg.key.remoteJid),
+      hasRemoteJidAlt: !!msg.key.remoteJidAlt,
+      addressingMode: msg.key.addressingMode,
+    };
 
     if (fromMe) {
       // (2) INVARIANT — ראו התיעוד מעל. הלוג הזה קורה *לפני* ה-continue, בדיוק כדי שאפשר יהיה
       // לראות אם הודעת echo של הבוט עצמו אי-פעם חוזרת דרך Baileys — אבל ה-drop עצמו לא מותנה בכלום.
-      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: true, messageType, decision: "drop_from_me" });
+      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: true, messageType, decision: "drop_from_me", ...diag });
       continue;
     }
 
     if (alreadyProcessed(id)) {
-      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: false, messageType, decision: "drop_duplicate_id" });
+      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: false, messageType, decision: "drop_duplicate_id", ...diag });
       continue; // (3) upsert כפול / redelivery — טופלה כבר
     }
 
@@ -260,7 +268,7 @@ export function handleMessagesUpsert(
     // has synced, while the phone-number JID works immediately.
     const jid = msg.key.remoteJidAlt ?? msg.key.remoteJid;
     if (!jid) {
-      logInboundTrace({ messageId: id, jid: "", fromMe: false, messageType, decision: "drop_unsupported" });
+      logInboundTrace({ messageId: id, jid: "", fromMe: false, messageType, decision: "drop_unsupported", ...diag });
       continue;
     }
 
@@ -274,18 +282,19 @@ export function handleMessagesUpsert(
         fromMe: false,
         messageType: "text",
         decision: correlationId ? "accepted" : "drop_breaker",
+        ...diag,
       });
       continue;
     }
 
     if (hasAudio && onVoiceMessage) {
       if (id) markProcessed(id);
-      logInboundTrace({ messageId: id, jid, fromMe: false, messageType: "audio", decision: "accepted" });
+      logInboundTrace({ messageId: id, jid, fromMe: false, messageType: "audio", decision: "accepted", ...diag });
       void downloadVoiceNote(sock, msg)
         .then((filePath) => onVoiceMessage(jid, filePath))
         .catch((err) => logger.error(err, "הורדת הודעת קול נכשלה"));
     } else {
-      logInboundTrace({ messageId: id, jid, fromMe: false, messageType, decision: "drop_unsupported" });
+      logInboundTrace({ messageId: id, jid, fromMe: false, messageType, decision: "drop_unsupported", ...diag });
     }
   }
 }

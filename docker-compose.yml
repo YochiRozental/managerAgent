@@ -23,6 +23,11 @@ services:
       - ./auth:/app/auth
       - ./google-credentials.json:/app/google-credentials.json:ro
     stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   window:
     build: .
@@ -52,6 +57,11 @@ services:
       retries: 3
       start_period: 90s
     stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # שכבת אימות שנייה: Google (רק חשבונות @gotlib.biz) לפני שמגיעים לחלונית.
   # לא עולה ב-`up` רגיל — רק עם `--profile auth`, אחרי שמולאו OAUTH2_PROXY_* ב-.env.

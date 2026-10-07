@@ -86,6 +86,14 @@ export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead");
  */
 export const MARK_DONE_AGENT_TOOL = requireAgentTool("mark_done");
 export const SET_STATUS_AGENT_TOOL = requireAgentTool("set_status");
+/**
+ * שלב 3E (2026-10-07) — אותו דפוס בדיוק: create_monday_task הוא Monday primitive גנרי
+ * (boardId+itemName כלשהם, בלי assignee/project/stage/date/priority/idempotency/scope) ולא
+ * equivalent סמנטי ל-create_task (domain action מלא עם authorizeCreateTask/project+stage
+ * disambiguation/idempotency). create_monday_task *נשאר* ללא שינוי כ-legacy fallback לבורדים
+ * שאינם משימות משרד/שלבי פרויקט — ר' audit נפרד.
+ */
+export const CREATE_TASK_AGENT_TOOL = requireAgentTool("create_task");
 
 /**
  * בפועל לא אמור לקרות — toAnthropicTools(null) מחזיר מערך כלים ריק, אז executeToolCall לא
@@ -171,6 +179,24 @@ export const tools: ToolDefinition[] = [
     requiresConfirmation: false,
     requiredPermission: "task:create",
     execute: async (input: { boardId: string; itemName: string }) => createTask(input.itemName, input.boardId),
+  },
+  {
+    // שלב 3E: domain action אמיתי (לא Monday primitive) — name/description/input_schema מגיעים
+    // מה-AgentTool המשותף (source of truth), לא מומצאים כאן. agentTool מקשר ל-registry: אין
+    // requiredPermission עצמאי — מגיע במלואו מ-CREATE_TASK_AGENT_TOOL.requiredPermission
+    // (ANY-of task:create/task:manage — זהה ל-canCreateTask ב-chat.ts, זהה בתוצאה לשער הקודם
+    // "task:create" בלבד עבור כל תפקיד קיים היום: כל תפקיד עם task:manage מחזיק גם task:create
+    // ב-roles.ts, ר' audit נפרד). execute מפנה ל-AgentTool בלבד — createTaskAction→ops/actions.ts
+    // (authorizeCreateTask, project/stage disambiguation, idempotency), לא Monday ישירות.
+    name: CREATE_TASK_AGENT_TOOL.name,
+    description: CREATE_TASK_AGENT_TOOL.description,
+    input_schema: CREATE_TASK_AGENT_TOOL.input_schema as Anthropic.Tool.InputSchema,
+    requiresConfirmation: false,
+    agentTool: CREATE_TASK_AGENT_TOOL,
+    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
+      const user = requireIdentifiedUser(ctx);
+      return CREATE_TASK_AGENT_TOOL.execute(input, { user });
+    },
   },
   {
     name: "update_monday_task_status",

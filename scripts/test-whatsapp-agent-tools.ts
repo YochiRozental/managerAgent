@@ -1,6 +1,9 @@
 /**
  * בדיקת חיבור add_monday_update/create_lead (WhatsApp, integrations/claude/tools.ts) ל-AgentTools
- * המשותפים (שלב 3B, 2026-10-05) + ביטול כפילות בדיקת ההרשאות (שלב 3C, 2026-10-07).
+ * המשותפים (שלב 3B, 2026-10-05) + ביטול כפילות בדיקת ההרשאות (שלב 3C, 2026-10-07) + mark_done/
+ * set_status (שלב 3D, 2026-10-07) + create_task (שלב 3E, 2026-10-07) — כל אחד domain action
+ * נוסף, אותו דפוס בדיוק: agentTool link, אין requiredPermission עצמאי (אלא אם יש gate קיים
+ * לשמר, כמו add_monday_update), legacy primitive מקביל (אם קיים) נשאר ללא שינוי כ-fallback.
  *
  * מוודאת:
  *  1. שני הכלים עדיין קיימים ב-tools.ts בשם/schema שה-WhatsApp model כבר מכיר — ללא שינוי.
@@ -38,6 +41,7 @@ import {
   CREATE_LEAD_AGENT_TOOL,
   MARK_DONE_AGENT_TOOL,
   SET_STATUS_AGENT_TOOL,
+  CREATE_TASK_AGENT_TOOL,
   normalizeTaskSource,
   type ToolContext,
   type ToolDefinition,
@@ -358,8 +362,59 @@ async function main() {
     "normalizeTaskSource: אין source בכלל → לא ממציא אחד, מחזיר כמו שהיה",
   );
 
-  // ───────────────────────── 10. update_monday_task_status — legacy fallback, ללא שום שינוי ─────────────────────────
-  logger.info("— update_monday_task_status: legacy fallback — snapshot ללא שינוי —");
+  // ───────────────────────── 10. create_task (שלב 3E) — domain action חדש, לא legacy ─────────────────────────
+  logger.info("— create_task: domain action אמיתי מגובה ב-AgentTool, לא Monday primitive —");
+
+  const createTaskTool = getTool("create_task");
+  assert(!!createTaskTool, "create_task קיים ב-tools.ts (WhatsApp)");
+  assert(
+    CREATE_TASK_AGENT_TOOL === registryTool("create_task"),
+    "tools.ts's CREATE_TASK_AGENT_TOOL === AGENT_TOOLS.find('create_task') — אותו אובייקט שגם Web משתמש בו",
+  );
+  assert(
+    CREATE_TASK_AGENT_TOOL.execute === registryTool("create_task").execute,
+    "create_task: execute function reference זהה (===) — לא רק המעטפת",
+  );
+  assert(
+    deepEqual(createTaskTool?.input_schema, CREATE_TASK_AGENT_TOOL.input_schema),
+    "create_task.input_schema ב-WhatsApp === ל-AgentTool.input_schema בדיוק (source of truth, לא הומצא schema חדש)",
+  );
+  assert(createTaskTool?.requiresConfirmation === false, "create_task.requiresConfirmation === false");
+  assert(createTaskTool?.agentTool === CREATE_TASK_AGENT_TOOL, "create_task.agentTool === CREATE_TASK_AGENT_TOOL");
+  assert(
+    createTaskTool?.requiredPermission === undefined,
+    "create_task: אין requiredPermission עצמאי — אין gate קיים לשמר (כלי חדש), מגיע במלואו מה-AgentTool",
+  );
+  assert(
+    deepEqual([...CREATE_TASK_AGENT_TOOL.requiredPermission].sort(), ["task:create", "task:manage"]),
+    "create_task: ANY-of מוצהר = task:create/task:manage — זהה בתוצאה ל-canCreateTask(user) ב-chat.ts",
+  );
+
+  // permission matrix — זהה לכל תפקיד קיים (task:manage⊇task:create ב-roles.ts לכל תפקיד שיש לו
+  // את הראשון, אז ANY-of לא משנה כלום בפועל מול gate בודד "task:create" שהיה קיים ב-
+  // create_monday_task — ר' audit נפרד).
+  const goldiCreateTools = toAnthropicTools(goldi).map((t) => t.name);
+  assert(!goldiCreateTools.includes("create_task"), "גולדי (אין task:create/task:manage) לא רואה create_task");
+  const motiCreateTools = toAnthropicTools(moti).map((t) => t.name);
+  assert(motiCreateTools.includes("create_task"), "מוטי (owner) רואה create_task");
+  const ruchamaCreateTools = toAnthropicTools(ruchama).map((t) => t.name);
+  assert(ruchamaCreateTools.includes("create_task"), "רוחמה (task:create) רואה create_task");
+
+  // authorize() האמיתי של createTaskAction (ops/actions.ts) מופעל, לא מדומה — גולדי נדחית בשער
+  // ה-permission של tools.ts/isToolAllowedForUser עוד לפני שמגיעים ל-execute בכלל (toAnthropicTools
+  // כבר הראה זאת למעלה); user=null נדחה ע"י requireIdentifiedUser לפני כל Monday/AgentTool.
+  {
+    let threw = false;
+    try {
+      await createTaskTool!.execute({ taskName: "בדיקה" }, { user: null });
+    } catch (err) {
+      threw = /חסר הקשר משתמש/.test((err as Error).message);
+    }
+    assert(threw, "create_task (WhatsApp): user=null נדחה ע\"י requireIdentifiedUser לפני כל Monday/AgentTool");
+  }
+
+  // ───────────────────────── 11. update_monday_task_status / create_monday_task — legacy fallbacks, ללא שום שינוי ─────────────────────────
+  logger.info("— update_monday_task_status / create_monday_task: legacy fallbacks — snapshot ללא שינוי —");
 
   const legacyStatusTool = getTool("update_monday_task_status");
   assert(!!legacyStatusTool, "update_monday_task_status עדיין קיים ב-tools.ts");
@@ -383,18 +438,46 @@ async function main() {
     "update_monday_task_status.execute עדיין קורא ל-updateTaskStatus (monday/tasks.ts) ישירות — לא עבר ל-AgentTool",
   );
 
-  // ───────────────────────── 11. אין direct Monday write בתוך mark_done/set_status (WhatsApp) ─────────────────────────
-  logger.info("— mark_done/set_status (WhatsApp): אין Monday write ישיר בתוך ה-adapter עצמו —");
-  for (const [name, tool] of [["mark_done", markDoneTool], ["set_status", setStatusTool]] as const) {
+  const legacyCreateTool = getTool("create_monday_task");
+  assert(!!legacyCreateTool, "create_monday_task עדיין קיים ב-tools.ts");
+  assert(legacyCreateTool?.agentTool === undefined, "create_monday_task: אין agentTool — נשאר Monday primitive עצמאי, לא חובר ל-registry");
+  assert(legacyCreateTool?.requiredPermission === "task:create", "create_monday_task: requiredPermission ללא שינוי");
+  assert(legacyCreateTool?.requiresConfirmation === false, "create_monday_task: requiresConfirmation ללא שינוי (false)");
+  assert(
+    deepEqual(legacyCreateTool?.input_schema, {
+      type: "object",
+      properties: {
+        boardId: { type: "string", description: "מזהה הלוח שאליו להוסיף את המשימה" },
+        itemName: { type: "string", description: "שם המשימה" },
+      },
+      required: ["boardId", "itemName"],
+    }),
+    "create_monday_task.input_schema זהה בדיוק למה שהיה לפני Step 3E (boardId+itemName)",
+  );
+  assert(
+    legacyCreateTool!.execute.toString().includes("createTask"),
+    "create_monday_task.execute עדיין קורא ל-createTask (monday/tasks.ts) ישירות — לא עבר ל-AgentTool",
+  );
+
+  // ───────────────────────── 12. אין direct Monday write בתוך mark_done/set_status/create_task (WhatsApp) ─────────────────────────
+  logger.info("— mark_done/set_status/create_task (WhatsApp): אין Monday write ישיר בתוך ה-adapter עצמו —");
+  for (const [name, tool] of [
+    ["mark_done", markDoneTool],
+    ["set_status", setStatusTool],
+    ["create_task", createTaskTool],
+  ] as const) {
     const src = tool!.execute.toString();
     assert(
-      !src.includes("updateTaskStatus") && !src.includes("mondayRequest") && !src.includes("mondayClient"),
-      `${name} (WhatsApp adapter): אין הפניה ישירה ל-Monday write functions — רק AgentTool.execute (doUpdateTask→ops/actions.ts)`,
+      !src.includes("updateTaskStatus") &&
+        !src.includes("createTask(") &&
+        !src.includes("mondayRequest") &&
+        !src.includes("mondayClient"),
+      `${name} (WhatsApp adapter): אין הפניה ישירה ל-Monday write functions — רק AgentTool.execute (ops/actions.ts)`,
     );
   }
 
-  // ───────────────────────── 12. ספירת כלים — 17 ישנים + 2 חדשים = 19 ─────────────────────────
-  logger.info("— whatsappTools array: 17 ישנים + 2 חדשים —");
+  // ───────────────────────── 13. ספירת כלים — 17 ישנים + 3 חדשים = 20 ─────────────────────────
+  logger.info("— whatsappTools array: 17 ישנים + 3 חדשים —");
   const OLD_17_TOOL_NAMES = [
     "list_monday_boards",
     "find_monday_board",
@@ -417,8 +500,14 @@ async function main() {
   const currentNames = whatsappTools.map((t) => t.name);
   const missingOld = OLD_17_TOOL_NAMES.filter((n) => !currentNames.includes(n));
   assert(missingOld.length === 0, `כל 17 הכלים הישנים עדיין קיימים (חסרים: ${missingOld.join(",") || "none"})`);
-  assert(currentNames.includes("mark_done") && currentNames.includes("set_status"), "שני הכלים החדשים נוכחים");
-  assert(whatsappTools.length === 19, `מספר הכלים הכולל ב-WhatsApp === 19 (17 ישנים + mark_done + set_status), בפועל ${whatsappTools.length}`);
+  assert(
+    currentNames.includes("mark_done") && currentNames.includes("set_status") && currentNames.includes("create_task"),
+    "שלושת הכלים החדשים (mark_done/set_status/create_task) נוכחים",
+  );
+  assert(
+    whatsappTools.length === 20,
+    `מספר הכלים הכולל ב-WhatsApp === 20 (17 ישנים + mark_done + set_status + create_task), בפועל ${whatsappTools.length}`,
+  );
 
   if (failures > 0) {
     logger.error(`\n${failures} בדיקות נכשלו ❌`);

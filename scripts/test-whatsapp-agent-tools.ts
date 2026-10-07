@@ -1,6 +1,6 @@
 /**
  * בדיקת חיבור add_monday_update/create_lead (WhatsApp, integrations/claude/tools.ts) ל-AgentTools
- * המשותפים (שלב 3B, תוכנית איחוד Web/WhatsApp, 2026-10-05).
+ * המשותפים (שלב 3B, 2026-10-05) + ביטול כפילות בדיקת ההרשאות (שלב 3C, 2026-10-07).
  *
  * מוודאת:
  *  1. שני הכלים עדיין קיימים ב-tools.ts בשם/schema שה-WhatsApp model כבר מכיר — ללא שינוי.
@@ -8,12 +8,14 @@
  *     ב-AGENT_TOOLS — **אותו אובייקט בזיכרון שגם ops/chat.ts (Web) משתמש בו**, לא עותק. זו ההוכחה
  *     המרכזית ל"לא ממומש מחדש ב-WhatsApp" — לא רק "קורא לפונקציה דומה".
  *  3. requireIdentifiedUser (הלוגיקה החדשה היחידה שנכתבה ב-tools.ts) מתנהגת נכון כפונקציה טהורה.
- *  4. permission handling: add_monday_update נשאר עם requiredPermission="task:update_own" —
- *     **אותו gate בדיוק כמו לפני Step 3B**, במפורש כדי לא להרחיב capability surface של WhatsApp
- *     כצד-תוצאה שקטה של ה-migration (הוחלט בביקורת נפרדת לאחר implementation ראשוני, ר'
- *     commit history). addUpdateToItem עדיין אוכפת ANY-of עשיר יותר (5 הרשאות) — כהגנה פנימית
- *     משותפת, לא כתחליף ל-gate החיצוני. create_lead ממשיך עם gate בודד זהה (lead:manage), כי
- *     זה תואם 1:1 ל-AgentTool.requiredPermission שלו ולא היה בו שום אי-התאמה מהתחלה.
+ *  4. permission handling (שלב 3C): שני הכלים נושאים agentTool (קישור גנרי ל-AgentTool המשותף).
+ *     add_monday_update שומר requiredPermission="task:update_own" — **אותה תוצאה בדיוק כמו לפני
+ *     Step 3B** (הוחלט בביקורת נפרדת: "אל תרחיב capability surface בשקט"), אבל עכשיו מבוטא
+ *     כצמצום *נבדק* (subset) של ANY-of ה-AgentTool, לא כהשוואה עצמאית שרק קורה להסכים איתו.
+ *     create_lead מאבד את requiredPermission העצמאי שלו לחלוטין — ה-ANY-of היחיד שחל הוא
+ *     AgentTool.requiredPermission (כיום הסינגלטון ['lead:manage'], זהה למה שהיה).
+ *  4b. structural delegation: מוכיחה עם AgentTool מדומה (לא AGENT_TOOLS האמיתי) שהבדיקה בפועל
+ *      *קוראת* מ-tool.agentTool.requiredPermission בזמן אמת, ולא רק "קורה" להחזיר את אותה תוצאה.
  *  5. idempotency/default-assignee/ANY-of permissions של create_lead/add_update עצמם *לא* נבדקים
  *     מחדש כאן — הם כבר מכוסים ביסודיות ב-test-agent-tools.ts (שלבים 2C/2D) מול *אותה* AgentTool
  *     objects בדיוק (הוכח בסעיף 2) — בדיקה חוזרת הייתה redundant, לא תוספת ביטחון.
@@ -30,12 +32,14 @@ import {
   tools as whatsappTools,
   getTool,
   toAnthropicTools,
+  isToolAllowedForUser,
   requireIdentifiedUser,
   ADD_UPDATE_AGENT_TOOL,
   CREATE_LEAD_AGENT_TOOL,
   type ToolContext,
+  type ToolDefinition,
 } from "../src/integrations/claude/tools.js";
-import { AGENT_TOOLS } from "../src/ops/agentTools.js";
+import { AGENT_TOOLS, type AgentTool } from "../src/ops/agentTools.js";
 import { resolveUserByKey } from "../src/identity/index.js";
 import { logger } from "../src/utils/logger.js";
 
@@ -133,21 +137,67 @@ function main() {
     assert(threw, "requireIdentifiedUser({user:null}) זורק שגיאה ברורה, לא מתרסק/ממשיך בשקט");
   }
 
-  // ───────────────────────── 4. Permission handling — אותו gate בדיוק כמו לפני המעבר ─────────────────────────
+  // ───────────────────────── 4. Permission handling — אותה תוצאה בדיוק כמו לפני Step 3C ─────────────────────────
   // הוחלט במפורש (audit לאחר Step 3B: "אל תרחיב capability surface בשקט") *לא* להסיר את ה-gate
-  // הבודד הקיים — למרות ש-addUpdateToItem אוכפת ANY-of עשיר יותר (5 הרשאות) כהגנה פנימית. שני
-  // ה-gates האלה מכוונים: tools.ts's gate = exposure+execution-time pre-check ב-orchestrator.ts
-  // (לא שונה ממה שהיה), addUpdateToItem's gate = ה-business authorization הסופי (משותף, לא נוגע).
-  logger.info("— permissions: אותו gate חיצוני כמו לפני Step 3B — אין הרחבת capability surface —");
+  // הבודד של add_monday_update — למרות ש-addUpdateToItem אוכפת ANY-of עשיר יותר (5 הרשאות)
+  // כהגנה פנימית. Step 3C לא משנה את ההחלטה הזו — הוא רק מבטל את הכפילות המבנית: עכשיו יש מקום
+  // יחיד (isToolAllowedForUser, tools.ts) שמחשב את ההרשאה, במקום שתי השוואות נפרדות (כאן +
+  // orchestrator.ts's canUseTool הישן) שרק "קרה" להן להסכים.
+  logger.info("— permissions: אותה תוצאה בדיוק כמו לפני Step 3C — אין הרחבת capability surface —");
 
   assert(
-    addUpdateTool?.requiredPermission === "task:update_own",
-    "add_monday_update: requiredPermission נשאר 'task:update_own' — אותו gate בדיוק כמו לפני המעבר ל-shared AgentTool",
+    addUpdateTool?.agentTool === ADD_UPDATE_AGENT_TOOL,
+    "add_monday_update.agentTool === ADD_UPDATE_AGENT_TOOL — הקישור הגנרי לכלי המשותף קיים",
   );
   assert(
-    createLeadTool?.requiredPermission === "lead:manage",
-    "create_lead: requiredPermission='lead:manage' תואם 1:1 ל-AGENT_TOOLS's create_lead.requiredPermission=['lead:manage']",
+    addUpdateTool?.requiredPermission === "task:update_own",
+    "add_monday_update: requiredPermission נשאר 'task:update_own' — צמצום מכוון של ANY-of ה-AgentTool, לא שונה",
   );
+  assert(
+    !!addUpdateTool?.agentTool?.requiredPermission.includes("task:update_own"),
+    "add_monday_update: ה-צמצום הוא subset תקין של ANY-of ה-AgentTool (ולא הרשאה שהוא לא מכיר כלל)",
+  );
+  assert(
+    createLeadTool?.agentTool === CREATE_LEAD_AGENT_TOOL,
+    "create_lead.agentTool === CREATE_LEAD_AGENT_TOOL — הקישור הגנרי לכלי המשותף קיים",
+  );
+  assert(
+    createLeadTool?.requiredPermission === undefined,
+    "create_lead: אין יותר requiredPermission עצמאי כאן — מגיע במלואו מ-AgentTool.requiredPermission",
+  );
+  assert(
+    deepEqual(createLeadTool?.agentTool?.requiredPermission, ["lead:manage"]),
+    "create_lead: ה-ANY-of היחיד שחל הוא AGENT_TOOLS's create_lead.requiredPermission=['lead:manage'] — זהה למה שהיה כ-requiredPermission בודד לפני Step 3C",
+  );
+
+  // ───────────────────────── 4b. הוכחת structural delegation — לא רק 'קורה' להסכים ─────────────────────────
+  // משנים את ה-ANY-of של AgentTool מדומה (לא נוגעים ב-AGENT_TOOLS האמיתי) ומוכיחים ש-
+  // isToolAllowedForUser בפועל *קורא* ממנו, בשני הכיוונים (מרשה הרשאה חדשה / חוסם הרשאה שהוסרה) —
+  // לא רק מקבל תוצאה שמתאימה כי מישהו שמר על שני מקורות מסונכרנים ביד.
+  logger.info("— structural delegation: isToolAllowedForUser קורא בפועל מ-tool.agentTool, לא מקבילה מקרית —");
+
+  {
+    const fakeAgentTool: AgentTool = { ...CREATE_LEAD_AGENT_TOOL, requiredPermission: ["finance:manage"] };
+    const fakeToolDef: ToolDefinition = { ...createLeadTool!, agentTool: fakeAgentTool, requiredPermission: undefined };
+    assert(
+      isToolAllowedForUser(fakeToolDef, goldi),
+      "כשה-AgentTool המדומה מוחלף ל-ANY-of=['finance:manage'] — גולדי (יש לה finance:manage, אין lead:manage) מקבלת גישה: ההרשאה נקראת בזמן אמת מה-AgentTool, לא מ-cache/קבוע כפול",
+    );
+    assert(
+      !isToolAllowedForUser(fakeToolDef, ruchama),
+      "ואילו רוחמה (אין לה finance:manage) לא מקבלת גישה לאותו fakeToolDef — אותה קריאה חוזרת, תוצאה שונה לפי ANY-of בזמן אמת",
+    );
+  }
+  {
+    // אותה הוכחה על add_monday_update, כאן עם requiredPermission override קיים: מציגה שה-override
+    // גובר על ה-AgentTool (בכוונה — זה הצמצום המכוון), ולא שה-AgentTool פשוט מתעלם ממנו.
+    const fakeAgentTool: AgentTool = { ...ADD_UPDATE_AGENT_TOOL, requiredPermission: ["finance:manage"] };
+    const fakeToolDefWithOverride: ToolDefinition = { ...addUpdateTool!, agentTool: fakeAgentTool };
+    assert(
+      !isToolAllowedForUser(fakeToolDefWithOverride, goldi),
+      "עם requiredPermission='task:update_own' מוצהר, גולדי (finance:manage בלבד) *לא* מקבלת גישה גם אם ה-AgentTool המדומה כן מכיר finance:manage — ה-override מצמצם, לא רק ANY-of גולמי",
+    );
+  }
 
   // Regression guard: גולדי (finance:manage, *אין* task:update_own) — addUpdateToItem/AgentTool
   // *היו* מרשים לה (finance:manage הוא אחת מחמש ההרשאות התקינות שם), אבל ה-gate החיצוני ב-

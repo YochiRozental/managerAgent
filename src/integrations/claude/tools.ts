@@ -33,7 +33,7 @@ import {
 } from "../monday/tasks.js";
 import { findUsersByName } from "../monday/users.js";
 import { getMyWorkBrief } from "../../ops/myWorkBrief.js";
-import { AGENT_TOOLS } from "../../ops/agentTools.js";
+import { AGENT_TOOLS, type AgentTool } from "../../ops/agentTools.js";
 
 /** הקשר הרצה שה-orchestrator מזריק לכלי — מי המשתמש ששאל. */
 export interface ToolContext {
@@ -48,9 +48,18 @@ export interface ToolDefinition {
   requiresConfirmation: boolean;
   /**
    * ההרשאה שהמשתמש חייב להחזיק כדי להריץ את הכלי. אם לא מוגדר — מספיק להיות מזוהה.
-   * האכיפה ב-orchestrator לפני הרצת הכלי.
+   * האכיפה ב-orchestrator לפני הרצת הכלי. כשהכלי מגובה ב-agentTool (למטה): אם requiredPermission
+   * מוגדר, הוא צמצום מכוון של ה-ANY-of של ה-AgentTool (נבדק כ-subset ב-startup — ר' הבדיקה אחרי
+   * מערך tools למטה); אם לא מוגדר, ה-ANY-of המלא של ה-AgentTool חל ישירות — ר' isToolAllowedForUser.
    */
   requiredPermission?: Permission;
+  /**
+   * קישור גנרי (שלב 3C, 2026-10-07) לכלי משותף ב-registry (ops/agentTools.ts) — לא תלוי בשם
+   * הכלי, כדי שישמש גם מיגרציות עתידיות. כשמוגדר, ה-AgentTool הוא מקור האמת להרשאות הכלי
+   * (ר' isToolAllowedForUser) — לא עוד שתי השוואות הרשאה נפרדות (אחת כאן/ב-toAnthropicTools,
+   * אחת ב-orchestrator.ts's canUseTool) שרק "קורה" להן להסכים.
+   */
+  agentTool?: AgentTool;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute: (input: any, ctx: ToolContext) => Promise<unknown>;
 }
@@ -243,7 +252,12 @@ export const tools: ToolDefinition[] = [
     // המדיניות העסקית של add_update עצמו. שלב 3B הוא migration של execution, לא הרחבת capability
     // surface — minimum behavioral change. אם בעתיד יוחלט במפורש להרחיב את ה-gate הזה (או
     // להסירו) — זו החלטה נפרדת, לא side-effect של ה-wiring.
+    //
+    // שלב 3C: agentTool מקשר לכלי המשותף — ה-ANY-of שלו (5 הרשאות) הוא עכשיו ה-source of truth
+    // הרשום, ו-requiredPermission כאן הוא צמצום *נבדק* שלו (startup assertion: subset-of), לא
+    // רשימה עצמאית שרק קורה להסכים איתו. ההתנהגות בפועל לא השתנתה.
     requiredPermission: "task:update_own",
+    agentTool: ADD_UPDATE_AGENT_TOOL,
     execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
       const user = requireIdentifiedUser(ctx);
       return ADD_UPDATE_AGENT_TOOL.execute(input, { user });
@@ -272,7 +286,11 @@ export const tools: ToolDefinition[] = [
       required: ["firstName"],
     },
     requiresConfirmation: false,
-    requiredPermission: "lead:manage",
+    // שלב 3C: אין requiredPermission עצמאי כאן בכוונה — הכלי מגובה במלואו ב-AgentTool (למטה),
+    // וה-ANY-of שלו (כיום הסינגלטון ["lead:manage"]) הוא ה-source of truth המלא, לא קירוב שלו.
+    // תוצאה בפועל זהה למה שהיה (לפני: requiredPermission="lead:manage" כאן; גם זה "lead:manage"
+    // בלבד) — אבל עכשיו יש רק מקום אחד שמחזיק את ההרשאה הזו, לא שניים שצריך לשמור מסונכרנים.
+    agentTool: CREATE_LEAD_AGENT_TOOL,
     execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
       const user = requireIdentifiedUser(ctx);
       return CREATE_LEAD_AGENT_TOOL.execute(input, { user });
@@ -373,6 +391,37 @@ export const tools: ToolDefinition[] = [
   },
 ];
 
+// שלב 3C (2026-10-07): לכל כלי עם agentTool + requiredPermission מוצהר — requiredPermission חייב
+// להיות subset של ה-ANY-of של ה-AgentTool המגובה. נבדק בעליית המודול (לא בשקט באמצע שיחה) כדי
+// שאף אחד לא "יצמצם" בטעות להרשאה שה-AgentTool (מקור האמת העסקי) לא מכיר בכלל.
+for (const t of tools) {
+  if (t.agentTool && t.requiredPermission && !t.agentTool.requiredPermission.includes(t.requiredPermission)) {
+    throw new Error(
+      `כלי '${t.name}': requiredPermission='${t.requiredPermission}' אינו חלק מה-ANY-of של ה-AgentTool ` +
+        `המגובה '${t.agentTool.name}' (${t.agentTool.requiredPermission.join(",")}) — חיווט הרשאות שגוי.`,
+    );
+  }
+}
+
+/**
+ * מקור האמת היחיד לקביעת "האם המשתמש רשאי להשתמש בכלי הזה" — משמש גם לחשיפה (toAnthropicTools)
+ * וגם לאכיפה לפני הרצה (orchestrator.ts's canUseTool), כדי שלא יהיו שתי השוואות נפרדות שרק
+ * "קורה" להן להסכים. כלי המגובה ב-agentTool (שלב 3C): ה-ANY-of שלו הוא ה-source of truth —
+ * requiredPermission כאן, אם מוגדר, מצמצם אליו (נבדק subset למעלה); אם לא מוגדר, ה-ANY-of המלא
+ * של ה-AgentTool חל. כלי בלי agentTool: בדיוק ההתנהגות הקודמת (requiredPermission בודד, או תמיד
+ * מורשה אם לא מוגדר).
+ */
+export function isToolAllowedForUser(tool: ToolDefinition, user: IdentifiedUser | null): boolean {
+  if (tool.agentTool) {
+    const allowedPermissions: Permission[] = tool.requiredPermission
+      ? [tool.requiredPermission]
+      : tool.agentTool.requiredPermission;
+    return user ? allowedPermissions.some((p) => user.permissions.includes(p)) : false;
+  }
+  if (!tool.requiredPermission) return true;
+  return user ? user.permissions.includes(tool.requiredPermission) : false;
+}
+
 /**
  * מחזיר את הכלים שה-AI רשאי להשתמש בהם עבור המשתמש הנתון — כדי שלא יציע פעולה שתיחסם ממילא.
  * - אובייקט משתמש → מסונן להרשאותיו.
@@ -387,7 +436,7 @@ export function toAnthropicTools(user?: IdentifiedUser | null): Anthropic.Tool[]
   } else if (user === null) {
     allowed = [];
   } else {
-    allowed = tools.filter((t) => !t.requiredPermission || user.permissions.includes(t.requiredPermission));
+    allowed = tools.filter((t) => isToolAllowedForUser(t, user));
   }
   return allowed.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
 }

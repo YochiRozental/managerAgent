@@ -4,7 +4,7 @@ import { runRoutedAgent } from "../../ai/routedAgent.js";
 import type { NormTool, NormToolCall } from "../../ai/providers/types.js";
 import type { IdentifiedUser } from "../../identity/index.js";
 import { logger } from "../../utils/logger.js";
-import { getTool, toAnthropicTools } from "./tools.js";
+import { getTool, isToolAllowedForUser, toAnthropicTools } from "./tools.js";
 
 const MAX_TOOL_TURNS = 8;
 
@@ -57,10 +57,13 @@ export async function runOrchestrator(
     parameters: (t.input_schema ?? { type: "object", properties: {} }) as Record<string, unknown>,
   }));
 
+  // שלב 3C: מקור האמת היחיד לבדיקת הרשאה (isToolAllowedForUser, tools.ts) — לא עוד השוואה
+  // מקבילה נפרדת כאן. תואם בדיוק להתנהגות הקודמת: כלי לא קיים ⇒ אין requiredPermission ⇒ מורשה
+  // (dead code בפועל — executeToolCall/screenToolCalls בודקים existence קודם).
   const canUseTool = (name: string): boolean => {
-    const perm = getTool(name)?.requiredPermission;
-    if (!perm) return true;
-    return user?.permissions.includes(perm) ?? false;
+    const tool = getTool(name);
+    if (!tool) return true;
+    return isToolAllowedForUser(tool, user);
   };
 
   const buildLoop = () => ({

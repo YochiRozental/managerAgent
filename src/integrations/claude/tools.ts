@@ -79,6 +79,13 @@ function requireAgentTool(name: string) {
  *  שגם ops/chat.ts (Web) משתמש בו, לא עותק. */
 export const ADD_UPDATE_AGENT_TOOL = requireAgentTool("add_update");
 export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead");
+/**
+ * שלב 3D (2026-10-07) — domain actions אמיתיים של מערכת המשימות (לא Monday primitive גנרי
+ * כמו update_monday_task_status, ר' docstring בראש הקובץ). update_monday_task_status *נשאר*
+ * ללא שינוי כ-legacy fallback (בורדים שאינם משימות משרד/שלבי פרויקט) — ר' audit נפרד.
+ */
+export const MARK_DONE_AGENT_TOOL = requireAgentTool("mark_done");
+export const SET_STATUS_AGENT_TOOL = requireAgentTool("set_status");
 
 /**
  * בפועל לא אמור לקרות — toAnthropicTools(null) מחזיר מערך כלים ריק, אז executeToolCall לא
@@ -89,6 +96,20 @@ export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead");
 export function requireIdentifiedUser(ctx: ToolContext): IdentifiedUser {
   if (!ctx.user) throw new Error("חסר הקשר משתמש — לא ניתן לבצע את הפעולה בלי לדעת מי שואל.");
   return ctx.user;
+}
+
+/**
+ * שלב 3D: list_my_work (הכלי היחיד שחושף source לפריט ב-WhatsApp היום) מחזיר source="office"/
+ * "project" — תוויות תצוגה (ר' ops/myWorkBrief.ts's toBriefTask), לא "general"/"project_stage"
+ * (הערך הגולמי, זהה ל-OpsTaskSource, שה-AgentTool של mark_done/set_status דורש בפועל — וזה מה
+ * שה-schema שהמודל מקבל מצהיר עליו, ללא שינוי). אי-התאמת מינוח קיימת שהתגלתה באודיט — לא נוגעים
+ * ב-myWorkBrief.ts (מחוץ לסקופ), רק רשת ביטחון כאן למקרה שהמודל מעתיק את source מילה-במילה
+ * מ-list_my_work בלי לתרגם. מיפוי כינויים בלבד — אין כאן שום לוגיקה עסקית.
+ */
+export function normalizeTaskSource(input: Record<string, unknown>): Record<string, unknown> {
+  const aliasMap: Record<string, string> = { office: "general", project: "project_stage" };
+  const raw = input.source;
+  return typeof raw === "string" && raw in aliasMap ? { ...input, source: aliasMap[raw] } : input;
 }
 
 export const tools: ToolDefinition[] = [
@@ -167,6 +188,36 @@ export const tools: ToolDefinition[] = [
     requiredPermission: "task:update_own",
     execute: async (input: { boardId: string; itemId: string; statusLabel: string }) =>
       updateTaskStatus(input.boardId, input.itemId, input.statusLabel),
+  },
+  {
+    // שלב 3D: domain action אמיתי (לא Monday primitive) — name/description/input_schema מגיעים
+    // מה-AgentTool המשותף (source of truth, ר' תחילת הקובץ), לא מומצאים כאן. agentTool מקשר
+    // ל-registry: אין requiredPermission עצמאי — מגיע במלואו מ-MARK_DONE_AGENT_TOOL.requiredPermission
+    // (סינגלטון task:update_own, בדיוק כמו create_lead ב-Step 3C — אין gate קיים לשמר, אין צמצום).
+    // execute מפנה ל-AgentTool בלבד — doUpdateTask→ops/actions.ts→authorize() (ownership/project
+    // scope), לא Monday ישירות. source מתורגם מ-list_my_work's "office"/"project" אם צריך
+    // (normalizeTaskSource) — רשת ביטחון, לא לוגיקה עסקית.
+    name: MARK_DONE_AGENT_TOOL.name,
+    description: MARK_DONE_AGENT_TOOL.description,
+    input_schema: MARK_DONE_AGENT_TOOL.input_schema as Anthropic.Tool.InputSchema,
+    requiresConfirmation: false,
+    agentTool: MARK_DONE_AGENT_TOOL,
+    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
+      const user = requireIdentifiedUser(ctx);
+      return MARK_DONE_AGENT_TOOL.execute(normalizeTaskSource(input), { user });
+    },
+  },
+  {
+    // שלב 3D: ראה הערה מעל mark_done — אותו דפוס בדיוק, SET_STATUS_AGENT_TOOL במקום MARK_DONE.
+    name: SET_STATUS_AGENT_TOOL.name,
+    description: SET_STATUS_AGENT_TOOL.description,
+    input_schema: SET_STATUS_AGENT_TOOL.input_schema as Anthropic.Tool.InputSchema,
+    requiresConfirmation: false,
+    agentTool: SET_STATUS_AGENT_TOOL,
+    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
+      const user = requireIdentifiedUser(ctx);
+      return SET_STATUS_AGENT_TOOL.execute(normalizeTaskSource(input), { user });
+    },
   },
   {
     name: "set_monday_task_due_date",

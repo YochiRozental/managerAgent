@@ -37,19 +37,32 @@
  *   npm run test:tool-parity
  */
 
-import { tools as whatsappTools, ADD_UPDATE_AGENT_TOOL, CREATE_LEAD_AGENT_TOOL } from "../src/integrations/claude/tools.js";
+import {
+  tools as whatsappTools,
+  ADD_UPDATE_AGENT_TOOL,
+  CREATE_LEAD_AGENT_TOOL,
+  MARK_DONE_AGENT_TOOL,
+  SET_STATUS_AGENT_TOOL,
+} from "../src/integrations/claude/tools.js";
 import { AGENT_TOOLS } from "../src/ops/agentTools.js";
 import { WEB_CHAT_LOCAL_TOOL_NAMES, WIRED_AGENT_TOOL_NAMES } from "../src/ops/chat.js";
 import { logger } from "../src/utils/logger.js";
 
 /**
- * שלב 3B (2026-10-05): זה בדיוק היום שה-placeholder הקודם ("ריק עד שזה באמת יקרה") חיכה לו —
- * add_monday_update/create_lead ב-tools.ts מחוברים עכשיו בפועל ל-AgentTools (ADD_UPDATE_AGENT_
- * TOOL/CREATE_LEAD_AGENT_TOOL, מיובאים משם — לא retype). נגזר מהאובייקטים האמיתיים, בדיוק כמו
- * WIRED_AGENT_TOOL_NAMES ב-chat.ts. שאר הכלים (reassign_item/create_task/mark_done/וכו') עדיין
- * לא מחוברים ל-WhatsApp — לא נוספו כאן, כי לא עברו migration בפועל.
+ * שלב 3B (2026-10-05): add_monday_update/create_lead ב-tools.ts מחוברים בפועל ל-AgentTools
+ * (ADD_UPDATE_AGENT_TOOL/CREATE_LEAD_AGENT_TOOL, מיובאים משם — לא retype). שלב 3D (2026-10-07):
+ * mark_done/set_status נוספו באותו אופן בדיוק — שני domain actions חדשים ב-WhatsApp, מגובים
+ * ישירות ב-registry. נגזר מהאובייקטים האמיתיים, בדיוק כמו WIRED_AGENT_TOOL_NAMES ב-chat.ts.
+ * שאר הכלים (reassign_item/create_task/add_note/report_blocker/create_project_stage) עדיין לא
+ * מחוברים ל-WhatsApp — לא נוספו כאן, כי לא עברו migration בפועל. update_monday_task_status
+ * *נשאר* מחוץ לרשימה הזו בכוונה — הוא legacy fallback עצמאי (Monday primitive גנרי), לא AgentTool.
  */
-const whatsappWiredAgentToolNames: readonly string[] = [ADD_UPDATE_AGENT_TOOL.name, CREATE_LEAD_AGENT_TOOL.name];
+const whatsappWiredAgentToolNames: readonly string[] = [
+  ADD_UPDATE_AGENT_TOOL.name,
+  CREATE_LEAD_AGENT_TOOL.name,
+  MARK_DONE_AGENT_TOOL.name,
+  SET_STATUS_AGENT_TOOL.name,
+];
 
 interface CoreCapability {
   label: string;

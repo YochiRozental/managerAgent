@@ -1,15 +1,18 @@
 /**
  * Shared tool-registry primitives — Step 3F.2 (2026-10-07), extract-don't-rewrite.
+ * Extended Step 3F.3 (2026-10-07): requireIdentifiedUser moved here too, once Web's own
+ * create_lead ToolDefinition needed the exact same null→guaranteed-user narrowing WhatsApp
+ * already had — proof it was channel-independent all along, not WhatsApp-specific.
  *
  * integrations/claude/tools.ts (WhatsApp) has owned ToolDefinition/ToolContext/
- * isToolAllowedForUser since Step 3C — channel-independent concepts that were trapped in a
- * WhatsApp-specific file. This step only relocates them here, with zero logic change, so a
- * later step (3F.3/3F.4) can have Web's own tool list consume the same type and the same
- * permission-filtering function instead of its own ad hoc `if (cond) tools.push(...)` chain.
- * tools.ts re-exports all three so every existing import
- * (`from "../../integrations/claude/tools.js"`) keeps working unchanged.
+ * isToolAllowedForUser/requireIdentifiedUser since Step 3C — channel-independent concepts that
+ * were trapped in a WhatsApp-specific file. This relocates them here, with zero logic change, so
+ * Web's own tool list can consume the same type and the same permission-filtering function
+ * instead of its own ad hoc `if (cond) tools.push(...)` chain (ops/chat.ts's create_lead did
+ * exactly that in Step 3F.3 — see its own comments). tools.ts re-exports all of them so every
+ * existing import (`from "../../integrations/claude/tools.js"`) keeps working unchanged.
  *
- * The one type-only adaptation made during the move: `input_schema` is typed
+ * The one type-only adaptation made during the 3F.2 move: `input_schema` is typed
  * `Record<string, unknown>` here (matching AgentTool.input_schema's own shape) instead of
  * `Anthropic.Tool.InputSchema` — src/ai/'s other modules (providers/types.ts) deliberately keep
  * provider-SDK types out of the shared layer, isolated to providers/anthropic.ts. This has zero
@@ -20,10 +23,11 @@
  * What stays out, deliberately (still WhatsApp-specific, lives in tools.ts):
  *   - the actual `tools: ToolDefinition[]` array (WhatsApp's own 20 tools)
  *   - toAnthropicTools()/getTool() (Anthropic-shaped projection + lookup over that specific array)
- *   - requireIdentifiedUser()/normalizeTaskSource() (WhatsApp-only helpers)
+ *   - normalizeTaskSource() (WhatsApp-only helper — list_my_work's label mismatch)
  *   - the subset-of-AgentTool startup validation loop (iterates WhatsApp's own array)
- * Not moved into Web in this step either — ops/chat.ts's own ToolDef{run} shape and its ~28
- * tool entries are untouched; converting them is 3F.3/3F.4, not this one.
+ * Step 3F.3 converted exactly one of Web's entries (create_lead) to prove the pattern; its other
+ * ~27 tool entries (8 remaining AgentTool-backed ones + ~19 Web-local ones) are untouched —
+ * converting the rest is 3F.4+, not this step.
  */
 
 import type { IdentifiedUser, Permission } from "../identity/index.js";
@@ -73,4 +77,16 @@ export function isToolAllowedForUser(tool: ToolDefinition, user: IdentifiedUser 
   }
   if (!tool.requiredPermission) return true;
   return user ? user.permissions.includes(tool.requiredPermission) : false;
+}
+
+/**
+ * הופכת ToolContext.user (IdentifiedUser | null) למשתמש מזוהה ודאי, לפני העברתו ל-AgentTool
+ * (AgentToolContext דורש IdentifiedUser לא-nullable). שימוש: כל ToolDefinition.execute שמגובה
+ * ב-agentTool וצריך להעביר user אמיתי. הועבר לכאן משלב 3F.2 (היה ב-integrations/claude/tools.ts
+ * בלבד) כש-Step 3F.3 הראה שגם Web צריך בדיוק את זה — לא רק WhatsApp. שמירה מפורשת (לא bypass,
+ * לא ניחוש): אם ctx.user חסר, זורקת מיד — לא ממשיכה בשקט עם משתמש מומצא/ברירת-מחדל.
+ */
+export function requireIdentifiedUser(ctx: ToolContext): IdentifiedUser {
+  if (!ctx.user) throw new Error("חסר הקשר משתמש — לא ניתן לבצע את הפעולה בלי לדעת מי שואל.");
+  return ctx.user;
 }

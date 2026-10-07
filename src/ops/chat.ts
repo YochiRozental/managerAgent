@@ -28,6 +28,7 @@ import {
 import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import { buildSystemPrompt } from "../ai/prompt.js";
+import { isToolAllowedForUser, requireIdentifiedUser, type ToolDefinition } from "../ai/toolRegistry.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
 import { AGENT_TOOLS, type AgentTool } from "./agentTools.js";
 import { getApproval } from "../db/repositories/managerApprovals.js";
@@ -77,6 +78,25 @@ export const CREATE_TASK_AGENT_TOOL: AgentTool = requireAgentTool("create_task")
  * AGENT_TOOLS.find("create_lead").
  */
 export const CREATE_LEAD_AGENT_TOOL: AgentTool = requireAgentTool("create_lead");
+
+/**
+ * שלב 3F.3 (2026-10-07): create_lead הופך ל-ToolDefinition אמיתי — אותו טיפוס/מושג הרשאה
+ * בדיוק שגם WhatsApp (integrations/claude/tools.ts) בנוי עליו משלב 3F.2, לא "WebToolDefinition"
+ * נפרד. requiresConfirmation=false (Web לא משתמש בזרימת האישור הזו כלל — ר' Step 3A). אין
+ * requiredPermission עצמאי כאן: ה-ANY-of המלא של ה-AgentTool חל (היום הסינגלטון ["lead:manage"]),
+ * בדיוק כמו canCreateLead(user) שהשער היה קודם (נשאר מיוצא/נבדק בנפרד, רק לא משמש כאן יותר).
+ * execute עצמו מפנה ל-AgentTool.execute בלבד — אין כאן לוגיקה עסקית חדשה, רק narrowing של
+ * ctx.user (requireIdentifiedUser, זהה למה ש-WhatsApp עושה לכל כלי agentTool-backed שלו).
+ */
+export const CREATE_LEAD_TOOL_DEFINITION: ToolDefinition = {
+  name: CREATE_LEAD_AGENT_TOOL.name,
+  description: CREATE_LEAD_AGENT_TOOL.description,
+  input_schema: CREATE_LEAD_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: CREATE_LEAD_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    CREATE_LEAD_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
 
 /**
  * שלב 2D (2026-10-05): אותו דפוס, למשפחת updateTask (mark_done/set_status/add_note/
@@ -742,19 +762,19 @@ export async function runOpsChat(
     });
   }
 
-  // ---- יצירת ליד חדש — רק למי שיש lead:manage ----
-  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts, שלב
-  // 2C) — לא עותק מקומי. ה-run כאן הוא adapter דק: מריץ את ה-execute המשותף (שקורא בפועל
-  // ל-createLeadAction, בדיוק כמו קודם) ואז מוסיף actions.push — תופעת הלוואי הספציפית לצ'אט
-  // הזה. בניגוד ל-create_task, אין כאן refresh() — גם בגרסה המקורית לא היה (יצירת ליד לא
-  // משפיעה על מטמון המשימות), אז לא נוסף כעת כדי לא לשנות התנהגות.
-  if (canCreateLead(user)) {
+  // ---- יצירת ליד חדש — שלב 3F.3: gate עובר דרך isToolAllowedForUser (המשותף עם WhatsApp) ----
+  // לא canCreateLead(user) יותר — בכוונה, כדי שלא יישאר permission check מקביל רק לכלי הזה.
+  // תוצאה זהה: ANY-of ה-AgentTool הוא היום הסינגלטון ["lead:manage"], בדיוק מה ש-canCreateLead
+  // בדק. ה-run כאן הוא ה-thin adapter היחיד שנותר: ממיר input→CREATE_LEAD_TOOL_DEFINITION.execute
+  // (ctx={user}), ואז actions.push — תופעת הלוואי הספציפית לצ'אט. בניגוד ל-create_task, אין כאן
+  // refresh() — גם בגרסה המקורית לא היה (יצירת ליד לא משפיעה על מטמון המשימות), לא נוסף כעת.
+  if (isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, user)) {
     tools.push({
-      name: CREATE_LEAD_AGENT_TOOL.name,
-      description: CREATE_LEAD_AGENT_TOOL.description,
-      input_schema: CREATE_LEAD_AGENT_TOOL.input_schema,
+      name: CREATE_LEAD_TOOL_DEFINITION.name,
+      description: CREATE_LEAD_TOOL_DEFINITION.description,
+      input_schema: CREATE_LEAD_TOOL_DEFINITION.input_schema,
       run: async (input) => {
-        const r = (await CREATE_LEAD_AGENT_TOOL.execute(input, { user })) as { message: string };
+        const r = (await CREATE_LEAD_TOOL_DEFINITION.execute(input, { user })) as { message: string };
         actions.push(`🆕 ${r.message}`);
         return r;
       },

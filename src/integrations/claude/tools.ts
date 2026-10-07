@@ -14,6 +14,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { IdentifiedUser } from "../../identity/index.js";
 import {
   isToolAllowedForUser,
+  requireIdentifiedUser,
   type ToolContext,
   type ToolDefinition,
 } from "../../ai/toolRegistry.js";
@@ -46,7 +47,7 @@ import { AGENT_TOOLS } from "../../ops/agentTools.js";
  * מחדש כאן (ללא שינוי שם/חתימה) כי כל הקוד הקיים (כולל בדיקות) מייבא אותם מ-"./tools.js".
  */
 export type { ToolContext, ToolDefinition };
-export { isToolAllowedForUser };
+export { isToolAllowedForUser, requireIdentifiedUser };
 
 /**
  * שלב 3B (2026-10-05, תוכנית איחוד Web/WhatsApp) — add_monday_update/create_lead מחוברים
@@ -78,17 +79,6 @@ export const SET_STATUS_AGENT_TOOL = requireAgentTool("set_status");
  * שאינם משימות משרד/שלבי פרויקט — ר' audit נפרד.
  */
 export const CREATE_TASK_AGENT_TOOL = requireAgentTool("create_task");
-
-/**
- * בפועל לא אמור לקרות — toAnthropicTools(null) מחזיר מערך כלים ריק, אז executeToolCall לא
- * אמור להגיע לכאן בלי משתמש מזוהה. שמירה מפורשת (לא bypass, לא ניחוש) כדי שה-AgentTool יקבל
- * user: IdentifiedUser תקין, לא IdentifiedUser|null. מיוצא כדי שבדיקות יוכלו לבחון אותה ישירות
- * כפונקציה טהורה, בלי להריץ שום AgentTool אמיתי (שהיה מגיע ל-Monday).
- */
-export function requireIdentifiedUser(ctx: ToolContext): IdentifiedUser {
-  if (!ctx.user) throw new Error("חסר הקשר משתמש — לא ניתן לבצע את הפעולה בלי לדעת מי שואל.");
-  return ctx.user;
-}
 
 /**
  * שלב 3D: list_my_work (הכלי היחיד שחושף source לפריט ב-WhatsApp היום) מחזיר source="office"/

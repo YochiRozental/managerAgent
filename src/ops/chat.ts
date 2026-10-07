@@ -348,6 +348,27 @@ interface ToolDef {
   run: (input: Record<string, unknown>) => Promise<unknown>;
 }
 
+/**
+ * שלב 3F.4 (2026-10-07): מבדיל בין Web-local ToolDef הישן (run(input), בלי ctx — ~27 כלים,
+ * כולל 8 מתוך 9 ה-AgentTool-backed שעדיין לא הומרו) לבין ToolDefinition משותף אמיתי
+ * (execute(input,ctx), src/ai/toolRegistry.ts — היום רק create_lead). ה-duck-typing (שדה
+ * execute קיים) עובד כי שתי הצורות לעולם לא מגדירות את שני השדות (run/execute) גם יחד.
+ */
+function isSharedToolDefinition(tool: ToolDef | ToolDefinition): tool is ToolDefinition {
+  return "execute" in tool;
+}
+
+/**
+ * שלב 3F.4: מיפוי Web-specific מ-shared ToolDefinitions (לא Web-local הישנים) לטקסט ה-changelog
+ * שמוצג ב-UI (actions[]) — תופעת לוואי של Web בלבד, channel adapter concern, לא חלק מה-
+ * ToolDefinition המשותף/מה-business logic (ה-execute של ToolDefinition לא יודע על actions[]
+ * בכלל). רק create_lead במפה כרגע — בדיוק מה שהומר. כלים נוספים שיומרו בעתיד (3F.5+) יקבלו
+ * שורה משלהם כאן, עם האמוג'י/ניסוח המקורי שהיה לכל אחד ב-chat.ts (לא כולם זהים ל-create_lead).
+ */
+const SHARED_TOOL_UI_EFFECT: Record<string, (result: { message: string }) => string> = {
+  create_lead: (r) => `🆕 ${r.message}`,
+};
+
 export interface OpsChatOptions {
   /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
   about?: LoopContext;
@@ -396,7 +417,7 @@ export async function runOpsChat(
 
   const findTask = (itemId: string): OpsTask | undefined => tasks.find((t) => t.itemId === itemId);
 
-  const tools: ToolDef[] = [
+  const tools: (ToolDef | ToolDefinition)[] = [
     {
       name: "get_today_tasks",
       description:
@@ -762,23 +783,13 @@ export async function runOpsChat(
     });
   }
 
-  // ---- יצירת ליד חדש — שלב 3F.3: gate עובר דרך isToolAllowedForUser (המשותף עם WhatsApp) ----
-  // לא canCreateLead(user) יותר — בכוונה, כדי שלא יישאר permission check מקביל רק לכלי הזה.
-  // תוצאה זהה: ANY-of ה-AgentTool הוא היום הסינגלטון ["lead:manage"], בדיוק מה ש-canCreateLead
-  // בדק. ה-run כאן הוא ה-thin adapter היחיד שנותר: ממיר input→CREATE_LEAD_TOOL_DEFINITION.execute
-  // (ctx={user}), ואז actions.push — תופעת הלוואי הספציפית לצ'אט. בניגוד ל-create_task, אין כאן
-  // refresh() — גם בגרסה המקורית לא היה (יצירת ליד לא משפיעה על מטמון המשימות), לא נוסף כעת.
+  // ---- יצירת ליד חדש — שלב 3F.4: ToolDefinition משותף נדחף ישירות, בלי run() wrapper ----
+  // gate עובר דרך isToolAllowedForUser (לא canCreateLead(user), ר' שלב 3F.3). ה-executeToolCall
+  // (למטה, buildLoop) הוא זה שמריץ CREATE_LEAD_TOOL_DEFINITION.execute(input,{user}) ישירות
+  // ומוסיף את actions.push ה-UI-specific (דרך SHARED_TOOL_UI_EFFECT) — אין כאן יותר adapter
+  // מקומי בכלל, לא רק run() דק. בניגוד ל-create_task, אין refresh() — כמו קודם.
   if (isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, user)) {
-    tools.push({
-      name: CREATE_LEAD_TOOL_DEFINITION.name,
-      description: CREATE_LEAD_TOOL_DEFINITION.description,
-      input_schema: CREATE_LEAD_TOOL_DEFINITION.input_schema,
-      run: async (input) => {
-        const r = (await CREATE_LEAD_TOOL_DEFINITION.execute(input, { user })) as { message: string };
-        actions.push(`🆕 ${r.message}`);
-        return r;
-      },
-    });
+    tools.push(CREATE_LEAD_TOOL_DEFINITION);
   }
 
   // ---- כלי בקרה על כל המשרד — רק למי שיש view:all_work (מוטי, יוכי) ----
@@ -942,12 +953,34 @@ export async function runOpsChat(
       maxTurns: MAX_TURNS,
       messages: history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
       tools: normTools,
+      // שלב 3F.4: dispatcher כפול — תומך גם ב-Web-local ToolDef הישן (run(input), ~27 כלים, ללא
+      // שינוי) וגם ב-ToolDefinition משותף (execute(input,ctx), היום רק create_lead). לא dispatcher
+      // שלישי — אותה פונקציה אחת, עם branch לפי isSharedToolDefinition. ה-sideEffect detection
+      // (actions.length לפני/אחרי) נשאר אחיד לשני המסלולים.
       executeToolCall: async (call: NormToolCall) => {
         const tool = tools.find((t) => t.name === call.name);
         if (!tool) return { content: `שגיאה: כלי לא ידוע ${call.name}`, sideEffect: false };
         try {
           const before = actions.length; // כלי כתיבה מוסיף ל-actions — כך יודעים אם הייתה תופעת לוואי
-          const out = await tool.run((call.input ?? {}) as Record<string, unknown>);
+          const input = (call.input ?? {}) as Record<string, unknown>;
+          let out: unknown;
+          if (isSharedToolDefinition(tool)) {
+            // בדיקת הרשאה בזמן ההרצה — לא רק בזמן בניית הרשימה — בדיוק כמו ה-defense-in-depth
+            // של WhatsApp's canUseTool (orchestrator.ts). Web-local tools (ה-else למטה) לא
+            // עוברים בדיקה כזו כרגע — הם ממשיכים בדיוק בהתנהגות הקיימת (אין להם requiredPermission/
+            // agentTool על האובייקט כלל, אז אין במה לבדוק).
+            if (!isToolAllowedForUser(tool, user)) {
+              logger.warn({ tool: call.name, user: user.key }, "כלי נחסם — אין למשתמש הרשאה (בדיקה בזמן הרצה)");
+              return { content: `שגיאה: אין הרשאה להשתמש בכלי ${call.name}.`, sideEffect: false };
+            }
+            out = await tool.execute(input, { user });
+            // actions.push ה-UI-specific — channel adapter concern, לא חלק מה-ToolDefinition
+            // המשותף (tool.execute לא יודע על actions[] בכלל). ר' SHARED_TOOL_UI_EFFECT.
+            const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
+            if (uiEffect) actions.push(uiEffect(out as { message: string }));
+          } else {
+            out = await tool.run(input);
+          }
           return { content: JSON.stringify(out), sideEffect: actions.length > before };
         } catch (err) {
           logger.warn({ err, tool: call.name, user: user.key }, "כלי צ'אט תפעולי נכשל");

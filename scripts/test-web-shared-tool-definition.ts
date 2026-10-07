@@ -1,14 +1,22 @@
 /**
- * Step 3F.3 (2026-10-07) — proves Web's create_lead now genuinely consumes the shared
- * ToolDefinition infrastructure (src/ai/toolRegistry.ts) that WhatsApp has used since Step 3C,
- * with zero behavior change, and that nothing else (the other 8 AgentTool-backed Web tools,
- * Web-local tools, WhatsApp's 20-tool registry) was touched.
+ * Step 3F.3 (2026-10-07) — proves Web's create_lead consumes the shared ToolDefinition
+ * infrastructure (src/ai/toolRegistry.ts) that WhatsApp has used since Step 3C, with zero
+ * behavior change, and that nothing else (the other 8 AgentTool-backed Web tools, Web-local
+ * tools, WhatsApp's 20-tool registry) was touched.
+ *
+ * Extended Step 3F.4 (2026-10-07): create_lead's temporary run() wrapper is gone — it's pushed
+ * into Web's tools array as a bare ToolDefinition now, executed by runOpsChat's dual-path
+ * dispatcher (executeToolCall's isSharedToolDefinition branch), which also adds the execution-
+ * time isToolAllowedForUser re-check (defense-in-depth, matching WhatsApp's canUseTool) and the
+ * actions.push UI effect via SHARED_TOOL_UI_EFFECT — a Web-only adapter table, not business logic
+ * inside the shared ToolDefinition.
  *
  * Does NOT call any live AI model — Anthropic credit is currently insufficient. All checks are
  * structural: object identity, schema equality, permission-decision equality across the real
- * role matrix, and source-level proof of the actions.push/no-refresh side effect (runOpsChat's
- * tool-building closure isn't independently invokable without live Monday/AI, so this is read
- * from the actual source text rather than executed — documented explicitly below).
+ * role matrix, and source-level proof of the dispatcher's branching/actions.push/no-refresh
+ * behavior (runOpsChat's executeToolCall closure isn't independently invokable without live
+ * Monday/AI, so this is read from the actual source text rather than executed — documented
+ * explicitly at each such check below).
  *
  *   npm run test:web-shared-tool-definition
  */
@@ -148,18 +156,56 @@ async function main() {
     "CREATE_LEAD_TOOL_DEFINITION.execute: אין הפניה ישירה ל-Monday write functions",
   );
 
-  // ───────────────────────── 6+7. actions.push נשמר, אין refresh() — הוכחה ממקור הקוד ─────────────────────────
-  // runOpsChat's tool-building closure אינו ניתן להרצה עצמאית בלי Monday/AI חיים — ההוכחה היחידה
-  // הבטוחה כרגע היא קריאת המקור עצמו (לא live run). ר' docstring בראש הקובץ.
-  logger.info("— actions.push/no-refresh (הוכחה ממקור הקוד, לא הרצה חיה — ר' מגבלת credit) —");
-  const createLeadBlockMatch = chatSource.match(
-    /isToolAllowedForUser\(CREATE_LEAD_TOOL_DEFINITION, user\)\) \{[\s\S]*?\n {2}\}\n/,
+  // ───────────────────────── 1'. שלב 3F.4: create_lead נדחף כ-ToolDefinition גולמי, בלי run() wrapper ─────────────────────────
+  logger.info("— שלב 3F.4: create_lead נדחף ישירות (tools.push(CREATE_LEAD_TOOL_DEFINITION)), אין יותר run() wrapper —");
+  const pushSiteMatch = chatSource.match(/isToolAllowedForUser\(CREATE_LEAD_TOOL_DEFINITION, user\)\) \{[\s\S]*?\n {2}\}\n/);
+  assert(!!pushSiteMatch, "נמצא בלוק ה-gate של create_lead ב-chat.ts");
+  const pushSite = pushSiteMatch?.[0] ?? "";
+  assert(
+    /tools\.push\(CREATE_LEAD_TOOL_DEFINITION\)/.test(pushSite),
+    "create_lead נדחף כאובייקט גולמי — tools.push(CREATE_LEAD_TOOL_DEFINITION), לא tools.push({name,...,run:...})",
   );
-  assert(!!createLeadBlockMatch, "נמצא בלוק ה-create_lead ב-chat.ts (isToolAllowedForUser gate)");
-  const block = createLeadBlockMatch?.[0] ?? "";
-  assert(block.includes("actions.push"), "בלוק create_lead ב-chat.ts כולל actions.push — תופעת הלוואי נשמרה");
-  assert(!block.includes("refresh()"), "בלוק create_lead ב-chat.ts לא כולל refresh() — נשמר כמו שהיה (ללא refresh)");
-  assert(block.includes("CREATE_LEAD_TOOL_DEFINITION.execute"), "בלוק create_lead קורא ל-CREATE_LEAD_TOOL_DEFINITION.execute (לא ל-AgentTool ישירות)");
+  assert(!pushSite.includes("run:"), "בלוק ה-push של create_lead לא מכיל יותר run: wrapper כלל");
+  assert(!pushSite.includes("actions.push"), "actions.push עבר מהבלוק המקומי ל-dispatcher המשותף (executeToolCall) — לא נשאר כאן");
+
+  // ───────────────────────── 6+7. actions.push נשמר, אין refresh() — עברו ל-dispatcher המשותף ─────────────────────────
+  // runOpsChat's executeToolCall closure אינו ניתן להרצה עצמאית בלי Monday/AI חיים — ההוכחה
+  // היחידה הבטוחה כרגע היא קריאת המקור עצמו (לא live run). ר' docstring בראש הקובץ.
+  logger.info("— actions.push/no-refresh: עברו ל-dispatcher המשותף (הוכחה ממקור הקוד, לא הרצה חיה) —");
+  const dispatcherMatch = chatSource.match(/executeToolCall: async \(call: NormToolCall\) => \{[\s\S]*?\n {6}\},\n/);
+  assert(!!dispatcherMatch, "נמצא executeToolCall ב-chat.ts");
+  const dispatcher = dispatcherMatch?.[0] ?? "";
+  assert(dispatcher.includes("isSharedToolDefinition(tool)"), "ה-dispatcher מבדיל בין ToolDefinition משותף ל-Web-local ישן");
+  assert(
+    dispatcher.includes("isToolAllowedForUser(tool, user)"),
+    "ה-dispatcher מבצע isToolAllowedForUser בזמן ההרצה (defense-in-depth) לכלי משותף",
+  );
+  assert(dispatcher.includes("tool.execute(input, { user })"), "ה-dispatcher קורא ל-tool.execute(input,{user}) לכלי משותף");
+  assert(dispatcher.includes("tool.run(input)"), "ה-dispatcher עדיין קורא ל-tool.run(input) ל-Web-local tools (ה-else)");
+  assert(dispatcher.includes("SHARED_TOOL_UI_EFFECT"), "ה-dispatcher מפעיל את SHARED_TOOL_UI_EFFECT (actions.push ל-UI) אחרי execute משותף");
+  assert(!dispatcher.includes("refresh()"), "ה-dispatcher לא קורא refresh() בכלל — create_lead ממשיך בלי refresh, כמו קודם");
+
+  // ───────────────────────── 3+4. בדיקת הרשאה בזמן הרצה — קיימת, ודוחה נכון ─────────────────────────
+  logger.info("— execution-time permission re-check: isToolAllowedForUser בזמן אמת (לא רק build-time) —");
+  assert(
+    !isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, goldi),
+    "אם ה-dispatcher היה מבצע re-check על גולדי (אין lead:manage) — הוא היה דוחה: isToolAllowedForUser מחזיר false",
+  );
+  assert(
+    isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, moti),
+    "ולמוטי (lead:manage) — isToolAllowedForUser מחזיר true, ה-dispatcher היה ממשיך ל-execute",
+  );
+
+  // ───────────────────────── 8. Web-local tools ממשיכים לרוץ דרך run(input), ללא שינוי ─────────────────────────
+  // ה-else branch (tool.run(input)) הוא מילה-במילה הקוד הישן (לפני 3F.4) — שום permission
+  // re-check/UI-effect לא נוסף לו. ה-if-branch (isSharedToolDefinition) הוא היחיד שמכיל אותם.
+  logger.info("— Web-local tools: ה-else branch (tool.run(input)) זהה לקוד הישן, בלי re-check/UI-effect חדשים —");
+  const elseBranch = dispatcher.slice(dispatcher.indexOf("} else {"));
+  assert(elseBranch.includes("tool.run(input)"), "ה-else branch (Web-local tools) קורא ל-tool.run(input) — ללא שינוי");
+  assert(
+    !elseBranch.includes("isToolAllowedForUser") && !elseBranch.includes("SHARED_TOOL_UI_EFFECT"),
+    "ה-else branch לא מכיל permission re-check או UI-effect — אלה רק ב-if branch של הכלים המשותפים",
+  );
 
   // ───────────────────────── 8. שאר 8 ה-AgentTools של Web — ללא שינוי ─────────────────────────
   logger.info("— שאר 8 ה-AgentTools המחוברים ל-Web — עדיין AgentTool גולמי, לא הומרו ל-ToolDefinition —");

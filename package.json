@@ -19,6 +19,7 @@
     "test:shared-prompt": "tsx scripts/test-shared-prompt.ts",
     "test:tool-registry": "tsx scripts/test-tool-registry.ts",
     "test:web-shared-tool-definition": "tsx scripts/test-web-shared-tool-definition.ts",
+    "test:shared-dispatcher": "tsx scripts/test-shared-dispatcher.ts",
     "test:ai-providers": "tsx scripts/test-ai-providers.ts",
     "test:ai-compare": "tsx scripts/test-ai-compare.ts",
     "test:ops": "tsx scripts/test-ops.ts",

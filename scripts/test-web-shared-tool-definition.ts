@@ -184,25 +184,33 @@ async function main() {
   assert(!pushSite.includes("run:"), "בלוק ה-push של create_lead לא מכיל יותר run: wrapper כלל");
   assert(!pushSite.includes("actions.push"), "actions.push עבר מהבלוק המקומי ל-dispatcher המשותף (executeToolCall) — לא נשאר כאן");
 
-  // ───────────────────────── 6+7. actions.push נשמר, אין refresh() — עברו ל-dispatcher המשותף ─────────────────────────
-  // runOpsChat's executeToolCall closure אינו ניתן להרצה עצמאית בלי Monday/AI חיים — ההוכחה
-  // היחידה הבטוחה כרגע היא קריאת המקור עצמו (לא live run). ר' docstring בראש הקובץ.
-  logger.info("— actions.push/no-refresh: עברו ל-dispatcher המשותף (הוכחה ממקור הקוד, לא הרצה חיה) —");
+  // ───────────────────────── 6+7. actions.push/refresh — עברו ל-dispatchToolDefinition המשותף (Central Agent Core) ─────────────────────────
+  // Central Agent Core unification (2026-10-07): executeToolCall ב-chat.ts כבר לא מכיל בעצמו
+  // isToolAllowedForUser/tool.execute/טקסט דחיית-הרשאה — אלה עברו ל-src/ai/dispatcher.ts's
+  // dispatchToolDefinition, הנבדק *ישירות* (לא רק ממקור) ב-test-shared-dispatcher.ts. מה שנשאר
+  // ב-chat.ts כאן הוא רק: ה-branch בין ToolDefinition משותף ל-Web-local tool.run, וה-hooks
+  // (actions.push/refresh/logging) שה-dispatcher המשותף קורא להם — זה מה שנבדק ממקור הקובץ.
+  logger.info("— executeToolCall (chat.ts): כלי משותף עובר דרך dispatchToolDefinition, hooks ה-UI נשמרים —");
   const dispatcherMatch = chatSource.match(/executeToolCall: async \(call: NormToolCall\) => \{[\s\S]*?\n {6}\},\n/);
   assert(!!dispatcherMatch, "נמצא executeToolCall ב-chat.ts");
   const dispatcher = dispatcherMatch?.[0] ?? "";
   assert(dispatcher.includes("isSharedToolDefinition(tool)"), "ה-dispatcher מבדיל בין ToolDefinition משותף ל-Web-local ישן");
   assert(
-    dispatcher.includes("isToolAllowedForUser(tool, user)"),
-    "ה-dispatcher מבצע isToolAllowedForUser בזמן ההרצה (defense-in-depth) לכלי משותף",
+    dispatcher.includes("dispatchToolDefinition(tool, input, { user }"),
+    "כלי משותף מורץ דרך dispatchToolDefinition — אותו דיספצ'ר ש-WhatsApp's orchestrator.ts גם קורא לו",
   );
-  assert(dispatcher.includes("tool.execute(input, { user })"), "ה-dispatcher קורא ל-tool.execute(input,{user}) לכלי משותף");
-  assert(dispatcher.includes("tool.run(input)"), "ה-dispatcher עדיין קורא ל-tool.run(input) ל-Web-local tools (ה-else)");
-  assert(dispatcher.includes("SHARED_TOOL_UI_EFFECT"), "ה-dispatcher מפעיל את SHARED_TOOL_UI_EFFECT (actions.push ל-UI) אחרי execute משותף");
-  // (3F.5A: refresh() כן מופיע בדיספצ'ר עכשיו — מותנה ב-uiEffect.refresh, לא לכל כלי. ר' בדיקת
-  // הסדר/ה-guard המדויקת בסקשן create_task למטה — זו לא עוד "אין refresh בכלל".)
+  assert(dispatcher.includes("tool.run(input)"), "ה-branch השני (Web-local tools) עדיין קורא ל-tool.run(input), בלי שינוי");
+  assert(
+    !dispatcher.includes("isToolAllowedForUser(tool, user)") && !dispatcher.includes("await tool.execute(input, { user })"),
+    "chat.ts עצמו לא מבצע יותר permission-check/execute על כלי משותף ישירות — זה עבר ל-dispatcher המשותף (לא עוד implementation כפול)",
+  );
+  assert(dispatcher.includes("SHARED_TOOL_UI_EFFECT"), "ה-onExecuted hook מפעיל את SHARED_TOOL_UI_EFFECT (actions.push ל-UI) אחרי execute משותף");
+  assert(
+    dispatcher.indexOf("actions.push(uiEffect.message(") < dispatcher.indexOf("if (uiEffect.refresh) await refresh();"),
+    "בתוך ה-onExecuted hook: actions.push(uiEffect.message) קודם, uiEffect.refresh אחריו — אותו סדר שהיה",
+  );
 
-  // ───────────────────────── 3+4. בדיקת הרשאה בזמן הרצה — קיימת, ודוחה נכון ─────────────────────────
+  // ───────────────────────── 3+4. בדיקת הרשאה בזמן הרצה — קיימת (בתוך הדיספצ'ר המשותף), ודוחה נכון ─────────────────────────
   logger.info("— execution-time permission re-check: isToolAllowedForUser בזמן אמת (לא רק build-time) —");
   assert(
     !isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, goldi),
@@ -212,16 +220,22 @@ async function main() {
     isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, moti),
     "ולמוטי (lead:manage) — isToolAllowedForUser מחזיר true, ה-dispatcher היה ממשיך ל-execute",
   );
+  assert(
+    CREATE_LEAD_TOOL_DEFINITION.enforceExecutionTimePermission === undefined,
+    "CREATE_LEAD_TOOL_DEFINITION: enforceExecutionTimePermission לא מוגדר ⇒ ברירת המחדל true חלה (ללא שינוי התנהגות)",
+  );
 
   // ───────────────────────── 8. Web-local tools ממשיכים לרוץ דרך run(input), ללא שינוי ─────────────────────────
-  // ה-else branch (tool.run(input)) הוא מילה-במילה הקוד הישן (לפני 3F.4) — שום permission
-  // re-check/UI-effect לא נוסף לו. ה-if-branch (isSharedToolDefinition) הוא היחיד שמכיל אותם.
-  logger.info("— Web-local tools: ה-else branch (tool.run(input)) זהה לקוד הישן, בלי re-check/UI-effect חדשים —");
-  const elseBranch = dispatcher.slice(dispatcher.indexOf("} else {"));
-  assert(elseBranch.includes("tool.run(input)"), "ה-else branch (Web-local tools) קורא ל-tool.run(input) — ללא שינוי");
+  // ה-branch השני (tool.run(input)) הוא מילה-במילה הקוד הישן — שום permission re-check/UI-effect
+  // לא נוסף לו. ה-if-branch (isSharedToolDefinition) הוא היחיד שמאציל ל-dispatcher המשותף.
+  logger.info("— Web-local tools: ה-branch השני (tool.run(input)) זהה לקוד הישן, בלי re-check/UI-effect חדשים —");
+  const legacyBranchStart = dispatcher.indexOf("const before = actions.length;");
+  assert(legacyBranchStart > -1, "נמצא תחילת ה-branch של Web-local tools (const before = actions.length;)");
+  const legacyBranch = dispatcher.slice(legacyBranchStart);
+  assert(legacyBranch.includes("tool.run(input)"), "ה-branch של Web-local tools קורא ל-tool.run(input) — ללא שינוי");
   assert(
-    !elseBranch.includes("isToolAllowedForUser") && !elseBranch.includes("SHARED_TOOL_UI_EFFECT"),
-    "ה-else branch לא מכיל permission re-check או UI-effect — אלה רק ב-if branch של הכלים המשותפים",
+    !legacyBranch.includes("isToolAllowedForUser") && !legacyBranch.includes("SHARED_TOOL_UI_EFFECT"),
+    "ה-branch של Web-local tools לא מכיל permission re-check או UI-effect — אלה רק בכלים המשותפים",
   );
 
   // ═══════════════════════════ Step 3F.5A: create_task ═══════════════════════════
@@ -308,22 +322,9 @@ async function main() {
   const [createLeadEntryText, createTaskEntryText] = uiEffectMap.split("create_task:");
   assert(/refresh:\s*true/.test(createTaskEntryText ?? ""), "SHARED_TOOL_UI_EFFECT.create_task: refresh:true (כמו ה-await refresh() הישן)");
   assert(!/refresh/.test(createLeadEntryText ?? ""), "SHARED_TOOL_UI_EFFECT.create_lead: אין refresh — נשאר בלי, כמו קודם");
-  // סדר ההרצה בפועל ב-dispatcher: tool.execute לפני uiEffect.message, uiEffect.message לפני
-  // uiEffect.refresh — אותו סדר בדיוק שהיה ב-run() wrapper הישן (actions.push ואז await refresh()).
-  const idxExecute = dispatcher.indexOf("out = await tool.execute(input, { user });");
-  const idxPush = dispatcher.indexOf("actions.push(uiEffect.message(");
-  const idxRefresh = dispatcher.indexOf("if (uiEffect.refresh) await refresh();");
-  assert(
-    idxExecute > -1 && idxPush > idxExecute && idxRefresh > idxPush,
-    "סדר ב-dispatcher: tool.execute → actions.push(uiEffect.message) → uiEffect.refresh — זהה לסדר הישן",
-  );
-  // "אין refresh על כשל/דחייה" — מבני: שורת ה-refresh נמצאת *בתוך* ה-if(isSharedToolDefinition)
-  // *אחרי* שורת ה-execute שעלולה לזרוק; זריקה מדלגת ישר ל-catch החיצוני ולא מגיעה לכאן בכלל.
-  const permissionDenialReturn = dispatcher.indexOf('return { content: `שגיאה: אין הרשאה להשתמש בכלי');
-  assert(
-    permissionDenialReturn > -1 && permissionDenialReturn < idxExecute,
-    "דחיית הרשאה (return מוקדם) קודמת ל-execute/refresh — אם נדחה, refresh לעולם לא רץ",
-  );
+  // סדר ההרצה (tool.execute → onExecuted/uiEffect.message → uiEffect.refresh, ואין refresh על
+  // כשל/דחייה) הוא עכשיו architectural invariant של src/ai/dispatcher.ts's dispatchToolDefinition
+  // עצמו — נבדק שם *ישירות* (קריאה אמיתית, לא קריאת מקור) ב-test-shared-dispatcher.ts, לא כאן.
 
   // ═══════════════════════════ Step 3F.5B: שאר 7 הכלים ═══════════════════════════
   // SHARED_TOOL_UI_EFFECT עבר לגור בתוך runOpsChat (כדי לסגור על findTask) — מחלצים את הטקסט

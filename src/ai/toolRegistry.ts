@@ -57,6 +57,20 @@ export interface ToolDefinition {
    * נפרדות שרק "קורה" להן להסכים.
    */
   agentTool?: AgentTool;
+  /**
+   * Central Agent Core unification (2026-10-07) — הפרמיטיב החסר שהאודיט הקודם (read-only
+   * dispatcher audit) זיהה: הדיספצ'ר המשותף (ai/dispatcher.ts) צריך לדעת, מה-data ולא מ-channel/
+   * מיקום-קוד/שם-כלי, אם לאכוף isToolAllowedForUser בזמן ההרצה. ברירת המחדל (undefined ⇒ true)
+   * משמרת בדיוק את ההתנהגות הקיימת היום בשני הערוצים: Web's executeToolCall וגם WhatsApp's
+   * executeToolCall מריצים את הבדיקה הזו *ללא יוצא מן הכלל* על כל ToolDefinition שהם מריצים (ר'
+   * audit — אין היום שום ToolDefinition בפועל, בשני הערוצים, שמדלג על הבדיקה הזו). אף כלי קיים לא
+   * מקבל false במעבר הזה — כולל חמשת כלי ה-Web "התמיד-גלויים" (mark_done/set_status/add_note/
+   * report_blocker/add_update): ה-discrepancy המתועד שלהם הוא *build-time visibility* בלבד (אם
+   * tools.push מותנה) — לא execution-time enforcement, שכבר חל עליהם היום ללא תנאי, ותואם
+   * (אותם בני-אדם נדחים) לבדיקת ההרשאה הראשונה שגם ops/actions.ts's authorize()/addUpdateToItem
+   * עצמם מבצעים. false שמור לעתיד, אם ייווצר כלי שבאמת צריך לדלג על הבדיקה הזו במכוון.
+   */
+  enforceExecutionTimePermission?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute: (input: any, ctx: ToolContext) => Promise<unknown>;
 }

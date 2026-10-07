@@ -1,5 +1,6 @@
 import { runRoutedAgent } from "../../ai/routedAgent.js";
 import { buildSystemPrompt } from "../../ai/prompt.js";
+import { dispatchToolDefinition } from "../../ai/dispatcher.js";
 import type { NormTool, NormToolCall } from "../../ai/providers/types.js";
 import type { IdentifiedUser } from "../../identity/index.js";
 import { logger } from "../../utils/logger.js";
@@ -50,21 +51,20 @@ export async function runOrchestrator(
       if (!canUseTool(needsConfirm.name)) return { reason: "denied" };
       return { reason: "confirm", payload: { toolName: needsConfirm.name, input: needsConfirm.input } };
     },
+    // Central Agent Core unification (2026-10-07): ההרצה בפועל עברה ל-dispatchToolDefinition
+    // (src/ai/dispatcher.ts) — אותו דיספצ'ר ש-Web's ops/chat.ts גם קורא לו. canUseTool (מעל) נשאר
+    // קיים ומשמש את screenToolCalls בלבד — כאן הוא לא עוד נבדק בנפרד: הדיספצ'ר מבצע את אותה בדיקה
+    // (isToolAllowedForUser) בעצמו, פנימית, על אותו tool/user — אין כפילות, אין שינוי תוצאה.
     executeToolCall: async (call: NormToolCall) => {
       const tool = getTool(call.name);
       if (!tool) return { content: `שגיאה: כלי לא ידוע ${call.name}`, sideEffect: false };
-      if (!canUseTool(call.name)) {
-        logger.warn({ tool: call.name, user: user?.key ?? "unidentified" }, "כלי נחסם — אין למשתמש הרשאה");
-        return { content: `שגיאה: למשתמש אין הרשאה להשתמש בכלי ${call.name}.`, sideEffect: false };
-      }
-      try {
-        logger.info({ tool: call.name, input: call.input, user: user?.key }, "מריץ כלי");
-        const result = await tool.execute(call.input, { user });
-        return { content: JSON.stringify(result), sideEffect: true };
-      } catch (err) {
-        logger.error(err, `כלי ${call.name} נכשל`);
-        return { content: `שגיאה בהרצת ${call.name}: ${(err as Error).message}`, sideEffect: false };
-      }
+      return dispatchToolDefinition(tool, call.input, { user }, {
+        onDenied: () => logger.warn({ tool: call.name, user: user?.key ?? "unidentified" }, "כלי נחסם — אין למשתמש הרשאה"),
+        formatDenied: () => `שגיאה: למשתמש אין הרשאה להשתמש בכלי ${call.name}.`,
+        onBeforeExecute: () => logger.info({ tool: call.name, input: call.input, user: user?.key }, "מריץ כלי"),
+        onError: (_t, err) => logger.error(err, `כלי ${call.name} נכשל`),
+        formatError: (_t, err) => `שגיאה בהרצת ${call.name}: ${err.message}`,
+      });
     },
   });
 

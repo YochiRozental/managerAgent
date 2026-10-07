@@ -29,6 +29,7 @@ import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import { buildSystemPrompt } from "../ai/prompt.js";
 import { isToolAllowedForUser, requireIdentifiedUser, type ToolDefinition } from "../ai/toolRegistry.js";
+import { dispatchToolDefinition } from "../ai/dispatcher.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
 import { AGENT_TOOLS, type AgentTool } from "./agentTools.js";
 import { getApproval } from "../db/repositories/managerApprovals.js";
@@ -1019,39 +1020,37 @@ export async function runOpsChat(
       maxTurns: MAX_TURNS,
       messages: history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
       tools: normTools,
-      // שלב 3F.4: dispatcher כפול — תומך גם ב-Web-local ToolDef הישן (run(input), ~27 כלים, ללא
-      // שינוי) וגם ב-ToolDefinition משותף (execute(input,ctx), היום רק create_lead). לא dispatcher
-      // שלישי — אותה פונקציה אחת, עם branch לפי isSharedToolDefinition. ה-sideEffect detection
-      // (actions.length לפני/אחרי) נשאר אחיד לשני המסלולים.
+      // Central Agent Core unification (2026-10-07): כלים משותפים (ToolDefinition, isSharedToolDefinition)
+      // עוברים עכשיו דרך dispatchToolDefinition (src/ai/dispatcher.ts) — אותו דיספצ'ר ש-WhatsApp's
+      // orchestrator.ts גם קורא לו, לא עוד implementation כפול שרק "קורה" להתנהג אותו דבר. Web-local
+      // tools (~19 כלים, run(input) בלי ctx) נשארים דרך ה-else למטה בדיוק כמו קודם — לא דורשים
+      // AgentTool/permission data, אין להם מה להמיר. actions.push/refresh() (SHARED_TOOL_UI_EFFECT) ו-
+      // כל ה-logging נשארים channel adapter concern, מחוברים דרך hooks — הדיספצ'ר עצמו לא מכיר אותם.
       executeToolCall: async (call: NormToolCall) => {
         const tool = tools.find((t) => t.name === call.name);
         if (!tool) return { content: `שגיאה: כלי לא ידוע ${call.name}`, sideEffect: false };
-        try {
-          const before = actions.length; // כלי כתיבה מוסיף ל-actions — כך יודעים אם הייתה תופעת לוואי
-          const input = (call.input ?? {}) as Record<string, unknown>;
-          let out: unknown;
-          if (isSharedToolDefinition(tool)) {
-            // בדיקת הרשאה בזמן ההרצה — לא רק בזמן בניית הרשימה — בדיוק כמו ה-defense-in-depth
-            // של WhatsApp's canUseTool (orchestrator.ts). Web-local tools (ה-else למטה) לא
-            // עוברים בדיקה כזו כרגע — הם ממשיכים בדיוק בהתנהגות הקיימת (אין להם requiredPermission/
-            // agentTool על האובייקט כלל, אז אין במה לבדוק).
-            if (!isToolAllowedForUser(tool, user)) {
-              logger.warn({ tool: call.name, user: user.key }, "כלי נחסם — אין למשתמש הרשאה (בדיקה בזמן הרצה)");
-              return { content: `שגיאה: אין הרשאה להשתמש בכלי ${call.name}.`, sideEffect: false };
-            }
-            out = await tool.execute(input, { user });
+        const input = (call.input ?? {}) as Record<string, unknown>;
+        if (isSharedToolDefinition(tool)) {
+          return dispatchToolDefinition(tool, input, { user }, {
+            onDenied: () =>
+              logger.warn({ tool: call.name, user: user.key }, "כלי נחסם — אין למשתמש הרשאה (בדיקה בזמן הרצה)"),
             // actions.push/refresh — channel adapter concern, לא חלק מה-ToolDefinition המשותף
-            // (tool.execute לא יודע על actions[]/refresh() בכלל). ר' SHARED_TOOL_UI_EFFECT.
-            // סדר מפורש, זהה ל-run() wrapper הישן: actions.push קודם, refresh() אחריו, שניהם
-            // רק אם execute הצליח (אם זרק — לא מגיעים לכאן בכלל, ה-catch התחתון תופס).
-            const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
-            if (uiEffect) {
-              actions.push(uiEffect.message(out, input));
-              if (uiEffect.refresh) await refresh();
-            }
-          } else {
-            out = await tool.run(input);
-          }
+            // (tool.execute לא יודע על actions[]/refresh() בכלל). ר' SHARED_TOOL_UI_EFFECT. סדר
+            // מפורש, זהה למה שהיה: actions.push קודם, refresh() אחריו, שניהם רק אם execute הצליח
+            // (onExecuted נקרא רק בהצלחה — אם זרק, onError למטה תופס, לא כאן).
+            onExecuted: async (_t, out, inp) => {
+              const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
+              if (uiEffect) {
+                actions.push(uiEffect.message(out, inp));
+                if (uiEffect.refresh) await refresh();
+              }
+            },
+            onError: (_t, err) => logger.warn({ err, tool: call.name, user: user.key }, "כלי צ'אט תפעולי נכשל"),
+          });
+        }
+        const before = actions.length; // כלי כתיבה מוסיף ל-actions — כך יודעים אם הייתה תופעת לוואי
+        try {
+          const out = await tool.run(input);
           return { content: JSON.stringify(out), sideEffect: actions.length > before };
         } catch (err) {
           logger.warn({ err, tool: call.name, user: user.key }, "כלי צ'אט תפעולי נכשל");

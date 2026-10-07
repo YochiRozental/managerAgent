@@ -2,6 +2,7 @@ import { createPendingAction, getOpenPendingAction, resolvePendingAction } from 
 import { resolveUserByWhatsappJid, type IdentifiedUser } from "../identity/index.js";
 import { runOrchestrator, type ConversationMessage } from "../integrations/claude/orchestrator.js";
 import { getTool } from "../integrations/claude/tools.js";
+import { dispatchToolDefinition } from "../ai/dispatcher.js";
 import { synthesizeHebrewVoiceNote } from "../integrations/tts/edgeTts.js";
 import { normalizeJid } from "../integrations/whatsapp/jid.js";
 import { consumeCorrelationForReply, InvalidCorrelationError } from "../integrations/whatsapp/replyCorrelation.js";
@@ -94,17 +95,29 @@ async function handlePendingConfirmation(
 
   const tool = getTool(pending.toolName);
   let reply: string;
-  try {
-    if (!tool) throw new Error(`כלי לא ידוע: ${pending.toolName}`);
-    // בדיקת הרשאה חוזרת רגע לפני הביצוע — הטיוטה נוצרה קודם, והמצב יכול היה להשתנות.
-    if (tool.requiredPermission && !(user?.permissions.includes(tool.requiredPermission) ?? false)) {
-      throw new Error("אין לך הרשאה לבצע את הפעולה הזו");
-    }
-    await tool.execute(JSON.parse(pending.toolInput), { user });
-    reply = `בוצע ✅ (${pending.draftText})`;
-  } catch (err) {
+  if (!tool) {
+    const err = new Error(`כלי לא ידוע: ${pending.toolName}`);
     logger.error(err, "ביצוע פעולה מאושרת נכשל");
-    reply = `הפעולה נכשלה: ${(err as Error).message}`;
+    reply = `הפעולה נכשלה: ${err.message}`;
+  } else {
+    // Central Agent Core unification (2026-10-07): ההרצה עוברת עכשיו דרך dispatchToolDefinition —
+    // אותו דיספצ'ר ש-orchestrator.ts גם קורא לו, במקום בדיקת הרשאה עצמאית שלישית (שהתגלתה באודיט:
+    // תמיד התעלמה מ-tool.agentTool). בדיקת שקילות (test:shared-dispatcher) מוכיחה שזה אינו משנה
+    // תוצאה לאף כלי requiresConfirmation אמיתי קיים (אף אחד מהם לא נושא agentTool) — isToolAllowedForUser
+    // מצטמצם, עבורם, לאותה נוסחה בדיוק שהייתה כאן (tool.requiredPermission && user.permissions.includes(...)).
+    let failureMessage: string | null = null;
+    const result = await dispatchToolDefinition(tool, JSON.parse(pending.toolInput), { user }, {
+      onDenied: () => {
+        const err = new Error("אין לך הרשאה לבצע את הפעולה הזו");
+        logger.error(err, "ביצוע פעולה מאושרת נכשל");
+        failureMessage = err.message;
+      },
+      onError: (_t, err) => {
+        logger.error(err, "ביצוע פעולה מאושרת נכשל");
+        failureMessage = err.message;
+      },
+    });
+    reply = result.sideEffect ? `בוצע ✅ (${pending.draftText})` : `הפעולה נכשלה: ${failureMessage}`;
   }
   resolvePendingAction(pending.id, "confirmed");
   history.push({ role: "assistant", content: reply });

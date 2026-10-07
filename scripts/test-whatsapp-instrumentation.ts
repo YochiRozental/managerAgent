@@ -266,11 +266,29 @@ async function main() {
     traces.stop();
   }
 
-  // 10. שני processInstanceId שונים בשתי הרצות process נפרדות (לא רק ערך תיאורטי) — מוכיח בפועל
+  // 10. status@broadcast עם תוכן שמפענח בהצלחה לטקסט אמיתי → נחסם במפורש ב-client.ts, לא
+  //     מגיע ל-onMessage — לפני התוספת הזו הסינון היחיד היה ה-allowlist הנפרד ב-index.ts
+  //     (תלוי בזהות השולח, לא עיצוב מכוון). חסימה מפורשת כאן בלתי-תלויה בכל allowlist.
+  resetAll();
+  {
+    const traces = captureTraces();
+    const { handler, calls } = mockHandler();
+    handleMessagesUpsert(
+      { messages: [fakeMessage({ id: "STATUS-1", fromMe: false, text: "עדכון סטטוס עם תוכן אמיתי", remoteJid: "status@broadcast" })], type: "notify" },
+      sock,
+      handler,
+    );
+    check("10a. status@broadcast לא מגיע ל-onMessage, גם עם טקסט אמיתי", calls.length === 0);
+    const dropped = traces.inbound.filter((r) => r.remoteJidType === "status");
+    check("10b. נרשם whatsapp_inbound עם decision=drop_unsupported ו-remoteJidType=status", dropped.length === 1 && dropped[0]?.decision === "drop_unsupported", JSON.stringify(dropped[0]));
+    traces.stop();
+  }
+
+  // 11. שני processInstanceId שונים בשתי הרצות process נפרדות (לא רק ערך תיאורטי) — מוכיח בפועל
   //    ששני תהליכי whatsapp-agent (production ישן/חדש, או production מול הרצה מקומית) יהיו
   //    ניתנים להבחנה בלוגים, בדיוק המטרה שהובילה ל-instrumentation הזה.
   {
-    check("10a. processInstanceId בתהליך הנוכחי הוא מחרוזת לא ריקה", typeof processInstanceId === "string" && processInstanceId.length > 0);
+    check("11a. processInstanceId בתהליך הנוכחי הוא מחרוזת לא ריקה", typeof processInstanceId === "string" && processInstanceId.length > 0);
 
     const tmpDir = mkdtempSync(path.join(tmpdir(), "wa-instance-id-"));
     const probeScript = path.join(tmpDir, "probe.mjs");
@@ -283,7 +301,7 @@ async function main() {
     const idRun1 = runOnce();
     const idRun2 = runOnce();
     check(
-      "10b. שתי הרצות process נפרדות מייצרות processInstanceId שונה זה מזה",
+      "11b. שתי הרצות process נפרדות מייצרות processInstanceId שונה זה מזה",
       !!idRun1 && !!idRun2 && idRun1 !== idRun2,
       `run1=${idRun1} run2=${idRun2}`,
     );

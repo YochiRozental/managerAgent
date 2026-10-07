@@ -263,6 +263,15 @@ export function handleMessagesUpsert(
       continue;
     }
 
+    // סטטוסים (status@broadcast) הם לא פנייה לסוכן בשום מצב — גם אם התוכן מצליח לפענח לטקסט
+    // אמיתי (ראינו ב-production), לפני עדכון זה שום שכבה ב-client.ts לא חסמה את זה במפורש (רק
+    // ה-allowlist הנפרד ב-index.ts, במקרה). חסימה מפורשת כאן, לפני dedup/breaker/forward — לא
+    // תלויה בזהות השולח ולא משנה מה-INVARIANT/breakers.
+    if (msg.key.remoteJid === "status@broadcast") {
+      logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: false, messageType, decision: "drop_unsupported", ...diag });
+      continue;
+    }
+
     if (alreadyProcessed(id)) {
       logInboundTrace({ messageId: id, jid: jidForTrace, fromMe: false, messageType, decision: "drop_duplicate_id", ...diag });
       continue; // (3) upsert כפול / redelivery — טופלה כבר

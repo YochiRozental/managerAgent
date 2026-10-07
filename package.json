@@ -26,6 +26,7 @@
     "test:whatsapp-instrumentation": "tsx scripts/test-whatsapp-instrumentation.ts",
     "test:whatsapp-reply-loop": "tsx scripts/test-whatsapp-reply-loop.ts",
     "test:libsignal-log-patch": "tsx scripts/test-libsignal-log-patch.ts",
+    "test:whatsapp-selfchat-discriminator": "tsx scripts/test-whatsapp-selfchat-discriminator.ts",
     "test:control": "tsx scripts/test-control.ts",
     "test:cycle": "tsx scripts/test-cycle.ts",
     "test:health": "tsx scripts/test-health.ts",

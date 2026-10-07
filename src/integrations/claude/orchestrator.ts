@@ -1,40 +1,11 @@
-import { DateTime } from "luxon";
-import { env } from "../../config/env.js";
 import { runRoutedAgent } from "../../ai/routedAgent.js";
+import { buildSystemPrompt } from "../../ai/prompt.js";
 import type { NormTool, NormToolCall } from "../../ai/providers/types.js";
 import type { IdentifiedUser } from "../../identity/index.js";
 import { logger } from "../../utils/logger.js";
 import { getTool, isToolAllowedForUser, toAnthropicTools } from "./tools.js";
 
 const MAX_TOOL_TURNS = 8;
-
-function systemPrompt(user: IdentifiedUser | null): string {
-  const now = DateTime.now().setZone(env.TIMEZONE);
-  const lines = [
-    "את/ה סוכן אישי בעברית שעוזר/ת לנהל משימות (דרך Monday.com), לתעד פגישות ולשלוח זימוני יומן ומיילים (דרך Google).",
-    `התאריך והשעה כרגע: ${now.toFormat("yyyy-MM-dd HH:mm")} (אזור זמן ${env.TIMEZONE}).`,
-    "תמיד ענה/עני בעברית, בקצרה וברור.",
-  ];
-
-  if (user) {
-    lines.push(
-      "",
-      `המשתמש שמולך: ${user.name}. תפקיד: ${user.role} — ${user.roleDescription}`,
-      "פעל/י רק לפי ההרשאות של המשתמש. הכלים שנחשפו לך כבר מסוננים להרשאותיו — אם משימה דורשת פעולה שאין לה כלי זמין, אמור/י שאין למשתמש הרשאה לכך ואל תנסה/י לעקוף.",
-    );
-  } else {
-    lines.push("", "המשתמש לא זוהה. אל תבצע/י פעולות ואל תחשוף/י מידע — בקש/י מהמשתמש להזדהות.");
-  }
-
-  lines.push(
-    "",
-    "כשמבקשים ממך להוסיף משימה, נסה/י לאתר את הלוח הרלוונטי עם find_monday_board לפי הקשר הבקשה; אם לא ברור לאיזה לוח/פרויקט הכוונה, שאל/י לפני שיוצרים.",
-    "כשמבקשים 'מה יש לי לעשות', 'המשימות שלי', 'מה על הפרק', 'מה עליי לבצע היום' וכדומה - השתמש/י ב-list_my_work: תדריך קומפקטי ומתועדף של העבודה של המשתמש עצמו להיום (עד 30 פריטים) + summary עם הספירות המלאות. לא ב-list_monday_tasks של לוח בודד.",
-    "ליצירת אירוע ביומן או שליחת מייל תמיד צריך כתובת מייל של הנמען/המשתתף — אם אין לך אותה, בקש/י אותה מהמשתמש.",
-  );
-
-  return lines.join("\n");
-}
 
 export interface ConversationMessage {
   role: "user" | "assistant";
@@ -67,7 +38,7 @@ export async function runOrchestrator(
   };
 
   const buildLoop = () => ({
-    system: systemPrompt(user),
+    system: buildSystemPrompt({ channel: "whatsapp", user }),
     maxTokens: 1024,
     maxTurns: MAX_TOOL_TURNS,
     messages: history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),

@@ -73,6 +73,23 @@ function requireAgentTool(name: string): AgentTool {
 export const CREATE_TASK_AGENT_TOOL: AgentTool = requireAgentTool("create_task");
 
 /**
+ * שלב 3F.5A (2026-10-07): אותו דפוס בדיוק כמו CREATE_LEAD_TOOL_DEFINITION (3F.3) — ToolDefinition
+ * אמיתי, לא "WebToolDefinition" נפרד. אין requiredPermission עצמאי: ה-ANY-of המלא של ה-AgentTool
+ * חל (task:create/task:manage), בדיוק כמו canCreateTask(user) שהשער היה קודם (נשאר מיוצא/נבדק
+ * בנפרד, רק לא משמש כאן יותר). schema זהה למה ש-WhatsApp's create_task גם חושף (CREATE_TASK_
+ * AGENT_TOOL.input_schema המלא, בלי narrowing — בשונה מ-create_lead, שם יש הבדל מכוון).
+ */
+export const CREATE_TASK_TOOL_DEFINITION: ToolDefinition = {
+  name: CREATE_TASK_AGENT_TOOL.name,
+  description: CREATE_TASK_AGENT_TOOL.description,
+  input_schema: CREATE_TASK_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: CREATE_TASK_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    CREATE_TASK_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
+
+/**
  * שלב 2C (2026-10-05): אותו דפוס בדיוק כמו CREATE_TASK_AGENT_TOOL, ל-create_lead. ה-AgentTool
  * המשותף בפועל — לא עותק. מיוצא כדי ש-test-agent-tools.ts יוכל להוכיח === מול
  * AGENT_TOOLS.find("create_lead").
@@ -359,14 +376,22 @@ function isSharedToolDefinition(tool: ToolDef | ToolDefinition): tool is ToolDef
 }
 
 /**
- * שלב 3F.4: מיפוי Web-specific מ-shared ToolDefinitions (לא Web-local הישנים) לטקסט ה-changelog
- * שמוצג ב-UI (actions[]) — תופעת לוואי של Web בלבד, channel adapter concern, לא חלק מה-
- * ToolDefinition המשותף/מה-business logic (ה-execute של ToolDefinition לא יודע על actions[]
- * בכלל). רק create_lead במפה כרגע — בדיוק מה שהומר. כלים נוספים שיומרו בעתיד (3F.5+) יקבלו
- * שורה משלהם כאן, עם האמוג'י/ניסוח המקורי שהיה לכל אחד ב-chat.ts (לא כולם זהים ל-create_lead).
+ * שלב 3F.4, הורחב 3F.5A: מיפוי Web-specific מ-shared ToolDefinitions (לא Web-local הישנים)
+ * לתופעות הלוואי של ה-UI — channel adapter concern, לא חלק מה-ToolDefinition המשותף/מה-business
+ * logic (ה-execute של ToolDefinition לא יודע על actions[]/refresh() בכלל). message בונה את
+ * טקסט ה-changelog (actions[]); refresh?:true אומר לדיספצ'ר להריץ await refresh() *אחרי*
+ * actions.push, בדיוק הסדר שהיה ב-run() wrapper הישן של create_task. לא event bus גנרי — רק
+ * שני השדות שבאמת צריך כרגע. create_lead (3F.3/4): אין refresh (כמו שהיה). create_task (3F.5A):
+ * refresh:true (כמו שהיה). כלים נוספים שיומרו יקבלו שורה משלהם, עם הניסוח המקורי שלהם.
  */
-const SHARED_TOOL_UI_EFFECT: Record<string, (result: { message: string }) => string> = {
-  create_lead: (r) => `🆕 ${r.message}`,
+interface SharedToolUiEffect {
+  message: (result: { message: string }) => string;
+  /** true ⇐ הדיספצ'ר מריץ await refresh() אחרי actions.push, רק אם execute הצליח. */
+  refresh?: boolean;
+}
+const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = {
+  create_lead: { message: (r) => `🆕 ${r.message}` },
+  create_task: { message: (r) => `🆕 ${r.message}`, refresh: true },
 };
 
 export interface OpsChatOptions {
@@ -745,24 +770,14 @@ export async function runOpsChat(
     });
   }
 
-  // ---- יצירת משימה חדשה — למי שיש הרשאת יצירה (task:create לעצמי, task:manage גם לאחרים) ----
-  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts) —
-  // לא עותק מקומי. ה-run כאן הוא adapter דק בלבד: מריץ את ה-execute המשותף (שקורא בפועל
-  // ל-createTaskAction, בדיוק כמו קודם), ואז מוסיף את תופעות הלוואי הספציפיות לצ'אט הזה —
-  // actions.push לתצוגה/ל-sideEffectCount, ו-refresh() שמרענן את מטמון המשימות של הסבב הנוכחי.
-  // אלה תופעות לוואי של runOpsChat עצמו, לא חלק מהפעולה העסקית המשותפת — נשארות כאן בכוונה.
-  if (canCreateTask(user)) {
-    tools.push({
-      name: CREATE_TASK_AGENT_TOOL.name,
-      description: CREATE_TASK_AGENT_TOOL.description,
-      input_schema: CREATE_TASK_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const r = (await CREATE_TASK_AGENT_TOOL.execute(input, { user })) as { message: string };
-        actions.push(`🆕 ${r.message}`);
-        await refresh();
-        return r;
-      },
-    });
+  // ---- יצירת משימה חדשה — שלב 3F.5A: ToolDefinition משותף נדחף ישירות, בלי run() wrapper ----
+  // gate עובר דרך isToolAllowedForUser (לא canCreateTask(user), ר' שלב 3F.3/4 לאותו דפוס
+  // ב-create_lead). ה-executeToolCall (למטה, buildLoop) מריץ CREATE_TASK_TOOL_DEFINITION.
+  // execute(input,{user}) ישירות, ואז actions.push + refresh() דרך SHARED_TOOL_UI_EFFECT —
+  // בדיוק באותו סדר שהיה ב-run() wrapper הישן (actions.push קודם, refresh() אחריו, שניהם רק
+  // אם execute לא זרק).
+  if (isToolAllowedForUser(CREATE_TASK_TOOL_DEFINITION, user)) {
+    tools.push(CREATE_TASK_TOOL_DEFINITION);
   }
 
   // ---- יצירת שלב חדש בפרויקט — רק למי שיש project:manage (owner/admin/project_manager) ----
@@ -974,10 +989,15 @@ export async function runOpsChat(
               return { content: `שגיאה: אין הרשאה להשתמש בכלי ${call.name}.`, sideEffect: false };
             }
             out = await tool.execute(input, { user });
-            // actions.push ה-UI-specific — channel adapter concern, לא חלק מה-ToolDefinition
-            // המשותף (tool.execute לא יודע על actions[] בכלל). ר' SHARED_TOOL_UI_EFFECT.
+            // actions.push/refresh — channel adapter concern, לא חלק מה-ToolDefinition המשותף
+            // (tool.execute לא יודע על actions[]/refresh() בכלל). ר' SHARED_TOOL_UI_EFFECT.
+            // סדר מפורש, זהה ל-run() wrapper הישן: actions.push קודם, refresh() אחריו, שניהם
+            // רק אם execute הצליח (אם זרק — לא מגיעים לכאן בכלל, ה-catch התחתון תופס).
             const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
-            if (uiEffect) actions.push(uiEffect(out as { message: string }));
+            if (uiEffect) {
+              actions.push(uiEffect.message(out as { message: string }));
+              if (uiEffect.refresh) await refresh();
+            }
           } else {
             out = await tool.run(input);
           }

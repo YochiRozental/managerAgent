@@ -11,9 +11,15 @@
  * actions.push UI effect via SHARED_TOOL_UI_EFFECT — a Web-only adapter table, not business logic
  * inside the shared ToolDefinition.
  *
+ * Extended Step 3F.5A (2026-10-07): create_task converted the same way — the second proof case,
+ * because unlike create_lead it also has refresh(). SHARED_TOOL_UI_EFFECT generalized from a
+ * plain formatter function to {message, refresh?} so the dispatcher can run refresh() after
+ * actions.push, only on success, without that being business logic inside the shared
+ * ToolDefinition. Now only 7 of Web's 9 AgentTool-backed tools remain in the legacy run() shape.
+ *
  * Does NOT call any live AI model — Anthropic credit is currently insufficient. All checks are
  * structural: object identity, schema equality, permission-decision equality across the real
- * role matrix, and source-level proof of the dispatcher's branching/actions.push/no-refresh
+ * role matrix, and source-level proof of the dispatcher's branching/actions.push/refresh
  * behavior (runOpsChat's executeToolCall closure isn't independently invokable without live
  * Monday/AI, so this is read from the actual source text rather than executed — documented
  * explicitly at each such check below).
@@ -27,7 +33,8 @@ import { dirname, join } from "node:path";
 import {
   CREATE_LEAD_AGENT_TOOL as WEB_CREATE_LEAD_AGENT_TOOL,
   CREATE_LEAD_TOOL_DEFINITION,
-  CREATE_TASK_AGENT_TOOL,
+  CREATE_TASK_AGENT_TOOL as WEB_CREATE_TASK_AGENT_TOOL,
+  CREATE_TASK_TOOL_DEFINITION,
   MARK_DONE_AGENT_TOOL,
   SET_STATUS_AGENT_TOOL,
   ADD_NOTE_AGENT_TOOL,
@@ -38,6 +45,7 @@ import {
   WIRED_AGENT_TOOL_NAMES,
   WEB_CHAT_LOCAL_TOOL_NAMES,
   canCreateLead,
+  canCreateTask,
 } from "../src/ops/chat.js";
 import { AGENT_TOOLS } from "../src/ops/agentTools.js";
 import {
@@ -183,7 +191,8 @@ async function main() {
   assert(dispatcher.includes("tool.execute(input, { user })"), "ה-dispatcher קורא ל-tool.execute(input,{user}) לכלי משותף");
   assert(dispatcher.includes("tool.run(input)"), "ה-dispatcher עדיין קורא ל-tool.run(input) ל-Web-local tools (ה-else)");
   assert(dispatcher.includes("SHARED_TOOL_UI_EFFECT"), "ה-dispatcher מפעיל את SHARED_TOOL_UI_EFFECT (actions.push ל-UI) אחרי execute משותף");
-  assert(!dispatcher.includes("refresh()"), "ה-dispatcher לא קורא refresh() בכלל — create_lead ממשיך בלי refresh, כמו קודם");
+  // (3F.5A: refresh() כן מופיע בדיספצ'ר עכשיו — מותנה ב-uiEffect.refresh, לא לכל כלי. ר' בדיקת
+  // הסדר/ה-guard המדויקת בסקשן create_task למטה — זו לא עוד "אין refresh בכלל".)
 
   // ───────────────────────── 3+4. בדיקת הרשאה בזמן הרצה — קיימת, ודוחה נכון ─────────────────────────
   logger.info("— execution-time permission re-check: isToolAllowedForUser בזמן אמת (לא רק build-time) —");
@@ -207,10 +216,108 @@ async function main() {
     "ה-else branch לא מכיל permission re-check או UI-effect — אלה רק ב-if branch של הכלים המשותפים",
   );
 
-  // ───────────────────────── 8. שאר 8 ה-AgentTools של Web — ללא שינוי ─────────────────────────
-  logger.info("— שאר 8 ה-AgentTools המחוברים ל-Web — עדיין AgentTool גולמי, לא הומרו ל-ToolDefinition —");
-  const otherEight: [string, unknown][] = [
-    ["create_task", CREATE_TASK_AGENT_TOOL],
+  // ═══════════════════════════ Step 3F.5A: create_task ═══════════════════════════
+
+  // ───────────────────────── create_task: ToolDefinition אמיתי, אותו AgentTool backing ─────────────────────────
+  logger.info("— Web's create_task: ToolDefinition אמיתי, אותו AgentTool backing בכל השלושה (Web/WhatsApp/registry) —");
+  const registryCreateTask = AGENT_TOOLS.find((t) => t.name === "create_task")!;
+  const whatsappCreateTask = getWhatsappTool("create_task")!;
+  assert(WEB_CREATE_TASK_AGENT_TOOL === registryCreateTask, "chat.ts's CREATE_TASK_AGENT_TOOL === AGENT_TOOLS.find('create_task')");
+  assert(
+    CREATE_TASK_TOOL_DEFINITION.agentTool === registryCreateTask,
+    "CREATE_TASK_TOOL_DEFINITION.agentTool === AGENT_TOOLS.find('create_task') — אותו אובייקט, לא עותק",
+  );
+  assert(CREATE_TASK_TOOL_DEFINITION.requiresConfirmation === false, "CREATE_TASK_TOOL_DEFINITION.requiresConfirmation === false");
+  assert(
+    CREATE_TASK_TOOL_DEFINITION.requiredPermission === undefined,
+    "CREATE_TASK_TOOL_DEFINITION: אין requiredPermission עצמאי — מגיע במלואו מה-AgentTool (task:create/task:manage ANY-of)",
+  );
+
+  // ───────────────────────── 5. schema: זהה למה שהיה קודם ב-Web, וזהה (גם) ל-WhatsApp (אין narrowing כאן) ─────────────────────────
+  logger.info("— schema: Web זהה למה שהיה קודם — וזהה גם ל-WhatsApp's create_task (בניגוד ל-create_lead, אין הבדל מכוון כאן) —");
+  assert(
+    CREATE_TASK_TOOL_DEFINITION.input_schema === WEB_CREATE_TASK_AGENT_TOOL.input_schema,
+    "CREATE_TASK_TOOL_DEFINITION.input_schema === CREATE_TASK_AGENT_TOOL.input_schema — זה גם מה ש-Web חשף לפני 3F.5A",
+  );
+  assert(
+    CREATE_TASK_TOOL_DEFINITION.input_schema === whatsappCreateTask.input_schema,
+    "CREATE_TASK_TOOL_DEFINITION.input_schema === WhatsApp's create_task input_schema — אותו אובייקט, שני הערוצים (אין narrowing כמו ב-create_lead)",
+  );
+
+  // ───────────────────────── 3. permission decision — זהה ל-WhatsApp ול-canCreateTask הישן, לכל role ─────────────────────────
+  logger.info("— permission decision: isToolAllowedForUser(Web) === isToolAllowedForUser(WhatsApp) === canCreateTask הישן, לכל role —");
+  for (const user of [moti, dov, ruchama, goldi, yochi]) {
+    const webDecision = isToolAllowedForUser(CREATE_TASK_TOOL_DEFINITION, user);
+    const whatsappDecision = isToolAllowedForUser(whatsappCreateTask, user);
+    const oldGateDecision = canCreateTask(user);
+    assert(
+      webDecision === whatsappDecision && webDecision === oldGateDecision,
+      `create_task permission עבור ${user.key}: Web===WhatsApp===canCreateTask הישן (${webDecision})`,
+    );
+  }
+  assert(isToolAllowedForUser(CREATE_TASK_TOOL_DEFINITION, null) === false, "create_task (Web): null user → false");
+
+  // ───────────────────────── 2. execution מגיע ל-CREATE_TASK_AGENT_TOOL.execute ─────────────────────────
+  logger.info("— execution: CREATE_TASK_TOOL_DEFINITION.execute עובר דרך requireIdentifiedUser, לא מריץ Monday על null —");
+  {
+    let threw = false;
+    try {
+      await CREATE_TASK_TOOL_DEFINITION.execute({ taskName: "בדיקה" }, { user: null });
+    } catch (err) {
+      threw = /חסר הקשר משתמש/.test((err as Error).message);
+    }
+    assert(threw, "CREATE_TASK_TOOL_DEFINITION.execute({user:null}) נדחה ע\"י requireIdentifiedUser — לא מגיע ל-Monday");
+  }
+  assert(
+    CREATE_TASK_TOOL_DEFINITION.execute.toString().includes("CREATE_TASK_AGENT_TOOL.execute"),
+    "CREATE_TASK_TOOL_DEFINITION.execute מפנה ל-CREATE_TASK_AGENT_TOOL.execute (מקור, לא Monday ישירות)",
+  );
+
+  // ───────────────────────── 1. create_task נדחף כ-ToolDefinition גולמי, בלי run() wrapper ─────────────────────────
+  logger.info("— create_task נדחף ישירות (tools.push(CREATE_TASK_TOOL_DEFINITION)), אין יותר run() wrapper —");
+  const taskPushSiteMatch = chatSource.match(/isToolAllowedForUser\(CREATE_TASK_TOOL_DEFINITION, user\)\) \{[\s\S]*?\n {2}\}\n/);
+  assert(!!taskPushSiteMatch, "נמצא בלוק ה-gate של create_task ב-chat.ts");
+  const taskPushSite = taskPushSiteMatch?.[0] ?? "";
+  assert(
+    /tools\.push\(CREATE_TASK_TOOL_DEFINITION\)/.test(taskPushSite),
+    "create_task נדחף כאובייקט גולמי — tools.push(CREATE_TASK_TOOL_DEFINITION), לא tools.push({name,...,run:...})",
+  );
+  assert(!taskPushSite.includes("run:"), "בלוק ה-push של create_task לא מכיל יותר run: wrapper כלל");
+  assert(
+    !taskPushSite.includes("actions.push") && !taskPushSite.includes("refresh()"),
+    "actions.push/refresh() עברו מהבלוק המקומי ל-dispatcher המשותף — לא נשארו כאן",
+  );
+
+  // ───────────────────────── 6+7+8. actions.push + refresh, בדיוק באותו סדר ורק בהצלחה ─────────────────────────
+  logger.info("— SHARED_TOOL_UI_EFFECT: create_task עם refresh:true, create_lead בלי refresh —");
+  const uiEffectMapMatch = chatSource.match(/const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = \{[\s\S]*?\n\};/);
+  assert(!!uiEffectMapMatch, "נמצא SHARED_TOOL_UI_EFFECT ב-chat.ts");
+  const uiEffectMap = uiEffectMapMatch?.[0] ?? "";
+  // split על שם המפתח (לא regex עם [^}]*) — כי ה-message formatter עצמו מכיל `}` (סגירת
+  // ${r.message} בתוך template literal), ש-[^}]* היה נתקל בו מוקדם מדי ומפסיק את ההתאמה.
+  const [createLeadEntryText, createTaskEntryText] = uiEffectMap.split("create_task:");
+  assert(/refresh:\s*true/.test(createTaskEntryText ?? ""), "SHARED_TOOL_UI_EFFECT.create_task: refresh:true (כמו ה-await refresh() הישן)");
+  assert(!/refresh/.test(createLeadEntryText ?? ""), "SHARED_TOOL_UI_EFFECT.create_lead: אין refresh — נשאר בלי, כמו קודם");
+  // סדר ההרצה בפועל ב-dispatcher: tool.execute לפני uiEffect.message, uiEffect.message לפני
+  // uiEffect.refresh — אותו סדר בדיוק שהיה ב-run() wrapper הישן (actions.push ואז await refresh()).
+  const idxExecute = dispatcher.indexOf("out = await tool.execute(input, { user });");
+  const idxPush = dispatcher.indexOf("actions.push(uiEffect.message(");
+  const idxRefresh = dispatcher.indexOf("if (uiEffect.refresh) await refresh();");
+  assert(
+    idxExecute > -1 && idxPush > idxExecute && idxRefresh > idxPush,
+    "סדר ב-dispatcher: tool.execute → actions.push(uiEffect.message) → uiEffect.refresh — זהה לסדר הישן",
+  );
+  // "אין refresh על כשל/דחייה" — מבני: שורת ה-refresh נמצאת *בתוך* ה-if(isSharedToolDefinition)
+  // *אחרי* שורת ה-execute שעלולה לזרוק; זריקה מדלגת ישר ל-catch החיצוני ולא מגיעה לכאן בכלל.
+  const permissionDenialReturn = dispatcher.indexOf('return { content: `שגיאה: אין הרשאה להשתמש בכלי');
+  assert(
+    permissionDenialReturn > -1 && permissionDenialReturn < idxExecute,
+    "דחיית הרשאה (return מוקדם) קודמת ל-execute/refresh — אם נדחה, refresh לעולם לא רץ",
+  );
+
+  // ───────────────────────── 9. שאר 7 ה-AgentTools של Web — ללא שינוי ─────────────────────────
+  logger.info("— שאר 7 ה-AgentTools המחוברים ל-Web — עדיין AgentTool גולמי, לא הומרו ל-ToolDefinition —");
+  const otherSeven: [string, unknown][] = [
     ["mark_done", MARK_DONE_AGENT_TOOL],
     ["set_status", SET_STATUS_AGENT_TOOL],
     ["add_note", ADD_NOTE_AGENT_TOOL],
@@ -219,7 +326,7 @@ async function main() {
     ["create_project_stage", CREATE_PROJECT_STAGE_AGENT_TOOL],
     ["reassign_item", REASSIGN_ITEM_AGENT_TOOL],
   ];
-  for (const [name, tool] of otherEight) {
+  for (const [name, tool] of otherSeven) {
     const t = tool as { name: string; requiredPermission: unknown; execute: unknown };
     assert(t.name === name, `${name}: עדיין AgentTool גולמי (יש .name, לא ToolDefinition עטוף)`);
     assert(
@@ -275,16 +382,24 @@ async function main() {
     "WEB_CHAT_LOCAL_TOOL_NAMES: עדיין בדיוק 19 הכלים המקומיים, ללא שינוי",
   );
 
-  // ───────────────────────── 10. WhatsApp's 20-tool registry — ללא שינוי ─────────────────────────
-  logger.info("— WhatsApp: 20 כלים, create_lead עדיין מחובר נכון —");
+  // ───────────────────────── 12. WhatsApp's 20-tool registry — ללא שינוי ─────────────────────────
+  logger.info("— WhatsApp: 20 כלים, create_lead/create_task עדיין מחוברים נכון —");
   assert(whatsappTools.length === 20, `WhatsApp tools array === 20, בפועל ${whatsappTools.length}`);
   assert(
     whatsappCreateLead.agentTool === registryCreateLead,
-    "WhatsApp's create_lead: agentTool עדיין === ל-registry — 3F.3 לא נגע בקובץ tools.ts's כלים",
+    "WhatsApp's create_lead: agentTool עדיין === ל-registry — 3F.5A לא נגע בקובץ tools.ts's כלים",
   );
   assert(
     whatsappCreateLead.requiredPermission === undefined,
-    "WhatsApp's create_lead: עדיין אין requiredPermission עצמאי (Step 3C) — לא השתנה ב-3F.3",
+    "WhatsApp's create_lead: עדיין אין requiredPermission עצמאי (Step 3C) — לא השתנה",
+  );
+  assert(
+    whatsappCreateTask.agentTool === registryCreateTask,
+    "WhatsApp's create_task: agentTool עדיין === ל-registry — 3F.5A לא נגע בקובץ tools.ts's כלים",
+  );
+  assert(
+    whatsappCreateTask.requiredPermission === undefined,
+    "WhatsApp's create_task: עדיין אין requiredPermission עצמאי (Step 3C) — לא השתנה",
   );
 
   if (failures > 0) {

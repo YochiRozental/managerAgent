@@ -17,12 +17,21 @@
  * actions.push, only on success, without that being business logic inside the shared
  * ToolDefinition. Now only 7 of Web's 9 AgentTool-backed tools remain in the legacy run() shape.
  *
+ * Updated Step 3F.6 (2026-10-07): the nine hand-written wrapper objects this file used to probe
+ * via `.execute.toString()` (there was no other way to check a hand-written closure without
+ * running it against live Monday) are gone — all nine are now built by the shared
+ * buildSharedToolDefinition (src/ai/sharedTools.ts), and the four scattered build-time gate
+ * `if` blocks were replaced by one declared WEB_SHARED_TOOL_VISIBILITY table + one
+ * filterSharedToolsForUser call. The toString/source-regex checks below were replaced with
+ * direct spy-based execution proofs (proveDelegatesToAgentTool) — real behavior, not source
+ * sniffing — and with assertions against WEB_SHARED_TOOL_VISIBILITY directly. Deeper coverage of
+ * the shared mechanism itself (buildSharedToolDefinition/filterSharedToolsForUser as pure
+ * functions, cross-channel schema parity/divergence) now lives in
+ * scripts/test-shared-tool-registry.ts — not duplicated here.
+ *
  * Does NOT call any live AI model — Anthropic credit is currently insufficient. All checks are
  * structural: object identity, schema equality, permission-decision equality across the real
- * role matrix, and source-level proof of the dispatcher's branching/actions.push/refresh
- * behavior (runOpsChat's executeToolCall closure isn't independently invokable without live
- * Monday/AI, so this is read from the actual source text rather than executed — documented
- * explicitly at each such check below).
+ * role matrix, and direct execution with a spied AgentTool.execute (no live Monday/AI).
  *
  *   npm run test:web-shared-tool-definition
  */
@@ -51,11 +60,12 @@ import {
   REASSIGN_ITEM_TOOL_DEFINITION,
   WIRED_AGENT_TOOL_NAMES,
   WEB_CHAT_LOCAL_TOOL_NAMES,
+  WEB_SHARED_TOOL_VISIBILITY,
   canCreateLead,
   canCreateTask,
   canManageProjectStages,
 } from "../src/ops/chat.js";
-import { AGENT_TOOLS } from "../src/ops/agentTools.js";
+import { AGENT_TOOLS, type AgentTool } from "../src/ops/agentTools.js";
 import {
   isToolAllowedForUser,
   type ToolDefinition,
@@ -78,6 +88,41 @@ function assert(cond: boolean, msg: string) {
 }
 function deepEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Step 3F.6: proves toolDef.execute really reaches agentTool.execute — by temporarily replacing
+ * the real (shared, production) AgentTool's execute with a spy, calling toolDef.execute, and
+ * restoring the original immediately after. Replaces the old `.execute.toString().includes(...)`
+ * source-sniffing, which broke the moment the wrapper stopped being hand-written literally as
+ * `${NAME}_AGENT_TOOL.execute(...)`.
+ */
+async function proveDelegatesToAgentTool(
+  label: string,
+  toolDef: ToolDefinition,
+  agentTool: AgentTool,
+  sampleInput: Record<string, unknown>,
+  user: IdentifiedUser,
+) {
+  const original = agentTool.execute;
+  let called = false;
+  let capturedInput: unknown = null;
+  let capturedUser: unknown = null;
+  (agentTool as { execute: AgentTool["execute"] }).execute = async (input, ctx) => {
+    called = true;
+    capturedInput = input;
+    capturedUser = ctx.user;
+    return { __spy__: true };
+  };
+  try {
+    const result = await toolDef.execute(sampleInput, { user });
+    assert(called, `${label}: toolDef.execute קורא בפועל ל-agentTool.execute (spy על האובייקט האמיתי, לא toString)`);
+    assert(deepEqual(capturedInput, sampleInput), `${label}: ה-input מגיע ל-agentTool.execute בלי שינוי (Web לא מצהיר transformInput)`);
+    assert(capturedUser === user, `${label}: ה-user המזוהה מועבר ל-agentTool.execute`);
+    assert(deepEqual(result, { __spy__: true }), `${label}: תוצאת agentTool.execute חוזרת כפי שהיא מ-toolDef.execute`);
+  } finally {
+    (agentTool as { execute: AgentTool["execute"] }).execute = original;
+  }
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -162,27 +207,13 @@ async function main() {
     }
     assert(threw, "CREATE_LEAD_TOOL_DEFINITION.execute({user:null}) נדחה ע\"י requireIdentifiedUser — לא מגיע ל-Monday");
   }
-  assert(
-    CREATE_LEAD_TOOL_DEFINITION.execute.toString().includes("CREATE_LEAD_AGENT_TOOL.execute"),
-    "CREATE_LEAD_TOOL_DEFINITION.execute מפנה ל-CREATE_LEAD_AGENT_TOOL.execute (מקור, לא Monday ישירות)",
-  );
-  assert(
-    !CREATE_LEAD_TOOL_DEFINITION.execute.toString().includes("createLead(") &&
-      !CREATE_LEAD_TOOL_DEFINITION.execute.toString().includes("mondayRequest"),
-    "CREATE_LEAD_TOOL_DEFINITION.execute: אין הפניה ישירה ל-Monday write functions",
-  );
+  await proveDelegatesToAgentTool("create_lead", CREATE_LEAD_TOOL_DEFINITION, WEB_CREATE_LEAD_AGENT_TOOL, { firstName: "בדיקה" }, moti);
 
-  // ───────────────────────── 1'. שלב 3F.4: create_lead נדחף כ-ToolDefinition גולמי, בלי run() wrapper ─────────────────────────
-  logger.info("— שלב 3F.4: create_lead נדחף ישירות (tools.push(CREATE_LEAD_TOOL_DEFINITION)), אין יותר run() wrapper —");
-  const pushSiteMatch = chatSource.match(/isToolAllowedForUser\(CREATE_LEAD_TOOL_DEFINITION, user\)\) \{[\s\S]*?\n {2}\}\n/);
-  assert(!!pushSiteMatch, "נמצא בלוק ה-gate של create_lead ב-chat.ts");
-  const pushSite = pushSiteMatch?.[0] ?? "";
-  assert(
-    /tools\.push\(CREATE_LEAD_TOOL_DEFINITION\)/.test(pushSite),
-    "create_lead נדחף כאובייקט גולמי — tools.push(CREATE_LEAD_TOOL_DEFINITION), לא tools.push({name,...,run:...})",
-  );
-  assert(!pushSite.includes("run:"), "בלוק ה-push של create_lead לא מכיל יותר run: wrapper כלל");
-  assert(!pushSite.includes("actions.push"), "actions.push עבר מהבלוק המקומי ל-dispatcher המשותף (executeToolCall) — לא נשאר כאן");
+  // ───────────────────────── 1'. שלב 3F.6: create_lead's visibility — policy מוצהר, לא if ב-chat.ts ─────────────────────────
+  logger.info("— שלב 3F.6: create_lead's build-time gate מוצהר ב-WEB_SHARED_TOOL_VISIBILITY ('gated'), לא if מפוזר —");
+  const createLeadVisEntry = WEB_SHARED_TOOL_VISIBILITY.find((e) => e.tool === CREATE_LEAD_TOOL_DEFINITION);
+  assert(!!createLeadVisEntry, "create_lead מופיע ב-WEB_SHARED_TOOL_VISIBILITY");
+  assert(createLeadVisEntry?.visibility === "gated", "create_lead: visibility==='gated' (isToolAllowedForUser הרגיל, כמו שהיה)");
 
   // ───────────────────────── 6+7. actions.push/refresh — עברו ל-dispatchToolDefinition המשותף (Central Agent Core) ─────────────────────────
   // Central Agent Core unification (2026-10-07): executeToolCall ב-chat.ts כבר לא מכיל בעצמו
@@ -290,25 +321,13 @@ async function main() {
     }
     assert(threw, "CREATE_TASK_TOOL_DEFINITION.execute({user:null}) נדחה ע\"י requireIdentifiedUser — לא מגיע ל-Monday");
   }
-  assert(
-    CREATE_TASK_TOOL_DEFINITION.execute.toString().includes("CREATE_TASK_AGENT_TOOL.execute"),
-    "CREATE_TASK_TOOL_DEFINITION.execute מפנה ל-CREATE_TASK_AGENT_TOOL.execute (מקור, לא Monday ישירות)",
-  );
+  await proveDelegatesToAgentTool("create_task", CREATE_TASK_TOOL_DEFINITION, WEB_CREATE_TASK_AGENT_TOOL, { taskName: "בדיקה" }, moti);
 
-  // ───────────────────────── 1. create_task נדחף כ-ToolDefinition גולמי, בלי run() wrapper ─────────────────────────
-  logger.info("— create_task נדחף ישירות (tools.push(CREATE_TASK_TOOL_DEFINITION)), אין יותר run() wrapper —");
-  const taskPushSiteMatch = chatSource.match(/isToolAllowedForUser\(CREATE_TASK_TOOL_DEFINITION, user\)\) \{[\s\S]*?\n {2}\}\n/);
-  assert(!!taskPushSiteMatch, "נמצא בלוק ה-gate של create_task ב-chat.ts");
-  const taskPushSite = taskPushSiteMatch?.[0] ?? "";
-  assert(
-    /tools\.push\(CREATE_TASK_TOOL_DEFINITION\)/.test(taskPushSite),
-    "create_task נדחף כאובייקט גולמי — tools.push(CREATE_TASK_TOOL_DEFINITION), לא tools.push({name,...,run:...})",
-  );
-  assert(!taskPushSite.includes("run:"), "בלוק ה-push של create_task לא מכיל יותר run: wrapper כלל");
-  assert(
-    !taskPushSite.includes("actions.push") && !taskPushSite.includes("refresh()"),
-    "actions.push/refresh() עברו מהבלוק המקומי ל-dispatcher המשותף — לא נשארו כאן",
-  );
+  // ───────────────────────── 1. שלב 3F.6: create_task's visibility — policy מוצהר ─────────────────────────
+  logger.info("— שלב 3F.6: create_task's build-time gate מוצהר ב-WEB_SHARED_TOOL_VISIBILITY ('gated') —");
+  const createTaskVisEntry = WEB_SHARED_TOOL_VISIBILITY.find((e) => e.tool === CREATE_TASK_TOOL_DEFINITION);
+  assert(!!createTaskVisEntry, "create_task מופיע ב-WEB_SHARED_TOOL_VISIBILITY");
+  assert(createTaskVisEntry?.visibility === "gated", "create_task: visibility==='gated' (isToolAllowedForUser הרגיל, כמו שהיה)");
 
   // ───────────────────────── 6+7+8. actions.push + refresh, בדיוק באותו סדר ורק בהצלחה ─────────────────────────
   logger.info("— SHARED_TOOL_UI_EFFECT: create_task עם refresh:true, create_lead בלי refresh —");
@@ -376,10 +395,7 @@ async function main() {
       toolDef.input_schema === (agentTool as { input_schema: unknown }).input_schema,
       `${name}_TOOL_DEFINITION.input_schema === ${name.toUpperCase()}_AGENT_TOOL.input_schema — לא שונה`,
     );
-    assert(
-      toolDef.execute.toString().includes(`${name.toUpperCase()}_AGENT_TOOL.execute`),
-      `${name}_TOOL_DEFINITION.execute מפנה ל-${name.toUpperCase()}_AGENT_TOOL.execute (מקור)`,
-    );
+    await proveDelegatesToAgentTool(name, toolDef, agentTool as AgentTool, { itemId: "0", source: "general", body: "x", status: "x", note: "x" }, moti);
 
     // תיעוד מכוון: ה-ANY-of של ה-AgentTool הוא מקור האמת ל-execution-time re-check, אבל *לא*
     // משמש כ-build-time gate כאן — כי לפחות תפקיד אחד (finance/גולדי) שרואה את הכלי היום לא
@@ -424,13 +440,15 @@ async function main() {
     assert(threw, `${name}_TOOL_DEFINITION.execute({user:null}) נדחה ע"י requireIdentifiedUser — לא מגיע ל-Monday`);
   }
 
-  // אימות מקור: חמשת הכלים נדחפים *ללא* עטיפת if (isToolAllowedForUser(...)) — בדיוק כמו שהיה
-  // (unconditional). אם מישהו בעתיד "יתקן" את זה ויוסיף gate — זו בדיוק ה-regression שנבדקת כאן.
-  logger.info("— אימות מקור: 5 הכלים נדחפים ללא תנאי (לא עברו ל-gate, בכוונה) —");
-  const unconditionalBlockMatch = chatSource.match(/MARK_DONE_TOOL_DEFINITION,[\s\S]*?ADD_UPDATE_TOOL_DEFINITION,/);
-  assert(!!unconditionalBlockMatch, "נמצא הבלוק הרציף של 5 ה-TOOL_DEFINITION-ים ב-tools[]");
-  const unconditionalBlock = unconditionalBlockMatch?.[0] ?? "";
-  assert(!unconditionalBlock.includes("if ("), "הבלוק הרציף הזה לא עטוף ב-if (...) — דחיפה ללא תנאי, כמו קודם");
+  // שלב 3F.6: "נדחף ללא תנאי" מבוטא עכשיו כ-visibility:'always' ב-WEB_SHARED_TOOL_VISIBILITY —
+  // נתון מוצהר, לא היעדר if ב-source. אם מישהו בעתיד "יתקן" את זה ל-'gated' — זו בדיוק
+  // ה-regression שנבדקת כאן (ולמה: deeper coverage ב-test-shared-tool-registry.ts).
+  logger.info("— 5 הכלים ההיסטוריים: visibility==='always' ב-WEB_SHARED_TOOL_VISIBILITY (לא עברו ל-gate, בכוונה) —");
+  for (const [name, , toolDef] of alwaysVisible) {
+    const entry = WEB_SHARED_TOOL_VISIBILITY.find((e) => e.tool === toolDef);
+    assert(!!entry, `${name} מופיע ב-WEB_SHARED_TOOL_VISIBILITY`);
+    assert(entry?.visibility === "always", `${name}: visibility==='always' — דחיפה ללא תנאי, כמו קודם`);
+  }
 
   // ── הכלים שעברו gate (מוכח זהה לישן): create_project_stage, reassign_item ──
   logger.info("— create_project_stage/reassign_item: gate עבר ל-isToolAllowedForUser, מוכח זהה לישן, לכל role —");
@@ -455,10 +473,7 @@ async function main() {
       toolDef.input_schema === (agentTool as { input_schema: unknown }).input_schema,
       `${name}_TOOL_DEFINITION.input_schema === ${name.toUpperCase()}_AGENT_TOOL.input_schema`,
     );
-    assert(
-      toolDef.execute.toString().includes(`${name.toUpperCase()}_AGENT_TOOL.execute`),
-      `${name}_TOOL_DEFINITION.execute מפנה ל-${name.toUpperCase()}_AGENT_TOOL.execute (מקור)`,
-    );
+    await proveDelegatesToAgentTool(name, toolDef, agentTool as AgentTool, { itemId: "0", name: "x", project: "x", person: "x" }, moti);
 
     for (const user of [moti, dov, ruchama, goldi, yochi]) {
       const newDecision = isToolAllowedForUser(toolDef, user);
@@ -476,13 +491,10 @@ async function main() {
     }
     assert(threw, `${name}_TOOL_DEFINITION.execute({user:null}) נדחה ע"י requireIdentifiedUser`);
 
-    // build-time gate verification ממקור
-    const gateMatch = chatSource.match(new RegExp(`isToolAllowedForUser\\(${name.toUpperCase()}_TOOL_DEFINITION, user\\)\\) \\{[\\s\\S]*?\\n {2}\\}\\n`));
-    assert(!!gateMatch, `נמצא ה-build-time gate של ${name} ב-chat.ts (isToolAllowedForUser)`);
-    assert(
-      (gateMatch?.[0] ?? "").includes(`tools.push(${name.toUpperCase()}_TOOL_DEFINITION)`),
-      `${name}: tools.push(${name.toUpperCase()}_TOOL_DEFINITION) — אובייקט גולמי, בלי run() wrapper`,
-    );
+    // שלב 3F.6: ה-build-time gate מוצהר ב-WEB_SHARED_TOOL_VISIBILITY ('gated'), לא if מפוזר ב-chat.ts.
+    const visEntry = WEB_SHARED_TOOL_VISIBILITY.find((e) => e.tool === toolDef);
+    assert(!!visEntry, `${name} מופיע ב-WEB_SHARED_TOOL_VISIBILITY`);
+    assert(visEntry?.visibility === "gated", `${name}: visibility==='gated' (isToolAllowedForUser הרגיל, כמו שהיה)`);
 
     // UI effect
     const entry = extractUiEffectEntry(name);

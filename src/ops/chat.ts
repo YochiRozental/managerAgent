@@ -28,10 +28,16 @@ import {
 import { logger } from "../utils/logger.js";
 import { runRoutedAgent } from "../ai/routedAgent.js";
 import { buildSystemPrompt } from "../ai/prompt.js";
-import { isToolAllowedForUser, requireIdentifiedUser, type ToolDefinition } from "../ai/toolRegistry.js";
+import type { ToolDefinition } from "../ai/toolRegistry.js";
 import { dispatchToolDefinition } from "../ai/dispatcher.js";
+import {
+  buildSharedToolDefinition,
+  filterSharedToolsForUser,
+  requireAgentTool,
+  type SharedToolVisibilityEntry,
+} from "../ai/sharedTools.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
-import { AGENT_TOOLS, type AgentTool } from "./agentTools.js";
+import type { AgentTool } from "./agentTools.js";
 import { getApproval } from "../db/repositories/managerApprovals.js";
 import { replyToApprovalInstruction } from "./approvalActions.js";
 import {
@@ -55,190 +61,59 @@ import { getOversightReport } from "./oversight.js";
 const MAX_TURNS = 7;
 
 /**
- * מאתר AgentTool לפי שם ב-registry המשותף, וזורק מיידית אם חסר — תקלת-חיווט תיתפס בעליית
- * השרת, לא בשקט באמצע שיחה עם עובד. טיפוס ההחזרה המוצהר (AgentTool, לא AgentTool|undefined)
- * מבטל את הצורך בבדיקת null/non-null assertion בכל מקום שמשתמש בתוצאה (כולל בתוך closures
- * שמוגדרים אחרי הבדיקה, כמו runOpsChat למטה) — ה-throw כאן הוא ההוכחה היחידה שצריכה.
+ * Step 3F.6 (2026-10-07) — כל תשעת ה-ToolDefinition האלה נבנים עכשיו דרך buildSharedToolDefinition
+ * (src/ai/sharedTools.ts), לא ביד: אין יותר תשעה אובייקטים עם אותו דפוס execute שחזר על עצמו
+ * מילה-במילה (requireIdentifiedUser ואז agentTool.execute). שבעה מהם (כל מי שאין לו projection
+ * כאן) מקבלים name/description/input_schema/requiredPermission *זהים בערכם* למה שהיה מוצהר ביד
+ * קודם (==="AgentTool's own values", לא פרויקציה) — ר' audit Phase 1 ב-3F.6. אף אחד מה-9 לא
+ * מקבל projection כלשהו ב-Web (בשונה מ-WhatsApp's add_monday_update/create_lead, ר' tools.ts) —
+ * Web חושף את ה-AgentTool "כמו שהוא" בכל התשעה.
  */
-function requireAgentTool(name: string): AgentTool {
-  const tool = AGENT_TOOLS.find((t) => t.name === name);
-  if (!tool) throw new Error(`AgentTool '${name}' לא נמצא ב-registry המשותף (ops/agentTools.ts) — חיבור Web שבור.`);
-  return tool;
-}
+export const CREATE_TASK_AGENT_TOOL: AgentTool = requireAgentTool("create_task", "Web");
+export const CREATE_TASK_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(CREATE_TASK_AGENT_TOOL);
+
+export const CREATE_LEAD_AGENT_TOOL: AgentTool = requireAgentTool("create_lead", "Web");
+export const CREATE_LEAD_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(CREATE_LEAD_AGENT_TOOL);
+
+export const MARK_DONE_AGENT_TOOL: AgentTool = requireAgentTool("mark_done", "Web");
+export const SET_STATUS_AGENT_TOOL: AgentTool = requireAgentTool("set_status", "Web");
+export const ADD_NOTE_AGENT_TOOL: AgentTool = requireAgentTool("add_note", "Web");
+export const REPORT_BLOCKER_AGENT_TOOL: AgentTool = requireAgentTool("report_blocker", "Web");
+export const ADD_UPDATE_AGENT_TOOL: AgentTool = requireAgentTool("add_update", "Web");
+
+export const MARK_DONE_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(MARK_DONE_AGENT_TOOL);
+export const SET_STATUS_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(SET_STATUS_AGENT_TOOL);
+export const ADD_NOTE_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(ADD_NOTE_AGENT_TOOL);
+export const REPORT_BLOCKER_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(REPORT_BLOCKER_AGENT_TOOL);
+export const ADD_UPDATE_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(ADD_UPDATE_AGENT_TOOL);
+
+export const CREATE_PROJECT_STAGE_AGENT_TOOL: AgentTool = requireAgentTool("create_project_stage", "Web");
+export const CREATE_PROJECT_STAGE_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(CREATE_PROJECT_STAGE_AGENT_TOOL);
+
+export const REASSIGN_ITEM_AGENT_TOOL: AgentTool = requireAgentTool("reassign_item", "Web");
+export const REASSIGN_ITEM_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(REASSIGN_ITEM_AGENT_TOOL);
 
 /**
- * ה-AgentTool המשותף בפועל (לא עותק) — ר' ops/agentTools.ts. מיוצא (לא רק מקומי) כדי שבדיקת
- * parity (test-agent-tools.ts) תוכל להוכיח === מול AGENT_TOOLS.find(...) — שזה באמת האובייקט
- * המשותף, לא עותק.
+ * Step 3F.6 — ה-visibility policy המוצהר, אחד לכל אחד מ-9 הכלים: "always" = נדחף ל-tools[] ללא
+ * תנאי (מה שהיה "נדחף בלי if" בקוד הישן — mark_done/set_status/add_note/report_blocker/add_update,
+ * documented discrepancy מ-3F.5B — ר' docstring מעל ADD_UPDATE_TOOL_DEFINITION למעלה למה). "gated"
+ * = isToolAllowedForUser הרגיל (מה שהיה "if (isToolAllowedForUser(X,user)) tools.push(X)" בקוד
+ * הישן — reassign_item/create_task/create_project_stage/create_lead). filterSharedToolsForUser
+ * (src/ai/sharedTools.ts) הוא המקום היחיד שמחליט בפועל לפי הטבלה הזו — לא עוד if מפוזרים בגוף
+ * runOpsChat. שינוי ה-policy של כלי כלשהו כאן *הוא* שינוי product/permission (לא structural) —
+ * מודגש בכוונה כטבלה אחת גלויה, לא קוד מפוזר, בדיוק כדי שהחלטה כזו תהיה קלה-לראות.
  */
-export const CREATE_TASK_AGENT_TOOL: AgentTool = requireAgentTool("create_task");
-
-/**
- * שלב 3F.5A (2026-10-07): אותו דפוס בדיוק כמו CREATE_LEAD_TOOL_DEFINITION (3F.3) — ToolDefinition
- * אמיתי, לא "WebToolDefinition" נפרד. אין requiredPermission עצמאי: ה-ANY-of המלא של ה-AgentTool
- * חל (task:create/task:manage), בדיוק כמו canCreateTask(user) שהשער היה קודם (נשאר מיוצא/נבדק
- * בנפרד, רק לא משמש כאן יותר). schema זהה למה ש-WhatsApp's create_task גם חושף (CREATE_TASK_
- * AGENT_TOOL.input_schema המלא, בלי narrowing — בשונה מ-create_lead, שם יש הבדל מכוון).
- */
-export const CREATE_TASK_TOOL_DEFINITION: ToolDefinition = {
-  name: CREATE_TASK_AGENT_TOOL.name,
-  description: CREATE_TASK_AGENT_TOOL.description,
-  input_schema: CREATE_TASK_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: CREATE_TASK_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    CREATE_TASK_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-
-/**
- * שלב 2C (2026-10-05): אותו דפוס בדיוק כמו CREATE_TASK_AGENT_TOOL, ל-create_lead. ה-AgentTool
- * המשותף בפועל — לא עותק. מיוצא כדי ש-test-agent-tools.ts יוכל להוכיח === מול
- * AGENT_TOOLS.find("create_lead").
- */
-export const CREATE_LEAD_AGENT_TOOL: AgentTool = requireAgentTool("create_lead");
-
-/**
- * שלב 3F.3 (2026-10-07): create_lead הופך ל-ToolDefinition אמיתי — אותו טיפוס/מושג הרשאה
- * בדיוק שגם WhatsApp (integrations/claude/tools.ts) בנוי עליו משלב 3F.2, לא "WebToolDefinition"
- * נפרד. requiresConfirmation=false (Web לא משתמש בזרימת האישור הזו כלל — ר' Step 3A). אין
- * requiredPermission עצמאי כאן: ה-ANY-of המלא של ה-AgentTool חל (היום הסינגלטון ["lead:manage"]),
- * בדיוק כמו canCreateLead(user) שהשער היה קודם (נשאר מיוצא/נבדק בנפרד, רק לא משמש כאן יותר).
- * execute עצמו מפנה ל-AgentTool.execute בלבד — אין כאן לוגיקה עסקית חדשה, רק narrowing של
- * ctx.user (requireIdentifiedUser, זהה למה ש-WhatsApp עושה לכל כלי agentTool-backed שלו).
- */
-export const CREATE_LEAD_TOOL_DEFINITION: ToolDefinition = {
-  name: CREATE_LEAD_AGENT_TOOL.name,
-  description: CREATE_LEAD_AGENT_TOOL.description,
-  input_schema: CREATE_LEAD_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: CREATE_LEAD_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    CREATE_LEAD_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-
-/**
- * שלב 2D (2026-10-05): אותו דפוס, למשפחת updateTask (mark_done/set_status/add_note/
- * report_blocker) + add_update (addUpdateToItem, לא updateTask — הרשאה/business action שונה).
- * חמישה AgentTool נפרדים, לא אחד משולב — ה-action/source/note mapping שונה בין כל אחד,
- * ו-chat.ts's adapter (למטה) ממשיך לבנות כל הודעת actions.push ואת refresh()-or-not בדיוק
- * כפי שהיה (ר' Inspection ב-audit 2026-10-05: add_note ו-add_update לא קראו ל-refresh() מעולם
- * — ליצור/לעדכן הערה לא משפיע על cache המשימות; mark_done/set_status/report_blocker כן).
- */
-export const MARK_DONE_AGENT_TOOL: AgentTool = requireAgentTool("mark_done");
-export const SET_STATUS_AGENT_TOOL: AgentTool = requireAgentTool("set_status");
-export const ADD_NOTE_AGENT_TOOL: AgentTool = requireAgentTool("add_note");
-export const REPORT_BLOCKER_AGENT_TOOL: AgentTool = requireAgentTool("report_blocker");
-export const ADD_UPDATE_AGENT_TOOL: AgentTool = requireAgentTool("add_update");
-
-/**
- * שלב 3F.5B (2026-10-07) — אותו דפוס בדיוק כמו CREATE_LEAD/CREATE_TASK_TOOL_DEFINITION. שימי לב
- * ל-agentTool המשותף: הוא מוגדר כאן (למי שיתעד object-identity), אבל **לא** משמש לשום build-time
- * gate על ארבעת הכלים האלה — הם נשארים נדחפים ל-tools[] ללא תנאי, כמו שהיו, כי ה-ANY-of שלהם
- * (singleton "task:update_own") *אינו* מכיל את כל התפקידים שראו את הכלי עד היום: גולדי (finance)
- * אין לה task:update_own, אבל רואה את הכלי כבר שנים — גיית build-time כאן הייתה "מעלימה" אותו
- * בשקט מהרשימה שלה (נגד ההוראה המפורשת ב-3F.5B). הפתרון: visibility ללא שינוי; ה-agentTool עדיין
- * נותן ל-dispatcher בדיקת execution-time — וזו **לא** מחלישה דבר, כי ה-ANY-of הזה הוא *זהה*
- * ל-authorize()'s הבדיקה הראשונה בפועל (ops/actions.ts:106, userCan(user,"task:update_own")) —
- * אותם בני-אדם נדחים משני המקורות, רק הטקסט של השגיאה שונה אם ה-dispatcher מקדים (ר' audit
- * 3F.5B: תועד כ-discrepancy קוסמטי, לא שינוי בזהות המורשים).
- */
-export const MARK_DONE_TOOL_DEFINITION: ToolDefinition = {
-  name: MARK_DONE_AGENT_TOOL.name,
-  description: MARK_DONE_AGENT_TOOL.description,
-  input_schema: MARK_DONE_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: MARK_DONE_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    MARK_DONE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-export const SET_STATUS_TOOL_DEFINITION: ToolDefinition = {
-  name: SET_STATUS_AGENT_TOOL.name,
-  description: SET_STATUS_AGENT_TOOL.description,
-  input_schema: SET_STATUS_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: SET_STATUS_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    SET_STATUS_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-export const ADD_NOTE_TOOL_DEFINITION: ToolDefinition = {
-  name: ADD_NOTE_AGENT_TOOL.name,
-  description: ADD_NOTE_AGENT_TOOL.description,
-  input_schema: ADD_NOTE_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: ADD_NOTE_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    ADD_NOTE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-export const REPORT_BLOCKER_TOOL_DEFINITION: ToolDefinition = {
-  name: REPORT_BLOCKER_AGENT_TOOL.name,
-  description: REPORT_BLOCKER_AGENT_TOOL.description,
-  input_schema: REPORT_BLOCKER_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: REPORT_BLOCKER_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    REPORT_BLOCKER_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-/**
- * add_update: ה-ANY-of (5 הרשאות) *כן* מכיל את כל 5 התפקידים הקיימים (owner/admin/project_manager/
- * planner/finance — כל אחד מהם מחזיק לפחות אחת מה-5, אומת ב-roles.ts: finance יש לה finance:manage
- * שנמצא ברשימה) — כלומר build-time gate כאן *היה* יכול להישאר behavior-equivalent. בכל זאת לא
- * הוספתי gate, לשמור על עקביות מינימלית עם ארבעת הכלים הסמוכים (ולא "לנחש" החלטה שלא התבקשה) —
- * ר' audit 3F.5B.
- */
-export const ADD_UPDATE_TOOL_DEFINITION: ToolDefinition = {
-  name: ADD_UPDATE_AGENT_TOOL.name,
-  description: ADD_UPDATE_AGENT_TOOL.description,
-  input_schema: ADD_UPDATE_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: ADD_UPDATE_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    ADD_UPDATE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-
-/**
- * שלב 2E (2026-10-05): אותו דפוס, ל-create_project_stage. permission gate בודד (project:manage,
- * לא ANY-of) — זו הסיבה שהוא עבר לפני reassign_item (task:manage||lead:manage||project:manage).
- */
-export const CREATE_PROJECT_STAGE_AGENT_TOOL: AgentTool = requireAgentTool("create_project_stage");
-
-/**
- * שלב 3F.5B: בניגוד למשפחת mark_done, כאן ה-ANY-of (סינגלטון ["project:manage"]) *זהה בדיוק*
- * ל-canManageProjectStages(user) = userCan(user,"project:manage") שהיה השער הקודם — כל התפקידים
- * שראו את הכלי היום ימשיכו לראות אותו. build-time gate עובר ל-isToolAllowedForUser, לא
- * canManageProjectStages (נשאר מיוצא/נבדק בנפרד). scope פר-פרויקט (assertManagesStage) ממשיך
- * להיאכף בתוך createProjectStageAction עצמה — לא נוגעים בזה.
- */
-export const CREATE_PROJECT_STAGE_TOOL_DEFINITION: ToolDefinition = {
-  name: CREATE_PROJECT_STAGE_AGENT_TOOL.name,
-  description: CREATE_PROJECT_STAGE_AGENT_TOOL.description,
-  input_schema: CREATE_PROJECT_STAGE_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: CREATE_PROJECT_STAGE_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    CREATE_PROJECT_STAGE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
-
-/**
- * שלב 2F (2026-10-05) — הכלי התשיעי והאחרון מתוך ה-9 שבתוכנית. permission gate ANY-of
- * (task:manage || lead:manage || project:manage) — requiredPermission כבר מערך מ-Step 1,
- * ו-userCanUseAgentTool משתמש ב-.some() (ANY-of), לא .every() — אומת ב-test-agent-tools.ts.
- */
-export const REASSIGN_ITEM_AGENT_TOOL: AgentTool = requireAgentTool("reassign_item");
-
-/**
- * שלב 3F.5B: ה-ANY-of (3 הרשאות: task:manage/lead:manage/project:manage) *זהה בדיוק* לתנאי ה-OR
- * המפורש שהיה השער הקודם — כל התפקידים שראו את הכלי היום ימשיכו לראות אותו. scope פר-פרויקט
- * (assertManagesItemProject) ממשיך להיאכף בתוך reassignItem עצמה — לא נוגעים בזה.
- */
-export const REASSIGN_ITEM_TOOL_DEFINITION: ToolDefinition = {
-  name: REASSIGN_ITEM_AGENT_TOOL.name,
-  description: REASSIGN_ITEM_AGENT_TOOL.description,
-  input_schema: REASSIGN_ITEM_AGENT_TOOL.input_schema,
-  requiresConfirmation: false,
-  agentTool: REASSIGN_ITEM_AGENT_TOOL,
-  execute: async (input: Record<string, unknown>, ctx) =>
-    REASSIGN_ITEM_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
-};
+export const WEB_SHARED_TOOL_VISIBILITY: SharedToolVisibilityEntry[] = [
+  { tool: MARK_DONE_TOOL_DEFINITION, visibility: "always" },
+  { tool: SET_STATUS_TOOL_DEFINITION, visibility: "always" },
+  { tool: ADD_NOTE_TOOL_DEFINITION, visibility: "always" },
+  { tool: REPORT_BLOCKER_TOOL_DEFINITION, visibility: "always" },
+  { tool: ADD_UPDATE_TOOL_DEFINITION, visibility: "always" },
+  { tool: REASSIGN_ITEM_TOOL_DEFINITION, visibility: "gated" },
+  { tool: CREATE_TASK_TOOL_DEFINITION, visibility: "gated" },
+  { tool: CREATE_PROJECT_STAGE_TOOL_DEFINITION, visibility: "gated" },
+  { tool: CREATE_LEAD_TOOL_DEFINITION, visibility: "gated" },
+];
 
 /**
  * מקור אמת אמיתי (לא regex על טקסט!) לבדיקת tool-parity (test-tool-parity.ts, שלב 2B,
@@ -618,16 +493,6 @@ export async function runOpsChat(
         };
       },
     },
-    // שלב 3F.5B: ToolDefinition משותף נדחף ישירות, בלי run() wrapper — בדיוק כמו create_lead/
-    // create_task. ארבעת הכלים האלה + add_update נדחפים **ללא תנאי**, בדיוק כמו קודם (אין
-    // build-time gate חדש) — ר' ההערה המפורטת מעל MARK_DONE_TOOL_DEFINITION (הגדרה) למה: ה-ANY-of
-    // שלהם לא מכיל את כל התפקידים שרואים אותם היום. actions.push/refresh() עברו ל-dispatcher
-    // (buildLoop למטה) דרך SHARED_TOOL_UI_EFFECT, עם אותו טקסט/emoji/תזמון בדיוק.
-    MARK_DONE_TOOL_DEFINITION,
-    SET_STATUS_TOOL_DEFINITION,
-    ADD_NOTE_TOOL_DEFINITION,
-    REPORT_BLOCKER_TOOL_DEFINITION,
-    ADD_UPDATE_TOOL_DEFINITION,
     {
       name: "record_commitment",
       description:
@@ -685,6 +550,13 @@ export async function runOpsChat(
       },
     },
   ];
+
+  // Step 3F.6: כל 9 ה-AgentTool-backed tools (5 "תמיד-גלויים" + 4 "gated") נבנים/מסוננים כאן
+  // בקריאה אחת דרך WEB_SHARED_TOOL_VISIBILITY + filterSharedToolsForUser (src/ai/sharedTools.ts) —
+  // לא עוד 5 אלמנטים בלתי-מותנים בתוך ה-literal array למעלה + 4 if-ים מפוזרים בגוף הפונקציה (היה
+  // קודם, ר' git history). ה-policy (always/gated) מוצהרת אחת, גלויה, במקום אחד — לא נגזרת מצורת
+  // הקוד. סדר הכלים בתוך tools[] לא משפיע על שום דבר (המודל בוחר לפי name, לא לפי מיקום).
+  tools.push(...filterSharedToolsForUser(WEB_SHARED_TOOL_VISIBILITY, user));
 
   // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה ----
   if (opts.about) {
@@ -826,38 +698,10 @@ export async function runOpsChat(
     );
   }
 
-  // ---- שינוי אחראי/ת — שלב 3F.5B: gate עובר ל-isToolAllowedForUser, מוכח זהה לתנאי ה-OR הישן ----
-  // (task:manage||lead:manage||project:manage === ANY-of ה-AgentTool, ר' audit 3F.5B). נדחף
-  // כ-ToolDefinition גולמי, בלי run() wrapper. scope פר-פרויקט ממשיך להיאכף בתוך reassignItem.
-  if (isToolAllowedForUser(REASSIGN_ITEM_TOOL_DEFINITION, user)) {
-    tools.push(REASSIGN_ITEM_TOOL_DEFINITION);
-  }
-
-  // ---- יצירת משימה חדשה — שלב 3F.5A: ToolDefinition משותף נדחף ישירות, בלי run() wrapper ----
-  // gate עובר דרך isToolAllowedForUser (לא canCreateTask(user), ר' שלב 3F.3/4 לאותו דפוס
-  // ב-create_lead). ה-executeToolCall (למטה, buildLoop) מריץ CREATE_TASK_TOOL_DEFINITION.
-  // execute(input,{user}) ישירות, ואז actions.push + refresh() דרך SHARED_TOOL_UI_EFFECT —
-  // בדיוק באותו סדר שהיה ב-run() wrapper הישן (actions.push קודם, refresh() אחריו, שניהם רק
-  // אם execute לא זרק).
-  if (isToolAllowedForUser(CREATE_TASK_TOOL_DEFINITION, user)) {
-    tools.push(CREATE_TASK_TOOL_DEFINITION);
-  }
-
-  // ---- יצירת שלב חדש בפרויקט — שלב 3F.5B: gate עובר ל-isToolAllowedForUser, מוכח זהה ----
-  // (project:manage === ANY-of הסינגלטון של ה-AgentTool, ר' audit 3F.5B). נדחף כ-ToolDefinition
-  // גולמי, בלי run() wrapper. אין refresh() — כמו קודם (יצירת שלב לא משפיעה על מטמון המשימות).
-  if (isToolAllowedForUser(CREATE_PROJECT_STAGE_TOOL_DEFINITION, user)) {
-    tools.push(CREATE_PROJECT_STAGE_TOOL_DEFINITION);
-  }
-
-  // ---- יצירת ליד חדש — שלב 3F.4: ToolDefinition משותף נדחף ישירות, בלי run() wrapper ----
-  // gate עובר דרך isToolAllowedForUser (לא canCreateLead(user), ר' שלב 3F.3). ה-executeToolCall
-  // (למטה, buildLoop) הוא זה שמריץ CREATE_LEAD_TOOL_DEFINITION.execute(input,{user}) ישירות
-  // ומוסיף את actions.push ה-UI-specific (דרך SHARED_TOOL_UI_EFFECT) — אין כאן יותר adapter
-  // מקומי בכלל, לא רק run() דק. בניגוד ל-create_task, אין refresh() — כמו קודם.
-  if (isToolAllowedForUser(CREATE_LEAD_TOOL_DEFINITION, user)) {
-    tools.push(CREATE_LEAD_TOOL_DEFINITION);
-  }
+  // Step 3F.6: reassign_item/create_task/create_project_stage/create_lead's gating was moved into
+  // WEB_SHARED_TOOL_VISIBILITY + the single filterSharedToolsForUser call above (right after the
+  // tools[] literal) — each still gets exactly the same isToolAllowedForUser decision it always
+  // did, just expressed as one declared policy entry instead of its own scattered if-block here.
 
   // ---- כלי בקרה על כל המשרד — רק למי שיש view:all_work (מוטי, יוכי) ----
   if (userCan(user, "view:all_work")) {

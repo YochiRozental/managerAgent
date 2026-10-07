@@ -39,7 +39,7 @@ import {
 } from "../monday/tasks.js";
 import { findUsersByName } from "../monday/users.js";
 import { getMyWorkBrief } from "../../ops/myWorkBrief.js";
-import { AGENT_TOOLS } from "../../ops/agentTools.js";
+import { buildSharedToolDefinition, requireAgentTool } from "../../ai/sharedTools.js";
 
 /**
  * שלב 3F.2 (2026-10-07): ToolContext/ToolDefinition/isToolAllowedForUser הועברו ל-src/ai/
@@ -50,27 +50,20 @@ export type { ToolContext, ToolDefinition };
 export { isToolAllowedForUser, requireIdentifiedUser };
 
 /**
- * שלב 3B (2026-10-05, תוכנית איחוד Web/WhatsApp) — add_monday_update/create_lead מחוברים
- * ל-AgentTool המשותף (ops/agentTools.ts) במקום implementation עצמאי. מאתר לפי שם ב-registry,
- * זורק מיידית אם חסר — תקלת-חיווט תיתפס בעליית השרת, לא בשקט באמצע שיחה (אותו דפוס בדיוק
- * כמו requireAgentTool ב-ops/chat.ts).
+ * Step 3F.6 (2026-10-07): requireAgentTool הועבר ל-src/ai/sharedTools.ts (היה כאן ובקובץ המקביל
+ * ops/chat.ts כשתי פונקציות זהות מילה-במילה עד שם הערוץ בהודעת השגיאה) — מיובא ולא מוגדר מחדש.
+ * מיוצאים כדי שבדיקות (test-whatsapp-agent-tools.ts) יוכיחו === מול AGENT_TOOLS — אותו אובייקט
+ * שגם ops/chat.ts (Web) משתמש בו, לא עותק.
  */
-function requireAgentTool(name: string) {
-  const tool = AGENT_TOOLS.find((t) => t.name === name);
-  if (!tool) throw new Error(`AgentTool '${name}' לא נמצא ב-registry המשותף (ops/agentTools.ts) — חיבור WhatsApp שבור.`);
-  return tool;
-}
-/** מיוצאים כדי שבדיקות (test-whatsapp-agent-tools.ts) יוכיחו === מול AGENT_TOOLS — אותו אובייקט
- *  שגם ops/chat.ts (Web) משתמש בו, לא עותק. */
-export const ADD_UPDATE_AGENT_TOOL = requireAgentTool("add_update");
-export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead");
+export const ADD_UPDATE_AGENT_TOOL = requireAgentTool("add_update", "WhatsApp");
+export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead", "WhatsApp");
 /**
  * שלב 3D (2026-10-07) — domain actions אמיתיים של מערכת המשימות (לא Monday primitive גנרי
  * כמו update_monday_task_status, ר' docstring בראש הקובץ). update_monday_task_status *נשאר*
  * ללא שינוי כ-legacy fallback (בורדים שאינם משימות משרד/שלבי פרויקט) — ר' audit נפרד.
  */
-export const MARK_DONE_AGENT_TOOL = requireAgentTool("mark_done");
-export const SET_STATUS_AGENT_TOOL = requireAgentTool("set_status");
+export const MARK_DONE_AGENT_TOOL = requireAgentTool("mark_done", "WhatsApp");
+export const SET_STATUS_AGENT_TOOL = requireAgentTool("set_status", "WhatsApp");
 /**
  * שלב 3E (2026-10-07) — אותו דפוס בדיוק: create_monday_task הוא Monday primitive גנרי
  * (boardId+itemName כלשהם, בלי assignee/project/stage/date/priority/idempotency/scope) ולא
@@ -78,7 +71,7 @@ export const SET_STATUS_AGENT_TOOL = requireAgentTool("set_status");
  * disambiguation/idempotency). create_monday_task *נשאר* ללא שינוי כ-legacy fallback לבורדים
  * שאינם משימות משרד/שלבי פרויקט — ר' audit נפרד.
  */
-export const CREATE_TASK_AGENT_TOOL = requireAgentTool("create_task");
+export const CREATE_TASK_AGENT_TOOL = requireAgentTool("create_task", "WhatsApp");
 
 /**
  * שלב 3D: list_my_work (הכלי היחיד שחושף source לפריט ב-WhatsApp היום) מחזיר source="office"/
@@ -154,24 +147,14 @@ export const tools: ToolDefinition[] = [
     requiredPermission: "task:create",
     execute: async (input: { boardId: string; itemName: string }) => createTask(input.itemName, input.boardId),
   },
-  {
-    // שלב 3E: domain action אמיתי (לא Monday primitive) — name/description/input_schema מגיעים
-    // מה-AgentTool המשותף (source of truth), לא מומצאים כאן. agentTool מקשר ל-registry: אין
-    // requiredPermission עצמאי — מגיע במלואו מ-CREATE_TASK_AGENT_TOOL.requiredPermission
-    // (ANY-of task:create/task:manage — זהה ל-canCreateTask ב-chat.ts, זהה בתוצאה לשער הקודם
-    // "task:create" בלבד עבור כל תפקיד קיים היום: כל תפקיד עם task:manage מחזיק גם task:create
-    // ב-roles.ts, ר' audit נפרד). execute מפנה ל-AgentTool בלבד — createTaskAction→ops/actions.ts
-    // (authorizeCreateTask, project/stage disambiguation, idempotency), לא Monday ישירות.
-    name: CREATE_TASK_AGENT_TOOL.name,
-    description: CREATE_TASK_AGENT_TOOL.description,
-    input_schema: CREATE_TASK_AGENT_TOOL.input_schema,
-    requiresConfirmation: false,
-    agentTool: CREATE_TASK_AGENT_TOOL,
-    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
-      const user = requireIdentifiedUser(ctx);
-      return CREATE_TASK_AGENT_TOOL.execute(input, { user });
-    },
-  },
+  // שלב 3E, עודכן 3F.6: domain action אמיתי (לא Monday primitive) — name/description/input_schema
+  // מגיעים מה-AgentTool המשותף (source of truth), ללא projection (WhatsApp חושף את ה-AgentTool
+  // "כמו שהוא", בדיוק כמו לפני 3F.6). אין requiredPermission עצמאי — ה-ANY-of task:create/
+  // task:manage המלא חל (זהה ל-canCreateTask ב-chat.ts). buildSharedToolDefinition (src/ai/
+  // sharedTools.ts) בונה את ה-wrapper — לא יד, לא עוד implementation כפול מול ops/chat.ts's
+  // CREATE_TASK_TOOL_DEFINITION. execute מפנה ל-AgentTool בלבד — createTaskAction→ops/actions.ts
+  // (authorizeCreateTask, project/stage disambiguation, idempotency), לא Monday ישירות.
+  buildSharedToolDefinition(CREATE_TASK_AGENT_TOOL),
   {
     name: "update_monday_task_status",
     description: "משנה את הסטטוס של משימה קיימת ב-Monday.com (למשל \"הושלם\", \"בתהליך\").",
@@ -189,36 +172,14 @@ export const tools: ToolDefinition[] = [
     execute: async (input: { boardId: string; itemId: string; statusLabel: string }) =>
       updateTaskStatus(input.boardId, input.itemId, input.statusLabel),
   },
-  {
-    // שלב 3D: domain action אמיתי (לא Monday primitive) — name/description/input_schema מגיעים
-    // מה-AgentTool המשותף (source of truth, ר' תחילת הקובץ), לא מומצאים כאן. agentTool מקשר
-    // ל-registry: אין requiredPermission עצמאי — מגיע במלואו מ-MARK_DONE_AGENT_TOOL.requiredPermission
-    // (סינגלטון task:update_own, בדיוק כמו create_lead ב-Step 3C — אין gate קיים לשמר, אין צמצום).
-    // execute מפנה ל-AgentTool בלבד — doUpdateTask→ops/actions.ts→authorize() (ownership/project
-    // scope), לא Monday ישירות. source מתורגם מ-list_my_work's "office"/"project" אם צריך
-    // (normalizeTaskSource) — רשת ביטחון, לא לוגיקה עסקית.
-    name: MARK_DONE_AGENT_TOOL.name,
-    description: MARK_DONE_AGENT_TOOL.description,
-    input_schema: MARK_DONE_AGENT_TOOL.input_schema,
-    requiresConfirmation: false,
-    agentTool: MARK_DONE_AGENT_TOOL,
-    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
-      const user = requireIdentifiedUser(ctx);
-      return MARK_DONE_AGENT_TOOL.execute(normalizeTaskSource(input), { user });
-    },
-  },
-  {
-    // שלב 3D: ראה הערה מעל mark_done — אותו דפוס בדיוק, SET_STATUS_AGENT_TOOL במקום MARK_DONE.
-    name: SET_STATUS_AGENT_TOOL.name,
-    description: SET_STATUS_AGENT_TOOL.description,
-    input_schema: SET_STATUS_AGENT_TOOL.input_schema,
-    requiresConfirmation: false,
-    agentTool: SET_STATUS_AGENT_TOOL,
-    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
-      const user = requireIdentifiedUser(ctx);
-      return SET_STATUS_AGENT_TOOL.execute(normalizeTaskSource(input), { user });
-    },
-  },
+  // שלב 3D, עודכן 3F.6: domain action אמיתי — name/description/input_schema מגיעים מה-AgentTool
+  // המשותף, ללא projection. אין requiredPermission עצמאי — הסינגלטון task:update_own חל. ה-
+  // transformInput projection (normalizeTaskSource — list_my_work's "office"/"project" display
+  // labels → "general"/"project_stage", ר' docstring מעל normalizeTaskSource) הוא ההבדל המכוון
+  // היחיד מול ops/chat.ts's MARK_DONE_TOOL_DEFINITION — Web לא צריך אותו (אין לו list_my_work).
+  buildSharedToolDefinition(MARK_DONE_AGENT_TOOL, { transformInput: normalizeTaskSource }),
+  // אותו דפוס בדיוק, SET_STATUS_AGENT_TOOL במקום MARK_DONE.
+  buildSharedToolDefinition(SET_STATUS_AGENT_TOOL, { transformInput: normalizeTaskSource }),
   {
     name: "set_monday_task_due_date",
     description: "קובע תאריך יעד/לביצוע למשימה קיימת ב-Monday.com.",
@@ -277,11 +238,17 @@ export const tools: ToolDefinition[] = [
     execute: async (input: { boardId: string; itemId: string; userId: string }) =>
       assignTask(input.boardId, input.itemId, input.userId),
   },
-  {
-    // שלב 3B: שם/description/input_schema זהים ל-WhatsApp model שכבר מכיר (אפס שינוי prompt) —
-    // רק ה-execute עובר ל-shared AgentTool. label (שדה אופציונלי קיים ב-AGENT_TOOLS's add_update,
-    // משמש רק ל-actions.push התצוגתי ב-chat.ts) לא נחשף כאן בכוונה — WhatsApp לא שלח אותו קודם
-    // ואינו צריך אותו לשום דבר ב-execute עצמו (addUpdateToItem לא קורא אותו בכלל).
+  // שלב 3B/3C, עודכן 3F.6: name/description/input_schema נשארים ה-WhatsApp projection שהמודל כבר
+  // מכיר (אפס שינוי prompt) — לא ה-AgentTool's own values. label (שדה אופציונלי קיים ב-AGENT_
+  // TOOLS's add_update, משמש רק ל-actions.push התצוגתי ב-chat.ts) לא נחשף כאן בכוונה — WhatsApp
+  // לא שלח אותו קודם ואינו צריך אותו (addUpdateToItem לא קורא אותו בכלל). requiredPermission
+  // נשאר "task:update_own" בכוונה (audit Step 3B — "אל תרחיב capability surface בשקט"): אותו
+  // gate בדיוק כמו לפני המעבר ל-shared AgentTool, למרות ש-addUpdateToItem (ops/actions.ts) עצמה
+  // אוכפת ANY-of עשיר יותר (5 הרשאות) כהגנה נוספת, בלי שינוי. buildSharedToolDefinition's
+  // projection מבטא את שלושת ההבדלים האלה (name/description/input_schema/requiredPermission)
+  // באופן מוצהר — לא implementation כפול מול ops/chat.ts's ADD_UPDATE_TOOL_DEFINITION (בלי
+  // projection, ANY-of מלא).
+  buildSharedToolDefinition(ADD_UPDATE_AGENT_TOOL, {
     name: "add_monday_update",
     description: "מוסיף תגובה/הערה (Update) לפריט קיים ב-Monday.com.",
     input_schema: {
@@ -292,37 +259,14 @@ export const tools: ToolDefinition[] = [
       },
       required: ["itemId", "body"],
     },
-    requiresConfirmation: false,
-    // דיון נוסף (audit Step 3B — "אל תרחיב capability surface בשקט"): requiredPermission נשאר
-    // "task:update_own" בכוונה — אותו gate בדיוק כמו לפני המעבר ל-shared AgentTool. ל-
-    // addUpdateToItem (ops/actions.ts) יש ANY-of עשיר יותר (5 הרשאות) — זה *נשאר* כהגנה נוספת
-    // בתוך ה-business action המשותף, בלי שינוי. אבל ה-gate החיצוני הזה (visibility + execution-
-    // time pre-check ב-orchestrator.ts's canUseTool) הוא מה ש-WhatsApp חשף/אכף *לפני* המעבר —
-    // הרחבתו ל-ANY-of (ע"י השמטתו) הייתה משנה בשקט מי יכול להשתמש בכלי הזה דרך WhatsApp
-    // (בפועל: תפקיד finance, אם יקבל אי-פעם WhatsApp JID — היום אין לו), גם אם זה "תקין" לפי
-    // המדיניות העסקית של add_update עצמו. שלב 3B הוא migration של execution, לא הרחבת capability
-    // surface — minimum behavioral change. אם בעתיד יוחלט במפורש להרחיב את ה-gate הזה (או
-    // להסירו) — זו החלטה נפרדת, לא side-effect של ה-wiring.
-    //
-    // שלב 3C: agentTool מקשר לכלי המשותף — ה-ANY-of שלו (5 הרשאות) הוא עכשיו ה-source of truth
-    // הרשום, ו-requiredPermission כאן הוא צמצום *נבדק* שלו (startup assertion: subset-of), לא
-    // רשימה עצמאית שרק קורה להסכים איתו. ההתנהגות בפועל לא השתנתה.
     requiredPermission: "task:update_own",
-    agentTool: ADD_UPDATE_AGENT_TOOL,
-    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
-      const user = requireIdentifiedUser(ctx);
-      return ADD_UPDATE_AGENT_TOOL.execute(input, { user });
-    },
-  },
-  {
-    // שלב 3B: שם/description/input_schema זהים ל-WhatsApp model שכבר מכיר. AGENT_TOOLS's
-    // create_lead מוסיף שדה assignee אופציונלי שלא נחשף כאן — WhatsApp לא שולח אותו, כך
-    // שה-ברירת-מחדל של createLeadAction (אחראי = היוצר) חלה אוטומטית. זה שינוי התנהגות מכוון
-    // (ר' audit Step 3B §H) — לא bypass: היוצר יסומן כאחראי/ת, מה שלא קרה קודם ב-create_lead
-    // הישן (tools.ts's createLead() לא קיבל assigneeId בכלל, אז ליד נוצר תמיד בלי אחראי).
-    name: "create_lead",
-    description:
-      "פותח ליד חדש (לקוח פוטנציאלי) בלוח \"לידים 💰\" ב-Monday.com, עם פרטי הקשר ומקור ההגעה.",
+  }),
+  // שלב 3B/3C, עודכן 3F.6: name/description/input_schema נשארים ה-WhatsApp projection (7 שדות,
+  // בלי assignee — ה-contract שהמודל כבר מכיר; Web חושף את כל 8 שדות ה-AgentTool, ר' ops/chat.ts's
+  // CREATE_LEAD_TOOL_DEFINITION, בלי projection). אין requiredPermission עצמאי — ה-ANY-of המלא
+  // (סינגלטון ["lead:manage"]) חל, בדיוק כמו קודם.
+  buildSharedToolDefinition(CREATE_LEAD_AGENT_TOOL, {
+    description: "פותח ליד חדש (לקוח פוטנציאלי) בלוח \"לידים 💰\" ב-Monday.com, עם פרטי הקשר ומקור ההגעה.",
     input_schema: {
       type: "object",
       properties: {
@@ -336,17 +280,7 @@ export const tools: ToolDefinition[] = [
       },
       required: ["firstName"],
     },
-    requiresConfirmation: false,
-    // שלב 3C: אין requiredPermission עצמאי כאן בכוונה — הכלי מגובה במלואו ב-AgentTool (למטה),
-    // וה-ANY-of שלו (כיום הסינגלטון ["lead:manage"]) הוא ה-source of truth המלא, לא קירוב שלו.
-    // תוצאה בפועל זהה למה שהיה (לפני: requiredPermission="lead:manage" כאן; גם זה "lead:manage"
-    // בלבד) — אבל עכשיו יש רק מקום אחד שמחזיק את ההרשאה הזו, לא שניים שצריך לשמור מסונכרנים.
-    agentTool: CREATE_LEAD_AGENT_TOOL,
-    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
-      const user = requireIdentifiedUser(ctx);
-      return CREATE_LEAD_AGENT_TOOL.execute(input, { user });
-    },
-  },
+  }),
   {
     name: "list_calendar_events",
     description: "מחזיר אירועים קיימים ביומן Google בטווח זמן נתון (למשל \"מה יש לי היום/השבוע\").",

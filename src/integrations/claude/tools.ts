@@ -11,7 +11,12 @@
  * ש-task:manage מספיק בלי לבדוק שוב את הפער הזה קודם.
  */
 import type Anthropic from "@anthropic-ai/sdk";
-import type { IdentifiedUser, Permission } from "../../identity/index.js";
+import type { IdentifiedUser } from "../../identity/index.js";
+import {
+  isToolAllowedForUser,
+  type ToolContext,
+  type ToolDefinition,
+} from "../../ai/toolRegistry.js";
 import {
   createCalendarEvent,
   deleteCalendarEvent,
@@ -33,36 +38,15 @@ import {
 } from "../monday/tasks.js";
 import { findUsersByName } from "../monday/users.js";
 import { getMyWorkBrief } from "../../ops/myWorkBrief.js";
-import { AGENT_TOOLS, type AgentTool } from "../../ops/agentTools.js";
+import { AGENT_TOOLS } from "../../ops/agentTools.js";
 
-/** הקשר הרצה שה-orchestrator מזריק לכלי — מי המשתמש ששאל. */
-export interface ToolContext {
-  user: IdentifiedUser | null;
-}
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  input_schema: Anthropic.Tool.InputSchema;
-  /** Visible to others / hard to undo — must be confirmed by the user before executing (wired in M7). */
-  requiresConfirmation: boolean;
-  /**
-   * ההרשאה שהמשתמש חייב להחזיק כדי להריץ את הכלי. אם לא מוגדר — מספיק להיות מזוהה.
-   * האכיפה ב-orchestrator לפני הרצת הכלי. כשהכלי מגובה ב-agentTool (למטה): אם requiredPermission
-   * מוגדר, הוא צמצום מכוון של ה-ANY-of של ה-AgentTool (נבדק כ-subset ב-startup — ר' הבדיקה אחרי
-   * מערך tools למטה); אם לא מוגדר, ה-ANY-of המלא של ה-AgentTool חל ישירות — ר' isToolAllowedForUser.
-   */
-  requiredPermission?: Permission;
-  /**
-   * קישור גנרי (שלב 3C, 2026-10-07) לכלי משותף ב-registry (ops/agentTools.ts) — לא תלוי בשם
-   * הכלי, כדי שישמש גם מיגרציות עתידיות. כשמוגדר, ה-AgentTool הוא מקור האמת להרשאות הכלי
-   * (ר' isToolAllowedForUser) — לא עוד שתי השוואות הרשאה נפרדות (אחת כאן/ב-toAnthropicTools,
-   * אחת ב-orchestrator.ts's canUseTool) שרק "קורה" להן להסכים.
-   */
-  agentTool?: AgentTool;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  execute: (input: any, ctx: ToolContext) => Promise<unknown>;
-}
+/**
+ * שלב 3F.2 (2026-10-07): ToolContext/ToolDefinition/isToolAllowedForUser הועברו ל-src/ai/
+ * toolRegistry.ts — מושגים channel-independent, לא רק WhatsApp (ר' docstring שם). מיוצאים
+ * מחדש כאן (ללא שינוי שם/חתימה) כי כל הקוד הקיים (כולל בדיקות) מייבא אותם מ-"./tools.js".
+ */
+export type { ToolContext, ToolDefinition };
+export { isToolAllowedForUser };
 
 /**
  * שלב 3B (2026-10-05, תוכנית איחוד Web/WhatsApp) — add_monday_update/create_lead מחוברים
@@ -190,7 +174,7 @@ export const tools: ToolDefinition[] = [
     // (authorizeCreateTask, project/stage disambiguation, idempotency), לא Monday ישירות.
     name: CREATE_TASK_AGENT_TOOL.name,
     description: CREATE_TASK_AGENT_TOOL.description,
-    input_schema: CREATE_TASK_AGENT_TOOL.input_schema as Anthropic.Tool.InputSchema,
+    input_schema: CREATE_TASK_AGENT_TOOL.input_schema,
     requiresConfirmation: false,
     agentTool: CREATE_TASK_AGENT_TOOL,
     execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
@@ -225,7 +209,7 @@ export const tools: ToolDefinition[] = [
     // (normalizeTaskSource) — רשת ביטחון, לא לוגיקה עסקית.
     name: MARK_DONE_AGENT_TOOL.name,
     description: MARK_DONE_AGENT_TOOL.description,
-    input_schema: MARK_DONE_AGENT_TOOL.input_schema as Anthropic.Tool.InputSchema,
+    input_schema: MARK_DONE_AGENT_TOOL.input_schema,
     requiresConfirmation: false,
     agentTool: MARK_DONE_AGENT_TOOL,
     execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
@@ -237,7 +221,7 @@ export const tools: ToolDefinition[] = [
     // שלב 3D: ראה הערה מעל mark_done — אותו דפוס בדיוק, SET_STATUS_AGENT_TOOL במקום MARK_DONE.
     name: SET_STATUS_AGENT_TOOL.name,
     description: SET_STATUS_AGENT_TOOL.description,
-    input_schema: SET_STATUS_AGENT_TOOL.input_schema as Anthropic.Tool.InputSchema,
+    input_schema: SET_STATUS_AGENT_TOOL.input_schema,
     requiresConfirmation: false,
     agentTool: SET_STATUS_AGENT_TOOL,
     execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
@@ -481,30 +465,14 @@ for (const t of tools) {
 }
 
 /**
- * מקור האמת היחיד לקביעת "האם המשתמש רשאי להשתמש בכלי הזה" — משמש גם לחשיפה (toAnthropicTools)
- * וגם לאכיפה לפני הרצה (orchestrator.ts's canUseTool), כדי שלא יהיו שתי השוואות נפרדות שרק
- * "קורה" להן להסכים. כלי המגובה ב-agentTool (שלב 3C): ה-ANY-of שלו הוא ה-source of truth —
- * requiredPermission כאן, אם מוגדר, מצמצם אליו (נבדק subset למעלה); אם לא מוגדר, ה-ANY-of המלא
- * של ה-AgentTool חל. כלי בלי agentTool: בדיוק ההתנהגות הקודמת (requiredPermission בודד, או תמיד
- * מורשה אם לא מוגדר).
- */
-export function isToolAllowedForUser(tool: ToolDefinition, user: IdentifiedUser | null): boolean {
-  if (tool.agentTool) {
-    const allowedPermissions: Permission[] = tool.requiredPermission
-      ? [tool.requiredPermission]
-      : tool.agentTool.requiredPermission;
-    return user ? allowedPermissions.some((p) => user.permissions.includes(p)) : false;
-  }
-  if (!tool.requiredPermission) return true;
-  return user ? user.permissions.includes(tool.requiredPermission) : false;
-}
-
-/**
  * מחזיר את הכלים שה-AI רשאי להשתמש בהם עבור המשתמש הנתון — כדי שלא יציע פעולה שתיחסם ממילא.
  * - אובייקט משתמש → מסונן להרשאותיו.
  * - null → משתמש לא מזוהה, אין כלים בכלל.
  * - undefined (הושמט) → הקשר פנימי/רקע מהימן, כל הכלים.
- * האכיפה הסופית ב-orchestrator לפני הרצה בפועל.
+ * האכיפה הסופית ב-orchestrator לפני הרצה בפועל. ה-cast ל-Anthropic.Tool כאן (שלב 3F.2) הוא
+ * הגבול היחיד שבאמת צריך את הצורה הספציפית-ל-Anthropic — ToolDefinition.input_schema עצמו
+ * כללי (Record<string,unknown>, ר' toolRegistry.ts), ו-runOrchestrator ממיר את זה בכל מקרה
+ * ל-NormTool הניטרלי מיד אחרי הקריאה לכאן.
  */
 export function toAnthropicTools(user?: IdentifiedUser | null): Anthropic.Tool[] {
   let allowed: ToolDefinition[];
@@ -515,7 +483,7 @@ export function toAnthropicTools(user?: IdentifiedUser | null): Anthropic.Tool[]
   } else {
     allowed = tools.filter((t) => isToolAllowedForUser(t, user));
   }
-  return allowed.map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+  return allowed.map(({ name, description, input_schema }) => ({ name, description, input_schema }) as Anthropic.Tool);
 }
 
 export function getTool(name: string): ToolDefinition | undefined {

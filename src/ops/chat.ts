@@ -26,10 +26,11 @@ import {
   listUserCommitments,
 } from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
-import { runRoutedAgent } from "../ai/routedAgent.js";
+import { runCentralAgent } from "../ai/routedAgent.js";
 import { buildSystemPrompt } from "../ai/prompt.js";
 import type { ToolDefinition } from "../ai/toolRegistry.js";
 import { dispatchToolDefinition } from "../ai/dispatcher.js";
+import { toNormMessages, toNormTools } from "../ai/normalize.js";
 import {
   buildSharedToolDefinition,
   filterSharedToolsForUser,
@@ -848,13 +849,9 @@ export async function runOpsChat(
     );
   }
 
-  const normTools: NormTool[] = tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    parameters: t.input_schema,
-  }));
+  const normTools: NormTool[] = toNormTools(tools);
 
-  // ── מפרט הלולאה לכל ניסיון. הלולאה עצמה ב-agentLoop; הניתוב + fallback ב-runRoutedAgent.
+  // ── מפרט הלולאה לכל ניסיון. הלולאה עצמה ב-agentLoop; הניתוב + fallback ב-runCentralAgent.
   //    כאן רק: הרצת הכלים (עם מעקב כתיבות ל-sideEffect) והגשת תדריך הבוקר מילה-במילה.
   const buildLoop = () => {
     capturedBriefing = null; // איפוס לפני כל ניסיון — כדי שה-fallback ל-SMART יאסוף תדריך מחדש
@@ -862,7 +859,7 @@ export async function runOpsChat(
       system: systemPrompt(user, opts.about),
       maxTokens: 1024,
       maxTurns: MAX_TURNS,
-      messages: history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+      messages: toNormMessages(history),
       tools: normTools,
       // Central Agent Core unification (2026-10-07): כלים משותפים (ToolDefinition, isSharedToolDefinition)
       // עוברים עכשיו דרך dispatchToolDefinition (src/ai/dispatcher.ts) — אותו דיספצ'ר ש-WhatsApp's
@@ -915,7 +912,7 @@ export async function runOpsChat(
     };
   };
 
-  const routed = await runRoutedAgent({
+  const routed = await runCentralAgent({
     useCase: "ops_chat",
     latestMessage: history[history.length - 1]?.content ?? "",
     historyLength: history.length,

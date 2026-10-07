@@ -6,6 +6,10 @@
  *
  * fallback: ניסיון יחיד FAST→SMART, רק אם FAST נכשל ולא היו תופעות לוואי. אין retry loop.
  * עובד גם כש-FAST ו-SMART הם ספקים שונים.
+ *
+ * **זה ה-Central Agent Core** (ר' `runCentralAgent` בתחתית הקובץ — אותה פונקציה, שם שמבטא את
+ * התפקיד): יחד עם agentLoop.ts מתחתיו, זה המקום היחיד שמריץ tool-use loop/ניתוב/fallback — Web
+ * ו-WhatsApp הם שני channel adapters סביבו, לא שתי מערכות מקבילות.
  */
 
 import { logger } from "../utils/logger.js";
@@ -113,3 +117,16 @@ export async function runRoutedAgent(p: RoutedAgentParams): Promise<RoutedAgentR
     routeReason: route.reason,
   };
 }
+
+/**
+ * Central Agent Core unification — Step 3F.7B (2026-10-07): the 3F.7A audit concluded that
+ * runRoutedAgent (together with agentLoop.ts underneath it) already IS the shared Central Agent
+ * Core both Web (ops/chat.ts) and WhatsApp (integrations/claude/orchestrator.ts) run through —
+ * routing, fallback, the tool-use loop, permission-aware dispatch (via dispatcher.ts, called from
+ * each caller's executeToolCall) all live here or one layer below. This alias makes that explicit
+ * in the two call sites without a second implementation: `runCentralAgent` and `runRoutedAgent`
+ * are the exact same function reference. Both names stay exported — `runRoutedAgent` because
+ * scripts/test-ai-providers.ts (and this file's own docstring) already refer to it by that name,
+ * and renaming it outright would be churn for zero behavioral gain.
+ */
+export const runCentralAgent = runRoutedAgent;

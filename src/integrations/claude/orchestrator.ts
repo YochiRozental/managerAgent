@@ -1,6 +1,7 @@
-import { runRoutedAgent } from "../../ai/routedAgent.js";
+import { runCentralAgent } from "../../ai/routedAgent.js";
 import { buildSystemPrompt } from "../../ai/prompt.js";
 import { dispatchToolDefinition } from "../../ai/dispatcher.js";
+import { toNormMessages, toNormTools } from "../../ai/normalize.js";
 import type { NormTool, NormToolCall } from "../../ai/providers/types.js";
 import type { IdentifiedUser } from "../../identity/index.js";
 import { logger } from "../../utils/logger.js";
@@ -23,11 +24,7 @@ export async function runOrchestrator(
 ): Promise<OrchestratorResult> {
   // המשתמש רואה רק כלים שמותרים לו. defense-in-depth: גם לפני הרצה בפועל נבדוק שוב.
   const availableTools = toAnthropicTools(user);
-  const normTools: NormTool[] = availableTools.map((t) => ({
-    name: t.name,
-    description: t.description ?? "",
-    parameters: (t.input_schema ?? { type: "object", properties: {} }) as Record<string, unknown>,
-  }));
+  const normTools: NormTool[] = toNormTools(availableTools);
 
   // שלב 3C: מקור האמת היחיד לבדיקת הרשאה (isToolAllowedForUser, tools.ts) — לא עוד השוואה
   // מקבילה נפרדת כאן. תואם בדיוק להתנהגות הקודמת: כלי לא קיים ⇒ אין requiredPermission ⇒ מורשה
@@ -42,7 +39,7 @@ export async function runOrchestrator(
     system: buildSystemPrompt({ channel: "whatsapp", user }),
     maxTokens: 1024,
     maxTurns: MAX_TOOL_TURNS,
-    messages: history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    messages: toNormMessages(history),
     tools: normTools,
     // פעולות גלויות / הרסניות — עוצרים לפני הרצה, מחזירים לאישור המשתמש. שום כלי מהתור הזה לא רץ.
     screenToolCalls: (calls: NormToolCall[]) => {
@@ -68,7 +65,7 @@ export async function runOrchestrator(
     },
   });
 
-  const routed = await runRoutedAgent({
+  const routed = await runCentralAgent({
     useCase: "whatsapp_orchestrator",
     latestMessage: history[history.length - 1]?.content ?? "",
     historyLength: history.length,

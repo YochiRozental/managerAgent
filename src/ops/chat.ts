@@ -130,10 +130,92 @@ export const REPORT_BLOCKER_AGENT_TOOL: AgentTool = requireAgentTool("report_blo
 export const ADD_UPDATE_AGENT_TOOL: AgentTool = requireAgentTool("add_update");
 
 /**
+ * שלב 3F.5B (2026-10-07) — אותו דפוס בדיוק כמו CREATE_LEAD/CREATE_TASK_TOOL_DEFINITION. שימי לב
+ * ל-agentTool המשותף: הוא מוגדר כאן (למי שיתעד object-identity), אבל **לא** משמש לשום build-time
+ * gate על ארבעת הכלים האלה — הם נשארים נדחפים ל-tools[] ללא תנאי, כמו שהיו, כי ה-ANY-of שלהם
+ * (singleton "task:update_own") *אינו* מכיל את כל התפקידים שראו את הכלי עד היום: גולדי (finance)
+ * אין לה task:update_own, אבל רואה את הכלי כבר שנים — גיית build-time כאן הייתה "מעלימה" אותו
+ * בשקט מהרשימה שלה (נגד ההוראה המפורשת ב-3F.5B). הפתרון: visibility ללא שינוי; ה-agentTool עדיין
+ * נותן ל-dispatcher בדיקת execution-time — וזו **לא** מחלישה דבר, כי ה-ANY-of הזה הוא *זהה*
+ * ל-authorize()'s הבדיקה הראשונה בפועל (ops/actions.ts:106, userCan(user,"task:update_own")) —
+ * אותם בני-אדם נדחים משני המקורות, רק הטקסט של השגיאה שונה אם ה-dispatcher מקדים (ר' audit
+ * 3F.5B: תועד כ-discrepancy קוסמטי, לא שינוי בזהות המורשים).
+ */
+export const MARK_DONE_TOOL_DEFINITION: ToolDefinition = {
+  name: MARK_DONE_AGENT_TOOL.name,
+  description: MARK_DONE_AGENT_TOOL.description,
+  input_schema: MARK_DONE_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: MARK_DONE_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    MARK_DONE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
+export const SET_STATUS_TOOL_DEFINITION: ToolDefinition = {
+  name: SET_STATUS_AGENT_TOOL.name,
+  description: SET_STATUS_AGENT_TOOL.description,
+  input_schema: SET_STATUS_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: SET_STATUS_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    SET_STATUS_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
+export const ADD_NOTE_TOOL_DEFINITION: ToolDefinition = {
+  name: ADD_NOTE_AGENT_TOOL.name,
+  description: ADD_NOTE_AGENT_TOOL.description,
+  input_schema: ADD_NOTE_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: ADD_NOTE_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    ADD_NOTE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
+export const REPORT_BLOCKER_TOOL_DEFINITION: ToolDefinition = {
+  name: REPORT_BLOCKER_AGENT_TOOL.name,
+  description: REPORT_BLOCKER_AGENT_TOOL.description,
+  input_schema: REPORT_BLOCKER_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: REPORT_BLOCKER_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    REPORT_BLOCKER_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
+/**
+ * add_update: ה-ANY-of (5 הרשאות) *כן* מכיל את כל 5 התפקידים הקיימים (owner/admin/project_manager/
+ * planner/finance — כל אחד מהם מחזיק לפחות אחת מה-5, אומת ב-roles.ts: finance יש לה finance:manage
+ * שנמצא ברשימה) — כלומר build-time gate כאן *היה* יכול להישאר behavior-equivalent. בכל זאת לא
+ * הוספתי gate, לשמור על עקביות מינימלית עם ארבעת הכלים הסמוכים (ולא "לנחש" החלטה שלא התבקשה) —
+ * ר' audit 3F.5B.
+ */
+export const ADD_UPDATE_TOOL_DEFINITION: ToolDefinition = {
+  name: ADD_UPDATE_AGENT_TOOL.name,
+  description: ADD_UPDATE_AGENT_TOOL.description,
+  input_schema: ADD_UPDATE_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: ADD_UPDATE_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    ADD_UPDATE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
+
+/**
  * שלב 2E (2026-10-05): אותו דפוס, ל-create_project_stage. permission gate בודד (project:manage,
  * לא ANY-of) — זו הסיבה שהוא עבר לפני reassign_item (task:manage||lead:manage||project:manage).
  */
 export const CREATE_PROJECT_STAGE_AGENT_TOOL: AgentTool = requireAgentTool("create_project_stage");
+
+/**
+ * שלב 3F.5B: בניגוד למשפחת mark_done, כאן ה-ANY-of (סינגלטון ["project:manage"]) *זהה בדיוק*
+ * ל-canManageProjectStages(user) = userCan(user,"project:manage") שהיה השער הקודם — כל התפקידים
+ * שראו את הכלי היום ימשיכו לראות אותו. build-time gate עובר ל-isToolAllowedForUser, לא
+ * canManageProjectStages (נשאר מיוצא/נבדק בנפרד). scope פר-פרויקט (assertManagesStage) ממשיך
+ * להיאכף בתוך createProjectStageAction עצמה — לא נוגעים בזה.
+ */
+export const CREATE_PROJECT_STAGE_TOOL_DEFINITION: ToolDefinition = {
+  name: CREATE_PROJECT_STAGE_AGENT_TOOL.name,
+  description: CREATE_PROJECT_STAGE_AGENT_TOOL.description,
+  input_schema: CREATE_PROJECT_STAGE_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: CREATE_PROJECT_STAGE_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    CREATE_PROJECT_STAGE_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
 
 /**
  * שלב 2F (2026-10-05) — הכלי התשיעי והאחרון מתוך ה-9 שבתוכנית. permission gate ANY-of
@@ -141,6 +223,21 @@ export const CREATE_PROJECT_STAGE_AGENT_TOOL: AgentTool = requireAgentTool("crea
  * ו-userCanUseAgentTool משתמש ב-.some() (ANY-of), לא .every() — אומת ב-test-agent-tools.ts.
  */
 export const REASSIGN_ITEM_AGENT_TOOL: AgentTool = requireAgentTool("reassign_item");
+
+/**
+ * שלב 3F.5B: ה-ANY-of (3 הרשאות: task:manage/lead:manage/project:manage) *זהה בדיוק* לתנאי ה-OR
+ * המפורש שהיה השער הקודם — כל התפקידים שראו את הכלי היום ימשיכו לראות אותו. scope פר-פרויקט
+ * (assertManagesItemProject) ממשיך להיאכף בתוך reassignItem עצמה — לא נוגעים בזה.
+ */
+export const REASSIGN_ITEM_TOOL_DEFINITION: ToolDefinition = {
+  name: REASSIGN_ITEM_AGENT_TOOL.name,
+  description: REASSIGN_ITEM_AGENT_TOOL.description,
+  input_schema: REASSIGN_ITEM_AGENT_TOOL.input_schema,
+  requiresConfirmation: false,
+  agentTool: REASSIGN_ITEM_AGENT_TOOL,
+  execute: async (input: Record<string, unknown>, ctx) =>
+    REASSIGN_ITEM_AGENT_TOOL.execute(input, { user: requireIdentifiedUser(ctx) }),
+};
 
 /**
  * מקור אמת אמיתי (לא regex על טקסט!) לבדיקת tool-parity (test-tool-parity.ts, שלב 2B,
@@ -376,23 +473,21 @@ function isSharedToolDefinition(tool: ToolDef | ToolDefinition): tool is ToolDef
 }
 
 /**
- * שלב 3F.4, הורחב 3F.5A: מיפוי Web-specific מ-shared ToolDefinitions (לא Web-local הישנים)
- * לתופעות הלוואי של ה-UI — channel adapter concern, לא חלק מה-ToolDefinition המשותף/מה-business
- * logic (ה-execute של ToolDefinition לא יודע על actions[]/refresh() בכלל). message בונה את
- * טקסט ה-changelog (actions[]); refresh?:true אומר לדיספצ'ר להריץ await refresh() *אחרי*
- * actions.push, בדיוק הסדר שהיה ב-run() wrapper הישן של create_task. לא event bus גנרי — רק
- * שני השדות שבאמת צריך כרגע. create_lead (3F.3/4): אין refresh (כמו שהיה). create_task (3F.5A):
- * refresh:true (כמו שהיה). כלים נוספים שיומרו יקבלו שורה משלהם, עם הניסוח המקורי שלהם.
+ * שלב 3F.4, הורחב 3F.5A/3F.5B: מיפוי Web-specific מ-shared ToolDefinitions (לא Web-local
+ * הישנים) לתופעות הלוואי של ה-UI — channel adapter concern, לא חלק מה-ToolDefinition המשותף/
+ * מה-business logic (ה-execute של ToolDefinition לא יודע על actions[]/refresh() בכלל). message
+ * מקבל גם את תוצאת ה-execute וגם את ה-input הגולמי (שלב 3F.5B: mark_done/set_status/add_note/
+ * report_blocker בונים את ההודעה מ-findTask(input.itemId), לא רק מ-result.message — בדיוק כמו
+ * ב-run() wrapper הישן) ומחזיר את טקסט ה-changelog. refresh?:true אומר לדיספצ'ר להריץ
+ * await refresh() *אחרי* actions.push, רק אם execute הצליח. לא event bus גנרי — רק שני השדות
+ * שבאמת צריך. ה-map עצמו מוגדר *בתוך* runOpsChat (למטה, אחרי findTask) ולא ברמת המודול, כי
+ * ארבעת הכלים שמשתמשים ב-findTask צריכים לסגור עליו.
  */
 interface SharedToolUiEffect {
-  message: (result: { message: string }) => string;
+  message: (result: unknown, input: Record<string, unknown>) => string;
   /** true ⇐ הדיספצ'ר מריץ await refresh() אחרי actions.push, רק אם execute הצליח. */
   refresh?: boolean;
 }
-const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = {
-  create_lead: { message: (r) => `🆕 ${r.message}` },
-  create_task: { message: (r) => `🆕 ${r.message}`, refresh: true },
-};
 
 export interface OpsChatOptions {
   /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
@@ -441,6 +536,36 @@ export async function runOpsChat(
   };
 
   const findTask = (itemId: string): OpsTask | undefined => tasks.find((t) => t.itemId === itemId);
+
+  // שלב 3F.5B: ההודעות של mark_done/set_status/add_note/report_blocker תלויות ב-findTask (לשם
+  // התצוגה) — בדיוק כמו ב-run() wrapper הישן, שקרא findTask *לפני* execute. כאן (בתוך ה-dispatcher,
+  // ר' buildLoop למטה) ה-uiEffect.message נקרא *אחרי* tool.execute אבל *לפני* refresh() — tasks
+  // (ה-cache ש-findTask קורא ממנו) לא משתנה בין שתי הנקודות האלה (רק refresh() מרענן אותו, וזה
+  // קורה אחרי), אז זו אותה תוצאה בדיוק כמו קריאה מוקדמת יותר. ר' audit 3F.5B להוכחת ה-ordering הזו.
+  const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = {
+    create_lead: { message: (r) => `🆕 ${(r as { message: string }).message}` },
+    create_task: { message: (r) => `🆕 ${(r as { message: string }).message}`, refresh: true },
+    mark_done: {
+      message: (_r, input) => `✅ ${findTask(String(input.itemId))?.name ?? input.itemId} — בוצע`,
+      refresh: true,
+    },
+    set_status: {
+      message: (_r, input) => `↻ ${findTask(String(input.itemId))?.name ?? input.itemId} — ${input.status}`,
+      refresh: true,
+    },
+    add_note: {
+      message: (_r, input) => `✎ ${findTask(String(input.itemId))?.name ?? input.itemId} — הערה`,
+    },
+    report_blocker: {
+      message: (_r, input) => `🚧 ${findTask(String(input.itemId))?.name ?? input.itemId} — תקוע`,
+      refresh: true,
+    },
+    add_update: {
+      message: (_r, input) => `✎ הערה נוספה${input.label ? `: ${input.label}` : ""}`,
+    },
+    create_project_stage: { message: (r) => `🆕 ${(r as { message: string }).message}` },
+    reassign_item: { message: (r) => `👤 ${(r as { message: string }).message}` },
+  };
 
   const tools: (ToolDef | ToolDefinition)[] = [
     {
@@ -492,68 +617,16 @@ export async function runOpsChat(
         };
       },
     },
-    {
-      // name/description/input_schema/execute מה-AgentTool המשותף (ops/agentTools.ts, שלב 2D).
-      // ה-run כאן הוא adapter דק: findTask (לשם התצוגה), execute המשותף (קורא ל-updateTask,
-      // בדיוק כמו קודם), ואז actions.push + refresh() בדיוק כמו שהיה — כולל ה-emoji/טקסט המדויק.
-      name: MARK_DONE_AGENT_TOOL.name,
-      description: MARK_DONE_AGENT_TOOL.description,
-      input_schema: MARK_DONE_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const t = findTask(String(input.itemId));
-        const r = await MARK_DONE_AGENT_TOOL.execute(input, { user });
-        actions.push(`✅ ${t?.name ?? input.itemId} — בוצע`);
-        await refresh();
-        return r;
-      },
-    },
-    {
-      name: SET_STATUS_AGENT_TOOL.name,
-      description: SET_STATUS_AGENT_TOOL.description,
-      input_schema: SET_STATUS_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const t = findTask(String(input.itemId));
-        const r = await SET_STATUS_AGENT_TOOL.execute(input, { user });
-        actions.push(`↻ ${t?.name ?? input.itemId} — ${input.status}`);
-        await refresh();
-        return r;
-      },
-    },
-    {
-      name: ADD_NOTE_AGENT_TOOL.name,
-      description: ADD_NOTE_AGENT_TOOL.description,
-      input_schema: ADD_NOTE_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const t = findTask(String(input.itemId));
-        const r = await ADD_NOTE_AGENT_TOOL.execute(input, { user });
-        actions.push(`✎ ${t?.name ?? input.itemId} — הערה`);
-        // כמו במקור: בלי refresh() — הערה לא משנה את תצוגת/cache המשימות.
-        return r;
-      },
-    },
-    {
-      name: REPORT_BLOCKER_AGENT_TOOL.name,
-      description: REPORT_BLOCKER_AGENT_TOOL.description,
-      input_schema: REPORT_BLOCKER_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const t = findTask(String(input.itemId));
-        const r = await REPORT_BLOCKER_AGENT_TOOL.execute(input, { user });
-        actions.push(`🚧 ${t?.name ?? input.itemId} — תקוע`);
-        await refresh();
-        return r;
-      },
-    },
-    {
-      name: ADD_UPDATE_AGENT_TOOL.name,
-      description: ADD_UPDATE_AGENT_TOOL.description,
-      input_schema: ADD_UPDATE_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const r = await ADD_UPDATE_AGENT_TOOL.execute(input, { user });
-        actions.push(`✎ הערה נוספה${input.label ? `: ${input.label}` : ""}`);
-        // כמו במקור: בלי refresh().
-        return r;
-      },
-    },
+    // שלב 3F.5B: ToolDefinition משותף נדחף ישירות, בלי run() wrapper — בדיוק כמו create_lead/
+    // create_task. ארבעת הכלים האלה + add_update נדחפים **ללא תנאי**, בדיוק כמו קודם (אין
+    // build-time gate חדש) — ר' ההערה המפורטת מעל MARK_DONE_TOOL_DEFINITION (הגדרה) למה: ה-ANY-of
+    // שלהם לא מכיל את כל התפקידים שרואים אותם היום. actions.push/refresh() עברו ל-dispatcher
+    // (buildLoop למטה) דרך SHARED_TOOL_UI_EFFECT, עם אותו טקסט/emoji/תזמון בדיוק.
+    MARK_DONE_TOOL_DEFINITION,
+    SET_STATUS_TOOL_DEFINITION,
+    ADD_NOTE_TOOL_DEFINITION,
+    REPORT_BLOCKER_TOOL_DEFINITION,
+    ADD_UPDATE_TOOL_DEFINITION,
     {
       name: "record_commitment",
       description:
@@ -752,22 +825,11 @@ export async function runOpsChat(
     );
   }
 
-  // ---- שינוי אחראי/ת — למי שמנהל משימות/לידים/פרויקטים ----
-  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts, שלב
-  // 2F) — לא עותק מקומי. ה-run כאן הוא adapter דק: מריץ את ה-execute המשותף (שקורא בפועל
-  // ל-reassignItem — resolution דו-שכבתית + scope + addTaskNote, הכל בלתי משתנה) ואז מוסיף
-  // actions.push לפי r.message, בדיוק כמו קודם. אין refresh() — גם בגרסה המקורית לא היה.
-  if (userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")) {
-    tools.push({
-      name: REASSIGN_ITEM_AGENT_TOOL.name,
-      description: REASSIGN_ITEM_AGENT_TOOL.description,
-      input_schema: REASSIGN_ITEM_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const r = (await REASSIGN_ITEM_AGENT_TOOL.execute(input, { user })) as { message: string };
-        actions.push(`👤 ${r.message}`);
-        return r;
-      },
-    });
+  // ---- שינוי אחראי/ת — שלב 3F.5B: gate עובר ל-isToolAllowedForUser, מוכח זהה לתנאי ה-OR הישן ----
+  // (task:manage||lead:manage||project:manage === ANY-of ה-AgentTool, ר' audit 3F.5B). נדחף
+  // כ-ToolDefinition גולמי, בלי run() wrapper. scope פר-פרויקט ממשיך להיאכף בתוך reassignItem.
+  if (isToolAllowedForUser(REASSIGN_ITEM_TOOL_DEFINITION, user)) {
+    tools.push(REASSIGN_ITEM_TOOL_DEFINITION);
   }
 
   // ---- יצירת משימה חדשה — שלב 3F.5A: ToolDefinition משותף נדחף ישירות, בלי run() wrapper ----
@@ -780,22 +842,11 @@ export async function runOpsChat(
     tools.push(CREATE_TASK_TOOL_DEFINITION);
   }
 
-  // ---- יצירת שלב חדש בפרויקט — רק למי שיש project:manage (owner/admin/project_manager) ----
-  // name/description/input_schema/execute מגיעים מה-AgentTool המשותף (ops/agentTools.ts, שלב
-  // 2E) — לא עותק מקומי. ה-run כאן הוא adapter דק: מריץ את ה-execute המשותף (שקורא בפועל
-  // ל-createProjectStageAction, בדיוק כמו קודם) ואז מוסיף actions.push לפי r.message — בדיוק
-  // כמו שהיה. אין refresh() — גם בגרסה המקורית לא היה (יצירת שלב לא משפיעה על מטמון המשימות).
-  if (canManageProjectStages(user)) {
-    tools.push({
-      name: CREATE_PROJECT_STAGE_AGENT_TOOL.name,
-      description: CREATE_PROJECT_STAGE_AGENT_TOOL.description,
-      input_schema: CREATE_PROJECT_STAGE_AGENT_TOOL.input_schema,
-      run: async (input) => {
-        const r = (await CREATE_PROJECT_STAGE_AGENT_TOOL.execute(input, { user })) as { message: string };
-        actions.push(`🆕 ${r.message}`);
-        return r;
-      },
-    });
+  // ---- יצירת שלב חדש בפרויקט — שלב 3F.5B: gate עובר ל-isToolAllowedForUser, מוכח זהה ----
+  // (project:manage === ANY-of הסינגלטון של ה-AgentTool, ר' audit 3F.5B). נדחף כ-ToolDefinition
+  // גולמי, בלי run() wrapper. אין refresh() — כמו קודם (יצירת שלב לא משפיעה על מטמון המשימות).
+  if (isToolAllowedForUser(CREATE_PROJECT_STAGE_TOOL_DEFINITION, user)) {
+    tools.push(CREATE_PROJECT_STAGE_TOOL_DEFINITION);
   }
 
   // ---- יצירת ליד חדש — שלב 3F.4: ToolDefinition משותף נדחף ישירות, בלי run() wrapper ----
@@ -995,7 +1046,7 @@ export async function runOpsChat(
             // רק אם execute הצליח (אם זרק — לא מגיעים לכאן בכלל, ה-catch התחתון תופס).
             const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
             if (uiEffect) {
-              actions.push(uiEffect.message(out as { message: string }));
+              actions.push(uiEffect.message(out, input));
               if (uiEffect.refresh) await refresh();
             }
           } else {

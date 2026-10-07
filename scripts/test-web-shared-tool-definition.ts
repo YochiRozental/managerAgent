@@ -36,16 +36,24 @@ import {
   CREATE_TASK_AGENT_TOOL as WEB_CREATE_TASK_AGENT_TOOL,
   CREATE_TASK_TOOL_DEFINITION,
   MARK_DONE_AGENT_TOOL,
+  MARK_DONE_TOOL_DEFINITION,
   SET_STATUS_AGENT_TOOL,
+  SET_STATUS_TOOL_DEFINITION,
   ADD_NOTE_AGENT_TOOL,
+  ADD_NOTE_TOOL_DEFINITION,
   REPORT_BLOCKER_AGENT_TOOL,
+  REPORT_BLOCKER_TOOL_DEFINITION,
   ADD_UPDATE_AGENT_TOOL,
+  ADD_UPDATE_TOOL_DEFINITION,
   CREATE_PROJECT_STAGE_AGENT_TOOL,
+  CREATE_PROJECT_STAGE_TOOL_DEFINITION,
   REASSIGN_ITEM_AGENT_TOOL,
+  REASSIGN_ITEM_TOOL_DEFINITION,
   WIRED_AGENT_TOOL_NAMES,
   WEB_CHAT_LOCAL_TOOL_NAMES,
   canCreateLead,
   canCreateTask,
+  canManageProjectStages,
 } from "../src/ops/chat.js";
 import { AGENT_TOOLS } from "../src/ops/agentTools.js";
 import {
@@ -57,7 +65,7 @@ import {
   getTool as getWhatsappTool,
   CREATE_LEAD_AGENT_TOOL as WHATSAPP_CREATE_LEAD_AGENT_TOOL,
 } from "../src/integrations/claude/tools.js";
-import { resolveUserByKey, type IdentifiedUser } from "../src/identity/index.js";
+import { resolveUserByKey, userCan, type IdentifiedUser } from "../src/identity/index.js";
 import { logger } from "../src/utils/logger.js";
 
 let failures = 0;
@@ -290,7 +298,9 @@ async function main() {
 
   // ───────────────────────── 6+7+8. actions.push + refresh, בדיוק באותו סדר ורק בהצלחה ─────────────────────────
   logger.info("— SHARED_TOOL_UI_EFFECT: create_task עם refresh:true, create_lead בלי refresh —");
-  const uiEffectMapMatch = chatSource.match(/const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = \{[\s\S]*?\n\};/);
+  // שלב 3F.5B: ה-map עבר לגור בתוך runOpsChat (כדי לסגור על findTask) — הסוגר (};) הוא עכשיו
+  // מוזח ב-2 רווחים, לא בעמודה 0 כמו קודם.
+  const uiEffectMapMatch = chatSource.match(/const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = \{[\s\S]*?\n {2}\};/);
   assert(!!uiEffectMapMatch, "נמצא SHARED_TOOL_UI_EFFECT ב-chat.ts");
   const uiEffectMap = uiEffectMapMatch?.[0] ?? "";
   // split על שם המפתח (לא regex עם [^}]*) — כי ה-message formatter עצמו מכיל `}` (סגירת
@@ -315,25 +325,173 @@ async function main() {
     "דחיית הרשאה (return מוקדם) קודמת ל-execute/refresh — אם נדחה, refresh לעולם לא רץ",
   );
 
-  // ───────────────────────── 9. שאר 7 ה-AgentTools של Web — ללא שינוי ─────────────────────────
-  logger.info("— שאר 7 ה-AgentTools המחוברים ל-Web — עדיין AgentTool גולמי, לא הומרו ל-ToolDefinition —");
-  const otherSeven: [string, unknown][] = [
-    ["mark_done", MARK_DONE_AGENT_TOOL],
-    ["set_status", SET_STATUS_AGENT_TOOL],
-    ["add_note", ADD_NOTE_AGENT_TOOL],
-    ["report_blocker", REPORT_BLOCKER_AGENT_TOOL],
-    ["add_update", ADD_UPDATE_AGENT_TOOL],
-    ["create_project_stage", CREATE_PROJECT_STAGE_AGENT_TOOL],
-    ["reassign_item", REASSIGN_ITEM_AGENT_TOOL],
+  // ═══════════════════════════ Step 3F.5B: שאר 7 הכלים ═══════════════════════════
+  // SHARED_TOOL_UI_EFFECT עבר לגור בתוך runOpsChat (כדי לסגור על findTask) — מחלצים את הטקסט
+  // שלו ישירות ממקור הקובץ, כמו שכבר עשינו ל-dispatcher כולו ב-3F.4/3F.5A.
+  const uiEffectMapMatch2 = chatSource.match(/const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = \{[\s\S]*?\n {2}\};/);
+  assert(!!uiEffectMapMatch2, "נמצא SHARED_TOOL_UI_EFFECT (בתוך runOpsChat) ב-chat.ts");
+  const uiEffectMap2 = uiEffectMapMatch2?.[0] ?? "";
+  const UI_EFFECT_KEYS = [
+    "create_lead",
+    "create_task",
+    "mark_done",
+    "set_status",
+    "add_note",
+    "report_blocker",
+    "add_update",
+    "create_project_stage",
+    "reassign_item",
   ];
-  for (const [name, tool] of otherSeven) {
-    const t = tool as { name: string; requiredPermission: unknown; execute: unknown };
-    assert(t.name === name, `${name}: עדיין AgentTool גולמי (יש .name, לא ToolDefinition עטוף)`);
-    assert(
-      !("requiresConfirmation" in (t as object)) && !("agentTool" in (t as object)),
-      `${name}: לא הפך ל-ToolDefinition (אין requiresConfirmation/agentTool על האובייקט עצמו) — AgentTool גולמי כמו קודם`,
-    );
+  function extractUiEffectEntry(key: string): string {
+    const start = uiEffectMap2.indexOf(`${key}:`);
+    if (start === -1) return "";
+    let end = uiEffectMap2.length;
+    for (const k of UI_EFFECT_KEYS) {
+      if (k === key) continue;
+      const idx = uiEffectMap2.indexOf(`${k}:`, start + key.length + 1);
+      if (idx !== -1 && idx < end) end = idx;
+    }
+    return uiEffectMap2.slice(start, end);
   }
+
+  // ── הכלים ה"תמיד גלויים" (ללא build-time gate, לא היה ולא נוסף אחד): ──
+  // mark_done/set_status/add_note/report_blocker/add_update
+  logger.info("— mark_done/set_status/add_note/report_blocker/add_update: ToolDefinition, נדחפים ללא תנאי (כמו קודם) —");
+
+  const alwaysVisible: [string, unknown, ToolDefinition, string, boolean][] = [
+    ["mark_done", MARK_DONE_AGENT_TOOL, MARK_DONE_TOOL_DEFINITION, "✅ ", true],
+    ["set_status", SET_STATUS_AGENT_TOOL, SET_STATUS_TOOL_DEFINITION, "↻ ", true],
+    ["add_note", ADD_NOTE_AGENT_TOOL, ADD_NOTE_TOOL_DEFINITION, "✎ ", false],
+    ["report_blocker", REPORT_BLOCKER_AGENT_TOOL, REPORT_BLOCKER_TOOL_DEFINITION, "🚧 ", true],
+    ["add_update", ADD_UPDATE_AGENT_TOOL, ADD_UPDATE_TOOL_DEFINITION, "✎ הערה נוספה", false],
+  ];
+
+  for (const [name, agentTool, toolDef, expectedEmojiPrefix, expectedRefresh] of alwaysVisible) {
+    const registryTool = AGENT_TOOLS.find((t) => t.name === name)!;
+    assert((agentTool as { name: string }) === (registryTool as unknown), `${name}: chat.ts's AGENT_TOOL === AGENT_TOOLS.find('${name}')`);
+    assert(toolDef.agentTool === registryTool, `${name}_TOOL_DEFINITION.agentTool === AGENT_TOOLS.find('${name}') — אותו אובייקט`);
+    assert(toolDef.requiresConfirmation === false, `${name}_TOOL_DEFINITION.requiresConfirmation === false`);
+    assert(
+      toolDef.input_schema === (agentTool as { input_schema: unknown }).input_schema,
+      `${name}_TOOL_DEFINITION.input_schema === ${name.toUpperCase()}_AGENT_TOOL.input_schema — לא שונה`,
+    );
+    assert(
+      toolDef.execute.toString().includes(`${name.toUpperCase()}_AGENT_TOOL.execute`),
+      `${name}_TOOL_DEFINITION.execute מפנה ל-${name.toUpperCase()}_AGENT_TOOL.execute (מקור)`,
+    );
+
+    // תיעוד מכוון: ה-ANY-of של ה-AgentTool הוא מקור האמת ל-execution-time re-check, אבל *לא*
+    // משמש כ-build-time gate כאן — כי לפחות תפקיד אחד (finance/גולדי) שרואה את הכלי היום לא
+    // מחזיק את ההרשאה (חוץ מ-add_update, שמכיל finance:manage ברשימה שלו וכן מכיל את כל 5
+    // התפקידים — ר' audit 3F.5B). זו לא טעות, זו ה"discrepancy מתועד" שהתבקש.
+    const goldiAllowedByAgentTool = isToolAllowedForUser(toolDef, goldi);
+    if (name === "add_update") {
+      assert(
+        goldiAllowedByAgentTool,
+        "add_update: גולדי *כן* מורשית לפי ה-ANY-of (finance:manage ברשימה) — מתאים, ANY-of מכיל את כל 5 התפקידים",
+      );
+    } else {
+      assert(
+        !goldiAllowedByAgentTool,
+        `${name}: גולדי *לא* מורשית לפי ה-ANY-of של ה-AgentTool (רק task:update_own) — ` +
+          `discrepancy מתועד: היא בכל זאת רואה את הכלי ב-tools[] (push ללא תנאי, ר' בדיקת המקור למטה), ` +
+          `אבל authorize()'s הבדיקה הראשונה (task:update_own) זהה ל-ANY-of הזה — אותם אנשים נדחים משני המקורות`,
+      );
+    }
+    // מוטי (owner) תמיד מורשה, מה שלא בדוק
+    assert(isToolAllowedForUser(toolDef, moti), `${name}: מוטי (owner) מורשה לפי ה-ANY-of`);
+
+    // UI effect: טקסט/emoji + refresh, מדויק כמו שהיה
+    const entry = extractUiEffectEntry(name);
+    assert(entry.length > 0, `${name}: יש entry ב-SHARED_TOOL_UI_EFFECT`);
+    assert(entry.includes(expectedEmojiPrefix), `${name}: ה-UI effect כולל את ה-emoji/prefix המקורי ("${expectedEmojiPrefix}")`);
+    if (expectedRefresh) {
+      assert(/refresh:\s*true/.test(entry), `${name}: SHARED_TOOL_UI_EFFECT מכיל refresh:true (כמו ה-await refresh() הישן)`);
+    } else {
+      assert(!/refresh/.test(entry), `${name}: SHARED_TOOL_UI_EFFECT לא מכיל refresh — נשאר בלי, כמו קודם`);
+    }
+  }
+
+  // בדיקת null — בטוחה, לא מגיעה ל-Monday (requireIdentifiedUser זורק קודם)
+  for (const [name, , toolDef] of alwaysVisible) {
+    let threw = false;
+    try {
+      await toolDef.execute({ itemId: "0" }, { user: null });
+    } catch (err) {
+      threw = /חסר הקשר משתמש/.test((err as Error).message);
+    }
+    assert(threw, `${name}_TOOL_DEFINITION.execute({user:null}) נדחה ע"י requireIdentifiedUser — לא מגיע ל-Monday`);
+  }
+
+  // אימות מקור: חמשת הכלים נדחפים *ללא* עטיפת if (isToolAllowedForUser(...)) — בדיוק כמו שהיה
+  // (unconditional). אם מישהו בעתיד "יתקן" את זה ויוסיף gate — זו בדיוק ה-regression שנבדקת כאן.
+  logger.info("— אימות מקור: 5 הכלים נדחפים ללא תנאי (לא עברו ל-gate, בכוונה) —");
+  const unconditionalBlockMatch = chatSource.match(/MARK_DONE_TOOL_DEFINITION,[\s\S]*?ADD_UPDATE_TOOL_DEFINITION,/);
+  assert(!!unconditionalBlockMatch, "נמצא הבלוק הרציף של 5 ה-TOOL_DEFINITION-ים ב-tools[]");
+  const unconditionalBlock = unconditionalBlockMatch?.[0] ?? "";
+  assert(!unconditionalBlock.includes("if ("), "הבלוק הרציף הזה לא עטוף ב-if (...) — דחיפה ללא תנאי, כמו קודם");
+
+  // ── הכלים שעברו gate (מוכח זהה לישן): create_project_stage, reassign_item ──
+  logger.info("— create_project_stage/reassign_item: gate עבר ל-isToolAllowedForUser, מוכח זהה לישן, לכל role —");
+
+  const gatedTools: [string, unknown, ToolDefinition, (u: IdentifiedUser) => boolean, string][] = [
+    ["create_project_stage", CREATE_PROJECT_STAGE_AGENT_TOOL, CREATE_PROJECT_STAGE_TOOL_DEFINITION, canManageProjectStages, "🆕 "],
+    [
+      "reassign_item",
+      REASSIGN_ITEM_AGENT_TOOL,
+      REASSIGN_ITEM_TOOL_DEFINITION,
+      (u) => userCan(u, "task:manage") || userCan(u, "lead:manage") || userCan(u, "project:manage"),
+      "👤 ",
+    ],
+  ];
+
+  for (const [name, agentTool, toolDef, oldGate, expectedEmojiPrefix] of gatedTools) {
+    const registryTool = AGENT_TOOLS.find((t) => t.name === name)!;
+    assert((agentTool as { name: string }) === (registryTool as unknown), `${name}: chat.ts's AGENT_TOOL === AGENT_TOOLS.find('${name}')`);
+    assert(toolDef.agentTool === registryTool, `${name}_TOOL_DEFINITION.agentTool === AGENT_TOOLS.find('${name}')`);
+    assert(toolDef.requiresConfirmation === false, `${name}_TOOL_DEFINITION.requiresConfirmation === false`);
+    assert(
+      toolDef.input_schema === (agentTool as { input_schema: unknown }).input_schema,
+      `${name}_TOOL_DEFINITION.input_schema === ${name.toUpperCase()}_AGENT_TOOL.input_schema`,
+    );
+    assert(
+      toolDef.execute.toString().includes(`${name.toUpperCase()}_AGENT_TOOL.execute`),
+      `${name}_TOOL_DEFINITION.execute מפנה ל-${name.toUpperCase()}_AGENT_TOOL.execute (מקור)`,
+    );
+
+    for (const user of [moti, dov, ruchama, goldi, yochi]) {
+      const newDecision = isToolAllowedForUser(toolDef, user);
+      const oldDecision = oldGate(user);
+      assert(newDecision === oldDecision, `${name} permission עבור ${user.key}: gate חדש === gate ישן (${newDecision})`);
+    }
+    assert(isToolAllowedForUser(toolDef, null) === false, `${name}: null user → false`);
+
+    // null-execute safety
+    let threw = false;
+    try {
+      await toolDef.execute({ itemId: "0", name: "x", project: "x", person: "x" }, { user: null });
+    } catch (err) {
+      threw = /חסר הקשר משתמש/.test((err as Error).message);
+    }
+    assert(threw, `${name}_TOOL_DEFINITION.execute({user:null}) נדחה ע"י requireIdentifiedUser`);
+
+    // build-time gate verification ממקור
+    const gateMatch = chatSource.match(new RegExp(`isToolAllowedForUser\\(${name.toUpperCase()}_TOOL_DEFINITION, user\\)\\) \\{[\\s\\S]*?\\n {2}\\}\\n`));
+    assert(!!gateMatch, `נמצא ה-build-time gate של ${name} ב-chat.ts (isToolAllowedForUser)`);
+    assert(
+      (gateMatch?.[0] ?? "").includes(`tools.push(${name.toUpperCase()}_TOOL_DEFINITION)`),
+      `${name}: tools.push(${name.toUpperCase()}_TOOL_DEFINITION) — אובייקט גולמי, בלי run() wrapper`,
+    );
+
+    // UI effect
+    const entry = extractUiEffectEntry(name);
+    assert(entry.length > 0, `${name}: יש entry ב-SHARED_TOOL_UI_EFFECT`);
+    assert(entry.includes(expectedEmojiPrefix), `${name}: ה-UI effect כולל את ה-emoji המקורי ("${expectedEmojiPrefix}")`);
+    assert(!/refresh/.test(entry), `${name}: אין refresh — נשאר כמו קודם`);
+  }
+
+  // ───────────────────────── כל 9 ה-AgentTool-backed tools הם עכשיו ToolDefinition ─────────────────────────
+  logger.info("— כל 9 ה-AgentTool-backed tools של Web הם עכשיו ToolDefinition (0 נותרו ב-run() הישן) —");
   assert(
     deepEqual(
       [...WIRED_AGENT_TOOL_NAMES].sort(),
@@ -349,7 +507,7 @@ async function main() {
         "set_status",
       ].sort(),
     ),
-    "WIRED_AGENT_TOOL_NAMES: עדיין בדיוק 9 הכלים (כולל create_lead) — לא נוסף/הוסר אחד",
+    "WIRED_AGENT_TOOL_NAMES: עדיין בדיוק 9 הכלים — לא נוסף/הוסר אחד (הרשימה עצמה לא השתנתה, רק ה-wiring הפנימי)",
   );
 
   // ───────────────────────── 9. Web-local tools — ללא שינוי ─────────────────────────

@@ -98,12 +98,12 @@ async function main() {
     (createLeadTool?.input_schema as { properties: Record<string, unknown> }).properties,
   ).sort();
   assert(
-    createLeadProps.join(",") === "email,firstName,lastName,phone,product,referredBy,source",
-    "create_lead.input_schema זהה למה שה-WhatsApp model הכיר (7 שדות, בלי assignee)",
+    createLeadProps.join(",") === "email,firstName,institutionName,lastName,phone,product,referredBy,source",
+    "create_lead.input_schema: 8 שדות בלי assignee — institutionName נוסף 2026-10-08 (שם עמותה/קהילה/מוסד)",
   );
   assert(
-    deepEqual((createLeadTool?.input_schema as { required: string[] }).required, ["firstName"]),
-    "create_lead.required === ['firstName'], ללא שינוי",
+    deepEqual((createLeadTool?.input_schema as { required: string[] }).required, []),
+    "create_lead.required === [] — לא עוד firstName בודד (מוצר: ליד נוצר מיד גם עם מידע חלקי; 'לפחות אחד' נבדק ב-createLeadAction)",
   );
   assert(createLeadTool?.requiresConfirmation === false, "create_lead.requiresConfirmation ללא שינוי (false)");
 
@@ -476,8 +476,8 @@ async function main() {
     );
   }
 
-  // ───────────────────────── 13. ספירת כלים — 17 ישנים + 3 חדשים = 20 ─────────────────────────
-  logger.info("— whatsappTools array: 17 ישנים + 3 חדשים —");
+  // ───────────────────────── 13. ספירת כלים — 17 ישנים + 3 (3E/3D) + 2 (2026-10-08: find_lead/update_lead_contact) = 22 ─────────────────────────
+  logger.info("— whatsappTools array: 17 ישנים + 3 (mark_done/set_status/create_task) + 2 (find_lead/update_lead_contact) —");
   const OLD_17_TOOL_NAMES = [
     "list_monday_boards",
     "find_monday_board",
@@ -505,8 +505,12 @@ async function main() {
     "שלושת הכלים החדשים (mark_done/set_status/create_task) נוכחים",
   );
   assert(
-    whatsappTools.length === 20,
-    `מספר הכלים הכולל ב-WhatsApp === 20 (17 ישנים + mark_done + set_status + create_task), בפועל ${whatsappTools.length}`,
+    currentNames.includes("find_lead") && currentNames.includes("update_lead_contact"),
+    "find_lead/update_lead_contact (2026-10-08) נוכחים",
+  );
+  assert(
+    whatsappTools.length === 22,
+    `מספר הכלים הכולל ב-WhatsApp === 22 (17 ישנים + mark_done + set_status + create_task + find_lead + update_lead_contact), בפועל ${whatsappTools.length}`,
   );
 
   if (failures > 0) {

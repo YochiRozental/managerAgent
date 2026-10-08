@@ -166,12 +166,18 @@ logger.info("— סכמות שהועתקו ידנית מ-ops/chat.ts (inline too
   }
 
   // create_lead: המערכים (source/product enum) מגיעים מ-leads.ts עצמו — משווים רק את המבנה סביבם.
+  // 2026-10-08: institutionName נוסף (שם עמותה/קהילה/מוסד, נפרד משם איש הקשר), ו-firstName כבר
+  // לא required בודד — מוצר דורש לידים גם עם מידע חלקי (ולידציית "לפחות אחד" ב-createLeadAction,
+  // לא ב-schema).
   const createLead = byName("create_lead");
   const props = (createLead.input_schema as { properties: Record<string, unknown> }).properties;
-  assert(Object.keys(props).sort().join(",") === "assignee,email,firstName,lastName,phone,product,referredBy,source", "create_lead שדות זהים ל-chat.ts");
   assert(
-    deepEqual((createLead.input_schema as { required: string[] }).required, ["firstName"]),
-    "create_lead.required === ['firstName']",
+    Object.keys(props).sort().join(",") === "assignee,email,firstName,institutionName,lastName,phone,product,referredBy,source",
+    "create_lead שדות זהים ל-chat.ts (כולל institutionName)",
+  );
+  assert(
+    deepEqual((createLead.input_schema as { required: string[] }).required, []),
+    "create_lead.required === [] (לא עוד firstName בודד — לפחות אחד מ-firstName/institutionName נבדק ב-createLeadAction)",
   );
 }
 

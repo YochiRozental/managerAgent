@@ -58,6 +58,14 @@ export { isToolAllowedForUser, requireIdentifiedUser };
 export const ADD_UPDATE_AGENT_TOOL = requireAgentTool("add_update", "WhatsApp");
 export const CREATE_LEAD_AGENT_TOOL = requireAgentTool("create_lead", "WhatsApp");
 /**
+ * find_lead/update_lead_contact (2026-10-08) — סוגרים את פער "פרטי קשר שמגיעים בהמשך לא נשמרים
+ * בעמודות הנכונות" על WhatsApp גם (לא רק Web) — ר' audit 2026-10-08. בלי projection: אותם
+ * name/description/input_schema בדיוק כמו ה-AgentTool (כמו create_task/mark_done/set_status),
+ * כי אין כאן שום הבדל מכוון בין הערוצים.
+ */
+export const FIND_LEAD_AGENT_TOOL = requireAgentTool("find_lead", "WhatsApp");
+export const UPDATE_LEAD_CONTACT_AGENT_TOOL = requireAgentTool("update_lead_contact", "WhatsApp");
+/**
  * שלב 3D (2026-10-07) — domain actions אמיתיים של מערכת המשימות (לא Monday primitive גנרי
  * כמו update_monday_task_status, ר' docstring בראש הקובץ). update_monday_task_status *נשאר*
  * ללא שינוי כ-legacy fallback (בורדים שאינם משימות משרד/שלבי פרויקט) — ר' audit נפרד.
@@ -266,21 +274,33 @@ export const tools: ToolDefinition[] = [
   // CREATE_LEAD_TOOL_DEFINITION, בלי projection). אין requiredPermission עצמאי — ה-ANY-of המלא
   // (סינגלטון ["lead:manage"]) חל, בדיוק כמו קודם.
   buildSharedToolDefinition(CREATE_LEAD_AGENT_TOOL, {
-    description: "פותח ליד חדש (לקוח פוטנציאלי) בלוח \"לידים 💰\" ב-Monday.com, עם פרטי הקשר ומקור ההגעה.",
+    description:
+      "פותח ליד חדש (לקוח פוטנציאלי) בלוח \"לידים 💰\" ב-Monday.com, עם פרטי הקשר ומקור ההגעה — תמיד מיד, גם עם מידע חלקי (למשל רק שם, בלי פרטי קשר עדיין). חובה firstName ו/או institutionName: אם השם הוא שם של עמותה/קהילה/מוסד (גוף, לא אדם) — institutionName, לא firstName. כשמגיע מידע נוסף על ליד שכבר נוצר (איש קשר/טלפון/מייל/שם עמותה בהודעת המשך) — אל תקרא לכלי הזה שוב (יוצר כפילות); קרא find_lead ואז update_lead_contact.",
     input_schema: {
       type: "object",
       properties: {
-        firstName: { type: "string", description: "שם פרטי" },
-        lastName: { type: "string", description: "שם משפחה" },
+        firstName: {
+          type: "string",
+          description: "שם פרטי של *איש הקשר* (אדם). השמט אם הליד הוא בשם עמותה/קהילה/מוסד בלי איש קשר ידוע עדיין — מלא institutionName במקום.",
+        },
+        lastName: { type: "string", description: "שם משפחה של איש הקשר" },
+        institutionName: {
+          type: "string",
+          description: "שם העמותה/הקהילה/המוסד (גוף, לא אדם) — למשל 'ויז'שניץ מונסי עמנואל'.",
+        },
         phone: { type: "string", description: "מספר טלפון/נייד" },
         email: { type: "string", description: "כתובת מייל" },
         source: { type: "string", enum: [...LEAD_SOURCE_OPTIONS], description: "מקור הגעת הליד" },
         product: { type: "string", enum: [...LEAD_PRODUCT_OPTIONS], description: "תחום העניין / סוג השירות" },
         referredBy: { type: "string", description: "שם הממליץ/מפנה הליד, אם רלוונטי" },
       },
-      required: ["firstName"],
+      required: [],
     },
   }),
+  // find_lead/update_lead_contact (2026-10-08): בלי projection — אותם name/description/input_schema
+  // בדיוק כמו ה-AgentTool (ר' docstring מעל FIND_LEAD_AGENT_TOOL למעלה).
+  buildSharedToolDefinition(FIND_LEAD_AGENT_TOOL),
+  buildSharedToolDefinition(UPDATE_LEAD_CONTACT_AGENT_TOOL),
   {
     name: "list_calendar_events",
     description: "מחזיר אירועים קיימים ביומן Google בטווח זמן נתון (למשל \"מה יש לי היום/השבוע\").",

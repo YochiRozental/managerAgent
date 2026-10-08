@@ -267,7 +267,7 @@ async function main() {
       {
         createLead: async (input) => {
           created.push(input);
-          return { id: "l1", name: input.firstName };
+          return { id: "l1", name: input.firstName ?? input.institutionName ?? "ליד חדש" };
         },
       } satisfies CreateLeadDeps,
     );

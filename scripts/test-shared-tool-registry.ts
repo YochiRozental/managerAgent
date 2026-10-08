@@ -215,8 +215,8 @@ async function main() {
     assert(WEB_CREATE_LEAD.input_schema !== wa.input_schema, "input_schema *שונה* אובייקט (לא ===) — projection נפרד ב-WhatsApp");
     const webProps = Object.keys((WEB_CREATE_LEAD.input_schema as { properties: Record<string, unknown> }).properties).sort();
     const waProps = Object.keys((wa.input_schema as { properties: Record<string, unknown> }).properties).sort();
-    assert(webProps.join(",") === "assignee,email,firstName,lastName,phone,product,referredBy,source", "Web: 8 שדות כולל assignee");
-    assert(waProps.join(",") === "email,firstName,lastName,phone,product,referredBy,source", "WhatsApp: 7 שדות בלי assignee");
+    assert(webProps.join(",") === "assignee,email,firstName,institutionName,lastName,phone,product,referredBy,source", "Web: 9 שדות כולל assignee (institutionName נוסף 2026-10-08)");
+    assert(waProps.join(",") === "email,firstName,institutionName,lastName,phone,product,referredBy,source", "WhatsApp: 8 שדות בלי assignee (institutionName נוסף 2026-10-08)");
     assert(WEB_CREATE_LEAD.agentTool === wa.agentTool && wa.agentTool === CREATE_LEAD_AGENT_TOOL, "אותו AgentTool backing — ההבדל הוא רק ב-projection, לא בזהות העסקית");
     assert(WEB_CREATE_LEAD.requiredPermission === undefined && wa.requiredPermission === undefined, "אין requiredPermission עצמאי בשני הצדדים — ANY-of מלא (['lead:manage']) חל בשניהם");
     assert(WEB_CREATE_LEAD.requiresConfirmation === false && wa.requiresConfirmation === false, "requiresConfirmation false בשני הצדדים");
@@ -237,8 +237,8 @@ async function main() {
   }
 
   // ═══════════════════════ WEB_SHARED_TOOL_VISIBILITY — הטבלה המוצהרת ═══════════════════════
-  logger.info("— WEB_SHARED_TOOL_VISIBILITY: 9 entries, 5 always / 4 gated, זהה ל-WIRED_AGENT_TOOL_NAMES —");
-  assert(WEB_SHARED_TOOL_VISIBILITY.length === 9, `WEB_SHARED_TOOL_VISIBILITY: 9 entries (בפועל ${WEB_SHARED_TOOL_VISIBILITY.length})`);
+  logger.info("— WEB_SHARED_TOOL_VISIBILITY: 11 entries, 5 always / 6 gated (2026-10-08: +find_lead/update_lead_contact), זהה ל-WIRED_AGENT_TOOL_NAMES —");
+  assert(WEB_SHARED_TOOL_VISIBILITY.length === 11, `WEB_SHARED_TOOL_VISIBILITY: 11 entries (בפועל ${WEB_SHARED_TOOL_VISIBILITY.length})`);
   const alwaysNames = WEB_SHARED_TOOL_VISIBILITY.filter((e) => e.visibility === "always").map((e) => e.tool.name).sort();
   const gatedNames = WEB_SHARED_TOOL_VISIBILITY.filter((e) => e.visibility === "gated").map((e) => e.tool.name).sort();
   assert(
@@ -246,8 +246,11 @@ async function main() {
     `visibility='always' === 5 הכלים ההיסטוריים (בפועל: ${alwaysNames.join(",")})`,
   );
   assert(
-    deepEqual(gatedNames, ["create_lead", "create_project_stage", "create_task", "reassign_item"].sort()),
-    `visibility='gated' === 4 הכלים (בפועל: ${gatedNames.join(",")})`,
+    deepEqual(
+      gatedNames,
+      ["create_lead", "create_project_stage", "create_task", "find_lead", "reassign_item", "update_lead_contact"].sort(),
+    ),
+    `visibility='gated' === 6 הכלים (בפועל: ${gatedNames.join(",")})`,
   );
   assert(
     deepEqual([...WIRED_AGENT_TOOL_NAMES].sort(), [...alwaysNames, ...gatedNames].sort()),
@@ -259,7 +262,7 @@ async function main() {
   function expectedWebSharedNames(user: IdentifiedUser): string[] {
     const names = ["mark_done", "set_status", "add_note", "report_blocker", "add_update"]; // "always" — כל role
     if (userCan(user, "task:create") || userCan(user, "task:manage")) names.push("create_task");
-    if (userCan(user, "lead:manage")) names.push("create_lead");
+    if (userCan(user, "lead:manage")) names.push("create_lead", "find_lead", "update_lead_contact");
     if (userCan(user, "project:manage")) names.push("create_project_stage");
     if (userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")) names.push("reassign_item");
     return names.sort();
@@ -274,21 +277,23 @@ async function main() {
   }
 
   // ═══════════════════════ WhatsApp visibility parity — unchanged uniform filter ═══════════════════════
-  logger.info("— WhatsApp: toAnthropicTools(user) עדיין חושף בדיוק 5 ה-AgentTool-backed tools הנכונים לכל role (ללא שינוי) —");
+  logger.info("— WhatsApp: toAnthropicTools(user) עדיין חושף בדיוק 7 ה-AgentTool-backed tools הנכונים לכל role (2026-10-08: +find_lead/update_lead_contact) —");
   function expectedWhatsappSharedNames(user: IdentifiedUser): string[] {
     const names: string[] = ["mark_done", "set_status"]; // task:update_own
     if (!userCan(user, "task:update_own")) names.length = 0;
     if (userCan(user, "task:create") || userCan(user, "task:manage")) names.push("create_task");
-    if (userCan(user, "lead:manage")) names.push("create_lead");
+    if (userCan(user, "lead:manage")) names.push("create_lead", "find_lead", "update_lead_contact");
     if (userCan(user, "task:update_own")) names.push("add_monday_update");
     return names.sort();
   }
   for (const user of ALL_ROLES) {
     const visible = new Set(toAnthropicTools(user).map((t) => t.name));
-    const actual = ["mark_done", "set_status", "create_task", "create_lead", "add_monday_update"].filter((n) => visible.has(n)).sort();
+    const actual = ["mark_done", "set_status", "create_task", "create_lead", "add_monday_update", "find_lead", "update_lead_contact"]
+      .filter((n) => visible.has(n))
+      .sort();
     assert(deepEqual(actual, expectedWhatsappSharedNames(user)), `WhatsApp shared tool names עבור ${user.key}: תואם לחישוב מקורות-האמת (${actual.join(",") || "(none)"})`);
   }
-  assert(whatsappTools.length === 20, `WhatsApp: עדיין בדיוק 20 כלים כולל (בפועל ${whatsappTools.length}) — 3F.6 לא הוסיף/הסיר כלי`);
+  assert(whatsappTools.length === 22, `WhatsApp: עדיין בדיוק 22 כלים כולל (בפועל ${whatsappTools.length}) — 2026-10-08 הוסיף find_lead/update_lead_contact`);
 
   if (failures > 0) {
     logger.error(`\n${failures} בדיקות נכשלו ❌`);

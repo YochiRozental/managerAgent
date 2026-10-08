@@ -35,9 +35,14 @@ import { detectPeopleColumn, setItemPeople, type PeopleColumnInfo } from "../int
 import { findUsersByName, type MondayUser } from "../integrations/monday/users.js";
 import {
   createLead as createLeadMonday,
+  getLeadRecordById as getLeadRecordByIdMonday,
+  searchLeadRecords as searchLeadRecordsMonday,
+  updateLeadContactColumns as updateLeadContactColumnsMonday,
   LEAD_PRODUCT_OPTIONS,
   LEAD_SOURCE_OPTIONS,
   type CreateLeadInput,
+  type LeadRecord,
+  type UpdateLeadContactInput,
 } from "../integrations/monday/leads.js";
 import { getCachedCreation, recordCreation } from "../db/repositories/idempotentCreations.js";
 import { addNotification } from "../db/repositories/notifications.js";
@@ -766,8 +771,11 @@ export async function createProjectStageAction(
 }
 
 export interface CreateLeadActionInput {
-  firstName: string;
+  /** שם פרטי של *איש הקשר* (אדם) — חובה לפחות אחד מ-firstName/institutionName. */
+  firstName?: string;
   lastName?: string;
+  /** שם העמותה/הקהילה/המוסד — למשל "ויז'שניץ מונסי עמנואל". לא שם איש קשר אישי. */
+  institutionName?: string;
   phone?: string;
   email?: string;
   source?: string;
@@ -803,8 +811,13 @@ export async function createLeadAction(
   deps: CreateLeadDeps = {},
 ): Promise<CreateLeadResult> {
   if (!userCan(user, "lead:manage")) throw new Error("אין לך הרשאה ליצור לידים");
-  const firstName = input.firstName.trim();
-  if (!firstName) throw new Error("חסר שם פרטי לליד");
+  const firstName = (input.firstName ?? "").trim();
+  const institutionName = (input.institutionName ?? "").trim();
+  // מוצר (2026-10-08): ליד נוצר מיד גם עם מידע חלקי — אבל צריך שם *כלשהו* (איש קשר או
+  // עמותה/קהילה/מוסד) כדי שיהיה לפריט שם משמעותי ב-Monday. לא דורשים שניהם.
+  if (!firstName && !institutionName) {
+    throw new Error("חסר שם לליד — שם איש קשר (firstName) או שם עמותה/קהילה/מוסד (institutionName)");
+  }
   if (input.source && !(LEAD_SOURCE_OPTIONS as readonly string[]).includes(input.source)) {
     throw new Error(`"${input.source}" אינו מקור ליד חוקי. אפשרויות: ${LEAD_SOURCE_OPTIONS.join(", ")}`);
   }
@@ -836,6 +849,7 @@ export async function createLeadAction(
     user.key,
     firstName.toLowerCase(),
     (input.lastName ?? "").trim().toLowerCase(),
+    institutionName.toLowerCase(),
     (input.phone ?? "").trim(),
     (input.email ?? "").trim().toLowerCase(),
   ].join("|");
@@ -852,8 +866,9 @@ export async function createLeadAction(
   }
 
   const created = await doCreateLead({
-    firstName,
+    firstName: firstName || undefined,
     lastName: input.lastName,
+    institutionName: institutionName || undefined,
     phone: input.phone,
     email: input.email,
     source: input.source as CreateLeadInput["source"],
@@ -870,5 +885,146 @@ export async function createLeadAction(
     itemName: created.name,
     message: `נוצר ליד "${created.name}"${assigneeName ? ` (אחראי/ת: ${assigneeName})` : ""}`,
     deduped: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// איתור/עדכון ליד קיים (2026-10-08) — סוגר את פער "פרטי קשר שמגיעים בהמשך לא נשמרים בעמודות"
+// (audit 2026-10-08). שתי פעולות עסקיות חדשות, חשופות דרך AgentTool אחד משותף לכל הערוצים
+// (find_lead/update_lead_contact, ר' ops/agentTools.ts) — אין כאן שום לוגיקה ייחודית ל-Web/WhatsApp.
+//
+// record-level authorization (דרישת יוכי, 2026-10-08): lead:manage לבדה *לא* נותנת גישה לכל
+// הלידים במשרד — project_manager (דוב/איתן) מורשה רק בלידים שהוא עצמו ב"אחראי/ת" שלהם
+// (multiple_person__1, אותו מקור אמת בדיוק כמו isOwnItem לעיל). owner/admin עוקפים (ר' CLAUDE.md
+// §3: "מוטי נשאר עם כובע הבקרה־על"). אין concept של "פרויקט" לליד (assertManagesItemProject לא
+// חל עליו בכלל, ר' הערה שם) — זה scope ייעודי, לא שימוש חוזר במשהו קיים שלא מתאים.
+// ---------------------------------------------------------------------------
+
+function canAccessLeadRecord(user: IdentifiedUser, lead: { ownerIds: string[] }): boolean {
+  if (user.role === "owner" || user.role === "admin") return true;
+  return !!user.mondayUserId && lead.ownerIds.includes(user.mondayUserId);
+}
+
+export interface FindLeadActionInput {
+  query: string;
+}
+
+export interface FindLeadMatch {
+  itemId: string;
+  name: string;
+  status: string;
+  owner: string;
+  institutionName?: string;
+  contactFirstName?: string;
+  contactLastName?: string;
+  phone?: string;
+  email?: string;
+  url: string;
+}
+
+export interface FindLeadResult {
+  matches: FindLeadMatch[];
+}
+
+export interface FindLeadDeps {
+  searchLeadRecords?: (query: string) => Promise<LeadRecord[]>;
+}
+
+/**
+ * מחפש לידים לפי שם, מוגבל לרמת-הרשומה: owner/admin רואים כל התאמה; כל תפקיד אחר (project_manager,
+ * היחיד עם lead:manage חוץ מ-owner/admin — ר' roles.ts) רואה רק לידים שהוא ב"אחראי/ת" שלהם.
+ * לידים שקיימים אבל לא שייכים למשתמש *לא* מדווחים בכלל (לא "אין לך גישה") — כדי לא לחשוף
+ * מידע על קיום/בעלות של ליד שאינו שלו.
+ */
+export async function findLeadAction(
+  user: IdentifiedUser,
+  input: FindLeadActionInput,
+  deps: FindLeadDeps = {},
+): Promise<FindLeadResult> {
+  if (!userCan(user, "lead:manage")) throw new Error("אין לך הרשאה לנהל לידים");
+  const query = input.query?.trim();
+  if (!query) throw new Error("חסרה מילת חיפוש לליד");
+
+  const doSearch = deps.searchLeadRecords ?? searchLeadRecordsMonday;
+  const all = await doSearch(query);
+  const visible = all.filter((l) => canAccessLeadRecord(user, l));
+
+  return {
+    matches: visible.map((l) => ({
+      itemId: l.itemId,
+      name: l.name,
+      status: l.status || "לא הוגדר",
+      owner: l.ownerNames || "בלי אחראי",
+      institutionName: l.institutionName,
+      contactFirstName: l.contactFirstName,
+      contactLastName: l.contactLastName,
+      phone: l.phone,
+      email: l.email,
+      url: l.url,
+    })),
+  };
+}
+
+export interface UpdateLeadContactActionInput {
+  itemId: string;
+  firstName?: string;
+  lastName?: string;
+  institutionName?: string;
+  phone?: string;
+  email?: string;
+}
+
+export interface UpdateLeadContactResult {
+  ok: true;
+  itemId: string;
+  itemName: string;
+  updatedFields: string[];
+  message: string;
+}
+
+export interface UpdateLeadContactDeps {
+  getLeadRecordById?: (itemId: string) => Promise<LeadRecord | null>;
+  updateLeadContactColumns?: (itemId: string, input: UpdateLeadContactInput) => Promise<(keyof UpdateLeadContactInput)[]>;
+}
+
+/**
+ * מעדכן את עמודות פרטי הקשר של ליד *קיים* — לא הערת טקסט, לא ליד נוסף. כותב רק את השדות
+ * שבאמת ניתנו (ר' leads.ts's updateLeadContactColumns — שדה שלא מופיע לא נדרס). לעולם לא
+ * מדווח "עודכן" אם הכתיבה ל-Monday נכשלה בפועל — doUpdate זורק, והשגיאה מתפשטת ללא בליעה
+ * (dispatchToolDefinition/orchestrator הם שמעצבים אותה להודעה למשתמש, לא כאן).
+ */
+export async function updateLeadContactAction(
+  user: IdentifiedUser,
+  input: UpdateLeadContactActionInput,
+  deps: UpdateLeadContactDeps = {},
+): Promise<UpdateLeadContactResult> {
+  if (!userCan(user, "lead:manage")) throw new Error("אין לך הרשאה לנהל לידים");
+  const itemId = (input.itemId ?? "").trim();
+  if (!itemId || !/^\d+$/.test(itemId)) throw new Error("מזהה ליד לא תקין — קודם קרא find_lead לאיתורו");
+
+  const doGetLead = deps.getLeadRecordById ?? getLeadRecordByIdMonday;
+  const doUpdate = deps.updateLeadContactColumns ?? updateLeadContactColumnsMonday;
+
+  const lead = await doGetLead(itemId);
+  if (!lead) throw new Error("לא מצאתי ליד עם המזהה הזה — קרא find_lead לאיתורו מחדש");
+  if (!canAccessLeadRecord(user, lead)) throw new Error("הליד הזה לא משויך אליך");
+
+  const fields: UpdateLeadContactInput = {};
+  if (input.firstName !== undefined) fields.firstName = input.firstName.trim();
+  if (input.lastName !== undefined) fields.lastName = input.lastName.trim();
+  if (input.institutionName !== undefined) fields.institutionName = input.institutionName.trim();
+  if (input.phone !== undefined) fields.phone = input.phone.trim();
+  if (input.email !== undefined) fields.email = input.email.trim();
+
+  if (Object.keys(fields).length === 0) throw new Error("לא נתת שום פרט קשר לעדכון");
+
+  const updatedFields = await doUpdate(itemId, fields);
+
+  return {
+    ok: true,
+    itemId,
+    itemName: lead.name,
+    updatedFields,
+    message: `פרטי הקשר של "${lead.name}" עודכנו (${updatedFields.join(", ")})`,
   };
 }

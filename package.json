@@ -56,6 +56,7 @@
     "test:backfill-escalations": "tsx scripts/test-backfill-escalation-identity.ts",
     "test:initial-overdue-nudge": "tsx scripts/test-initial-overdue-nudge.ts",
     "test:task-creation": "tsx scripts/test-task-creation.ts",
+    "test:lead-contact": "tsx scripts/test-lead-contact.ts",
     "test:tool-parity": "tsx scripts/test-tool-parity.ts",
     "test:project-scope": "tsx scripts/test-project-scope.ts",
     "test:item-project-scope": "tsx scripts/test-item-project-scope-live.ts",

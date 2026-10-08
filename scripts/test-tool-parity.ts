@@ -44,6 +44,8 @@ import {
   MARK_DONE_AGENT_TOOL,
   SET_STATUS_AGENT_TOOL,
   CREATE_TASK_AGENT_TOOL,
+  FIND_LEAD_AGENT_TOOL,
+  UPDATE_LEAD_CONTACT_AGENT_TOOL,
 } from "../src/integrations/claude/tools.js";
 import { AGENT_TOOLS } from "../src/ops/agentTools.js";
 import { WEB_CHAT_LOCAL_TOOL_NAMES, WIRED_AGENT_TOOL_NAMES } from "../src/ops/chat.js";
@@ -65,6 +67,8 @@ const whatsappWiredAgentToolNames: readonly string[] = [
   MARK_DONE_AGENT_TOOL.name,
   SET_STATUS_AGENT_TOOL.name,
   CREATE_TASK_AGENT_TOOL.name,
+  FIND_LEAD_AGENT_TOOL.name,
+  UPDATE_LEAD_CONTACT_AGENT_TOOL.name,
 ];
 
 interface CoreCapability {
@@ -80,6 +84,11 @@ interface CoreCapability {
 const CORE_CAPABILITIES: CoreCapability[] = [
   { label: "יצירת משימה", whatsappNames: ["create_monday_task"], windowNames: ["create_task"] },
   { label: "יצירת ליד", whatsappNames: ["create_lead"], windowNames: ["create_lead"] },
+  {
+    label: "איתור/עדכון פרטי קשר של ליד קיים (2026-10-08)",
+    whatsappNames: ["find_lead", "update_lead_contact"],
+    windowNames: ["find_lead", "update_lead_contact"],
+  },
   {
     label: "עדכון סטטוס משימה",
     whatsappNames: ["update_monday_task_status"],

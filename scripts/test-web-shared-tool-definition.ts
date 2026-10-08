@@ -58,6 +58,10 @@ import {
   CREATE_PROJECT_STAGE_TOOL_DEFINITION,
   REASSIGN_ITEM_AGENT_TOOL,
   REASSIGN_ITEM_TOOL_DEFINITION,
+  FIND_LEAD_AGENT_TOOL,
+  FIND_LEAD_TOOL_DEFINITION,
+  UPDATE_LEAD_CONTACT_AGENT_TOOL,
+  UPDATE_LEAD_CONTACT_TOOL_DEFINITION,
   WIRED_AGENT_TOOL_NAMES,
   WEB_CHAT_LOCAL_TOOL_NAMES,
   WEB_SHARED_TOOL_VISIBILITY,
@@ -169,15 +173,15 @@ async function main() {
     (CREATE_LEAD_TOOL_DEFINITION.input_schema as { properties: Record<string, unknown> }).properties,
   ).sort();
   assert(
-    propNames.join(",") === "assignee,email,firstName,lastName,phone,product,referredBy,source",
-    "Web schema: 8 שדות (כולל assignee) — זהה למה ש-Web חשף גם לפני 3F.3 (לא הוחלף ב-schema הצר של WhatsApp)",
+    propNames.join(",") === "assignee,email,firstName,institutionName,lastName,phone,product,referredBy,source",
+    "Web schema: 9 שדות (כולל assignee) — institutionName נוסף 2026-10-08, השאר לא השתנה",
   );
   const whatsappPropNames = Object.keys(
     (whatsappCreateLead.input_schema as { properties: Record<string, unknown> }).properties,
   ).sort();
   assert(
-    whatsappPropNames.join(",") === "email,firstName,lastName,phone,product,referredBy,source",
-    "WhatsApp schema: עדיין 7 שדות (בלי assignee) — ה-contract המכוון משלב 3B לא השתנה ב-3F.3",
+    whatsappPropNames.join(",") === "email,firstName,institutionName,lastName,phone,product,referredBy,source",
+    "WhatsApp schema: 8 שדות (בלי assignee) — ה-contract המכוון משלב 3B לא השתנה, institutionName נוסף 2026-10-08 בשני הערוצים",
   );
 
   // ───────────────────────── 3. permission decision — זהה ל-WhatsApp ול-canCreateLead הישן, לכל role ─────────────────────────
@@ -361,6 +365,7 @@ async function main() {
     "add_update",
     "create_project_stage",
     "reassign_item",
+    "update_lead_contact",
   ];
   function extractUiEffectEntry(key: string): string {
     const start = uiEffectMap2.indexOf(`${key}:`);
@@ -462,6 +467,7 @@ async function main() {
       (u) => userCan(u, "task:manage") || userCan(u, "lead:manage") || userCan(u, "project:manage"),
       "👤 ",
     ],
+    ["update_lead_contact", UPDATE_LEAD_CONTACT_AGENT_TOOL, UPDATE_LEAD_CONTACT_TOOL_DEFINITION, (u) => userCan(u, "lead:manage"), "📇 "],
   ];
 
   for (const [name, agentTool, toolDef, oldGate, expectedEmojiPrefix] of gatedTools) {
@@ -503,8 +509,34 @@ async function main() {
     assert(!/refresh/.test(entry), `${name}: אין refresh — נשאר כמו קודם`);
   }
 
-  // ───────────────────────── כל 9 ה-AgentTool-backed tools הם עכשיו ToolDefinition ─────────────────────────
-  logger.info("— כל 9 ה-AgentTool-backed tools של Web הם עכשיו ToolDefinition (0 נותרו ב-run() הישן) —");
+  // ───────────────────────── find_lead: read-only, אין UI effect (לא כותב ל-Monday) ─────────────────────────
+  logger.info("— find_lead: ToolDefinition אמיתי, gated לפי lead:manage, בלי SHARED_TOOL_UI_EFFECT (read-only) —");
+  {
+    const registryFindLead = AGENT_TOOLS.find((t) => t.name === "find_lead")!;
+    assert(FIND_LEAD_AGENT_TOOL === registryFindLead, "chat.ts's FIND_LEAD_AGENT_TOOL === AGENT_TOOLS.find('find_lead')");
+    assert(FIND_LEAD_TOOL_DEFINITION.agentTool === registryFindLead, "FIND_LEAD_TOOL_DEFINITION.agentTool === האובייקט המשותף");
+    assert(FIND_LEAD_TOOL_DEFINITION.requiresConfirmation === false, "FIND_LEAD_TOOL_DEFINITION.requiresConfirmation === false");
+    for (const user of [moti, dov, ruchama, goldi, yochi]) {
+      assert(
+        isToolAllowedForUser(FIND_LEAD_TOOL_DEFINITION, user) === userCan(user, "lead:manage"),
+        `find_lead permission עבור ${user.key}: === userCan(lead:manage) (${userCan(user, "lead:manage")})`,
+      );
+    }
+    assert(isToolAllowedForUser(FIND_LEAD_TOOL_DEFINITION, null) === false, "find_lead: null user → false");
+    const visEntry = WEB_SHARED_TOOL_VISIBILITY.find((e) => e.tool === FIND_LEAD_TOOL_DEFINITION);
+    assert(!!visEntry && visEntry.visibility === "gated", "find_lead: visibility==='gated'");
+    await proveDelegatesToAgentTool("find_lead", FIND_LEAD_TOOL_DEFINITION, FIND_LEAD_AGENT_TOOL, { query: "x" }, moti);
+    let threw = false;
+    try {
+      await FIND_LEAD_TOOL_DEFINITION.execute({ query: "x" }, { user: null });
+    } catch (err) {
+      threw = /חסר הקשר משתמש/.test((err as Error).message);
+    }
+    assert(threw, "FIND_LEAD_TOOL_DEFINITION.execute({user:null}) נדחה ע\"י requireIdentifiedUser");
+  }
+
+  // ───────────────────────── כל 11 ה-AgentTool-backed tools הם עכשיו ToolDefinition ─────────────────────────
+  logger.info("— כל 11 ה-AgentTool-backed tools של Web הם עכשיו ToolDefinition (0 נותרו ב-run() הישן) —");
   assert(
     deepEqual(
       [...WIRED_AGENT_TOOL_NAMES].sort(),
@@ -514,13 +546,15 @@ async function main() {
         "create_lead",
         "create_project_stage",
         "create_task",
+        "find_lead",
         "mark_done",
         "reassign_item",
         "report_blocker",
         "set_status",
+        "update_lead_contact",
       ].sort(),
     ),
-    "WIRED_AGENT_TOOL_NAMES: עדיין בדיוק 9 הכלים — לא נוסף/הוסר אחד (הרשימה עצמה לא השתנתה, רק ה-wiring הפנימי)",
+    "WIRED_AGENT_TOOL_NAMES: עדיין בדיוק 11 הכלים (9 ישנים + find_lead + update_lead_contact, 2026-10-08)",
   );
 
   // ───────────────────────── 9. Web-local tools — ללא שינוי ─────────────────────────
@@ -553,9 +587,9 @@ async function main() {
     "WEB_CHAT_LOCAL_TOOL_NAMES: עדיין בדיוק 19 הכלים המקומיים, ללא שינוי",
   );
 
-  // ───────────────────────── 12. WhatsApp's 20-tool registry — ללא שינוי ─────────────────────────
-  logger.info("— WhatsApp: 20 כלים, create_lead/create_task עדיין מחוברים נכון —");
-  assert(whatsappTools.length === 20, `WhatsApp tools array === 20, בפועל ${whatsappTools.length}`);
+  // ───────────────────────── 12. WhatsApp's 22-tool registry (2026-10-08: +find_lead/update_lead_contact) ─────────────────────────
+  logger.info("— WhatsApp: 22 כלים, create_lead/create_task עדיין מחוברים נכון —");
+  assert(whatsappTools.length === 22, `WhatsApp tools array === 22, בפועל ${whatsappTools.length}`);
   assert(
     whatsappCreateLead.agentTool === registryCreateLead,
     "WhatsApp's create_lead: agentTool עדיין === ל-registry — 3F.5A לא נגע בקובץ tools.ts's כלים",

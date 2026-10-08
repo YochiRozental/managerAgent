@@ -95,6 +95,17 @@ export const REASSIGN_ITEM_AGENT_TOOL: AgentTool = requireAgentTool("reassign_it
 export const REASSIGN_ITEM_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(REASSIGN_ITEM_AGENT_TOOL);
 
 /**
+ * find_lead/update_lead_contact (2026-10-08) — סוגרים את פער "פרטי קשר שמגיעים בהמשך לא נשמרים
+ * בעמודות הנכונות של ליד קיים" (audit 2026-10-08). אותו דפוס בדיוק כמו כל שאר ה-AgentTools: אין
+ * כאן שום לוגיקה עסקית, רק buildSharedToolDefinition מעל ה-AgentTool המשותף.
+ */
+export const FIND_LEAD_AGENT_TOOL: AgentTool = requireAgentTool("find_lead", "Web");
+export const FIND_LEAD_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(FIND_LEAD_AGENT_TOOL);
+
+export const UPDATE_LEAD_CONTACT_AGENT_TOOL: AgentTool = requireAgentTool("update_lead_contact", "Web");
+export const UPDATE_LEAD_CONTACT_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(UPDATE_LEAD_CONTACT_AGENT_TOOL);
+
+/**
  * Step 3F.6 — ה-visibility policy המוצהר, אחד לכל אחד מ-9 הכלים: "always" = נדחף ל-tools[] ללא
  * תנאי (מה שהיה "נדחף בלי if" בקוד הישן — mark_done/set_status/add_note/report_blocker/add_update,
  * documented discrepancy מ-3F.5B — ר' docstring מעל ADD_UPDATE_TOOL_DEFINITION למעלה למה). "gated"
@@ -114,6 +125,8 @@ export const WEB_SHARED_TOOL_VISIBILITY: SharedToolVisibilityEntry[] = [
   { tool: CREATE_TASK_TOOL_DEFINITION, visibility: "gated" },
   { tool: CREATE_PROJECT_STAGE_TOOL_DEFINITION, visibility: "gated" },
   { tool: CREATE_LEAD_TOOL_DEFINITION, visibility: "gated" },
+  { tool: FIND_LEAD_TOOL_DEFINITION, visibility: "gated" },
+  { tool: UPDATE_LEAD_CONTACT_TOOL_DEFINITION, visibility: "gated" },
 ];
 
 /**
@@ -143,6 +156,8 @@ export const WIRED_AGENT_TOOL_NAMES: readonly string[] = [
   ADD_UPDATE_AGENT_TOOL.name,
   CREATE_PROJECT_STAGE_AGENT_TOOL.name,
   REASSIGN_ITEM_AGENT_TOOL.name,
+  FIND_LEAD_AGENT_TOOL.name,
+  UPDATE_LEAD_CONTACT_AGENT_TOOL.name,
 ];
 
 export const WEB_CHAT_LOCAL_TOOL_NAMES: readonly string[] = [
@@ -442,6 +457,7 @@ export async function runOpsChat(
     },
     create_project_stage: { message: (r) => `🆕 ${(r as { message: string }).message}` },
     reassign_item: { message: (r) => `👤 ${(r as { message: string }).message}` },
+    update_lead_contact: { message: (r) => `📇 ${(r as { message: string }).message}` },
   };
 
   const tools: (ToolDef | ToolDefinition)[] = [

@@ -38,7 +38,9 @@ import {
   createLeadAction,
   createProjectStageAction,
   createTaskAction,
+  findLeadAction,
   reassignItem,
+  updateLeadContactAction,
   updateTask,
   type CreateLeadActionInput,
   type CreateLeadResult,
@@ -46,7 +48,11 @@ import {
   type CreateProjectStageActionResult,
   type CreateTaskInput,
   type CreateTaskResult,
+  type FindLeadActionInput,
+  type FindLeadResult,
   type TaskUpdateInput,
+  type UpdateLeadContactActionInput,
+  type UpdateLeadContactResult,
 } from "./actions.js";
 
 /**
@@ -145,6 +151,8 @@ export interface BuildAgentToolsDeps {
   createLeadAction?: typeof createLeadAction;
   createProjectStageAction?: typeof createProjectStageAction;
   addUpdateToItem?: typeof addUpdateToItem;
+  findLeadAction?: typeof findLeadAction;
+  updateLeadContactAction?: typeof updateLeadContactAction;
 }
 
 /**
@@ -159,6 +167,8 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
   const doCreateLeadAction = deps.createLeadAction ?? createLeadAction;
   const doCreateProjectStageAction = deps.createProjectStageAction ?? createProjectStageAction;
   const doAddUpdateToItem = deps.addUpdateToItem ?? addUpdateToItem;
+  const doFindLeadAction = deps.findLeadAction ?? findLeadAction;
+  const doUpdateLeadContactAction = deps.updateLeadContactAction ?? updateLeadContactAction;
 
   const tools: AgentTool[] = [
     {
@@ -326,12 +336,19 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
     {
       name: "create_lead",
       description:
-        "פותח ליד חדש (לקוח פוטנציאלי) בלוח הלידים. לבקשות כמו 'תפתח ליד...', 'יש לי ליד חדש...'. source/product חייבים להתאים בדיוק לאפשרויות הקיימות (enum) — אם לא ברור מה המשתמש התכוון, השמט את השדה במקום לנחש.",
+        "פותח ליד חדש (לקוח פוטנציאלי) בלוח הלידים — תמיד *מיד*, גם עם מידע חלקי (למשל רק שם, בלי פרטי קשר עדיין). אל תחכה לפרטי קשר מלאים כדי ליצור. לבקשות כמו 'תפתח ליד...', 'יש לי ליד חדש...'. חובה firstName ו/או institutionName (לפחות אחד): אם השם שניתן הוא שם של *עמותה/קהילה/מוסד* (גוף, לא אדם — למשל 'ויז'שניץ מונסי עמנואל') מלא אותו ב-institutionName, לעולם לא ב-firstName; אם זה שם אדם — firstName/lastName. source/product חייבים להתאים בדיוק לאפשרויות הקיימות (enum) — אם לא ברור מה המשתמש התכוון, השמט את השדה במקום לנחש. כשמגיע מידע נוסף על ליד שכבר נוצר (איש קשר/טלפון/מייל/שם עמותה בהודעת המשך) — אל תקרא לכלי הזה שוב (יוצר ליד כפול); קרא find_lead ואז update_lead_contact.",
       input_schema: {
         type: "object",
         properties: {
-          firstName: { type: "string", description: "שם פרטי" },
-          lastName: { type: "string", description: "שם משפחה" },
+          firstName: {
+            type: "string",
+            description: "שם פרטי של *איש הקשר* (אדם) בליד. השמט אם הליד הוא בשם עמותה/קהילה/מוסד בלי איש קשר ידוע עדיין — מלא את institutionName במקום.",
+          },
+          lastName: { type: "string", description: "שם משפחה של איש הקשר" },
+          institutionName: {
+            type: "string",
+            description: "שם העמותה/הקהילה/המוסד (גוף, לא אדם) — למשל 'ויז'שניץ מונסי עמנואל'. אל תמלא כאן שם של אדם.",
+          },
           phone: { type: "string", description: "מספר טלפון/נייד" },
           email: { type: "string", description: "כתובת מייל" },
           source: { type: "string", enum: [...LEAD_SOURCE_OPTIONS], description: "מקור הגעת הליד" },
@@ -339,13 +356,14 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
           referredBy: { type: "string", description: "שם הממליץ/מפנה הליד, אם רלוונטי" },
           assignee: { type: "string", description: "מי אחראי/ת על הליד. השמט כדי לשייך למשתמש עצמו." },
         },
-        required: ["firstName"],
+        required: [],
       },
       requiredPermission: ["lead:manage"],
       execute: async (input: Record<string, unknown>, ctx) => {
         const leadInput: CreateLeadActionInput = {
-          firstName: String(input.firstName ?? ""),
+          firstName: input.firstName ? String(input.firstName) : undefined,
           lastName: input.lastName ? String(input.lastName) : undefined,
+          institutionName: input.institutionName ? String(input.institutionName) : undefined,
           phone: input.phone ? String(input.phone) : undefined,
           email: input.email ? String(input.email) : undefined,
           source: input.source ? String(input.source) : undefined,
@@ -354,6 +372,54 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
           assignee: input.assignee ? String(input.assignee) : undefined,
         };
         const result: CreateLeadResult = await doCreateLeadAction(ctx.user, leadInput);
+        return result;
+      },
+    },
+    {
+      name: "find_lead",
+      description:
+        "מחפש ליד לפי שם — רק בין הלידים שהמשתמש אחראי/ת עליהם (owner/admin רואים את כל הלידים). קרא לכלי הזה לפני update_lead_contact, במקום לנחש itemId או ליצור ליד כפול — למשל כשמגיע מידע נוסף (איש קשר/טלפון/מייל/שם עמותה) על ליד שהוזכר קודם בשיחה. מחזיר עד 6 התאמות עם itemId וכל פרטי הקשר הקיימים כבר (כדי שלא תשאל שוב מידע שכבר נשמר). אם לא נמצאה אף התאמה, או נמצאו כמה — שאל את המשתמש לאיזה ליד הכוונה, אל תנחש.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "שם הליד, שם העמותה/הקהילה, או שם איש הקשר — או חלק מהם" },
+        },
+        required: ["query"],
+      },
+      requiredPermission: ["lead:manage"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        const findInput: FindLeadActionInput = { query: String(input.query ?? "") };
+        const result: FindLeadResult = await doFindLeadAction(ctx.user, findInput);
+        return result;
+      },
+    },
+    {
+      name: "update_lead_contact",
+      description:
+        "מעדכן את פרטי הקשר של ליד *קיים* ישירות בעמודות Monday הנכונות — לא כהערת טקסט! שם איש קשר (פרטי/משפחה), טלפון, מייל, ו/או שם עמותה/קהילה/מוסד. קבל את ה-itemId מ-find_lead לפני הקריאה. שלח רק את השדות שבאמת ניתנו עכשיו — אל תשלח שדה שלא נאמר (זה ידרוס מידע קיים בטעות). לעולם אל תשתמש ב-add_update/add_monday_update לפרטי קשר על ליד, ואל תקרא create_lead בשנית על ליד שכבר קיים — זה יוצר ליד כפול.",
+      input_schema: {
+        type: "object",
+        properties: {
+          itemId: { type: "string", description: "מזהה הליד ב-Monday (מ-find_lead)" },
+          firstName: { type: "string", description: "שם פרטי של איש הקשר" },
+          lastName: { type: "string", description: "שם משפחה של איש הקשר" },
+          institutionName: { type: "string", description: "שם העמותה/הקהילה/המוסד" },
+          phone: { type: "string", description: "מספר טלפון/נייד" },
+          email: { type: "string", description: "כתובת מייל" },
+        },
+        required: ["itemId"],
+      },
+      requiredPermission: ["lead:manage"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        const updateInput: UpdateLeadContactActionInput = {
+          itemId: String(input.itemId ?? ""),
+          firstName: input.firstName !== undefined ? String(input.firstName) : undefined,
+          lastName: input.lastName !== undefined ? String(input.lastName) : undefined,
+          institutionName: input.institutionName !== undefined ? String(input.institutionName) : undefined,
+          phone: input.phone !== undefined ? String(input.phone) : undefined,
+          email: input.email !== undefined ? String(input.email) : undefined,
+        };
+        const result: UpdateLeadContactResult = await doUpdateLeadContactAction(ctx.user, updateInput);
         return result;
       },
     },

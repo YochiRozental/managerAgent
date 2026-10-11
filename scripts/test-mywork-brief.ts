@@ -10,6 +10,7 @@ import {
   type MyWorkBriefDeps,
 } from "../src/ops/myWorkBrief.js";
 import type { DashboardTask, EmployeeDashboard } from "../src/ops/dashboard.js";
+import type { EmployeeFeed } from "../src/ops/employeeFeed.js";
 import type { IdentifiedUser } from "../src/identity/index.js";
 import { resolveUserByKey } from "../src/identity/index.js";
 import { logger } from "../src/utils/logger.js";
@@ -45,6 +46,11 @@ function mkTask(o: Partial<DashboardTask> & { itemId: string }): DashboardTask {
       ...(o.flags ?? {}),
     },
   };
+}
+
+function mkFeed(o: Partial<EmployeeFeed> = {}): EmployeeFeed {
+  const empty = { ok: true as const, items: [] };
+  return { newLeads: empty, newDeals: empty, dealsNeedingAttention: empty, tasks: empty, projectTasks: empty, ...o };
 }
 
 function mkDash(o: Partial<EmployeeDashboard> & { myDay: DashboardTask[] }): EmployeeDashboard {
@@ -242,13 +248,18 @@ const blocker = (o: { itemId: string }) =>
 // ───────────────────────── getMyWorkBrief ─────────────────────────
 logger.info("— getMyWorkBrief —");
 
-// G — אין mondayUserId → שגיאה ברורה, ולא נקרא getDashboard
+// G — אין mondayUserId → שגיאה ברורה, ולא נקרא getDashboard/getFeed
 {
   let called = 0;
+  let feedCalled = 0;
   const deps: MyWorkBriefDeps = {
     getDashboard: async () => {
       called++;
       return mkDash({ myDay: [] });
+    },
+    getFeed: async () => {
+      feedCalled++;
+      return mkFeed();
     },
   };
   const noMonday: IdentifiedUser = {
@@ -269,12 +280,14 @@ logger.info("— getMyWorkBrief —");
   }
   assert(threw, "G: משתמש בלי mondayUserId → שגיאה שמזכירה Monday");
   assert(called === 0, "G: getDashboard לא נקרא כשאין mondayUserId (אין דליפה / אין fallback)");
+  assert(feedCalled === 0, "G: getFeed לא נקרא כשאין mondayUserId");
 }
 
-// A — בידוד: getDashboard מקבל את המשתמש שנשלח, ומחזיר רק את המשימות שלו
+// A — בידוד: getDashboard/getFeed מקבלים את המשתמש שנשלח, ומחזירים רק את המשימות/הפיד שלו
 {
   const dov = resolveUserByKey("dov")!;
   const received: string[] = [];
+  const receivedFeedIds: string[] = [];
   const deps: MyWorkBriefDeps = {
     getDashboard: async (u) => {
       received.push(u.key);
@@ -282,12 +295,40 @@ logger.info("— getMyWorkBrief —");
       const id = u.key === "dov" ? "DOV-1" : "EITAN-1";
       return mkDash({ myDay: [mkTask({ itemId: id, assignees: u.name })], user: { key: u.key, name: u.name, role: u.role } });
     },
+    getFeed: async (mondayUserId) => {
+      receivedFeedIds.push(mondayUserId);
+      return mkFeed();
+    },
   };
   const b = await getMyWorkBrief(dov, {}, deps);
   assert(received.length === 1 && received[0] === "dov", "A: getDashboard נקרא עם dov (identity זורם)");
   assert(b.tasks.length === 1 && b.tasks[0]!.id === "DOV-1", "A: dov מקבל רק את המשימות של dov");
   assert(!b.tasks.some((t) => t.id === "EITAN-1"), "A: dov לא מקבל את המשימות של eitan");
   assert(b.user === "דוב שפירא", "A: שם המשתמש ב-brief הוא של dov");
+  assert(receivedFeedIds.length === 1 && receivedFeedIds[0] === dov.mondayUserId, "A: getFeed נקרא עם mondayUserId של dov, לא של משתמש אחר");
+}
+
+// H — pipelineText: חמש הכותרות הקבועות תמיד נוכחות, גם כשהכול ריק, וגם כשקטגוריה נכשלה
+{
+  const dov = resolveUserByKey("dov")!;
+  const deps: MyWorkBriefDeps = {
+    getDashboard: async () => mkDash({ myDay: [] }),
+    getFeed: async () => mkFeed(),
+  };
+  const b = await getMyWorkBrief(dov, {}, deps);
+  assert(typeof b.pipelineText === "string" && b.pipelineText.length > 0, "H: pipelineText קיים ולא ריק");
+  for (const label of ["לידים חדשים", "עסקאות חדשות", "עסקאות לטיפול", "משימות רגילות", "משימות פרויקטים"]) {
+    assert(b.pipelineText!.includes(label), `H: pipelineText מכיל את הכותרת "${label}" גם כשהכול ריק`);
+  }
+  assert(b.pipelineText!.includes("אין פריטים לטיפול"), "H: קטגוריה ריקה מוצגת כ'אין פריטים לטיפול', לא מוסתרת");
+
+  const depsWithError: MyWorkBriefDeps = {
+    getDashboard: async () => mkDash({ myDay: [] }),
+    getFeed: async () => mkFeed({ tasks: { ok: false, error: "בדיקה: שליפה נכשלה" } }),
+  };
+  const b2 = await getMyWorkBrief(dov, {}, depsWithError);
+  assert(b2.pipelineText!.includes("בדיקה: שליפה נכשלה"), "H: כשל שליפה בקטגוריה אחת מוצג כשגיאה מפורשת, לא מוסתר כריק");
+  assert(b2.pipelineText!.includes("לידים חדשים") && b2.pipelineText!.includes("משימות פרויקטים"), "H: שאר הכותרות עדיין מופיעות כשקטגוריה אחת נכשלה");
 }
 
 // ───────────────────────── B — אין assigned_to_me / listMyWork בקוד (לא בהערות) ─────────────────────────

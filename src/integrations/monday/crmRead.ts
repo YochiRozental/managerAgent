@@ -12,6 +12,18 @@ export const BOARD_DEALS = "1550734529";
 export const BOARD_COLLECTION = "1550734546";
 export const BOARD_PAYMENTS = "1550734569"; // תת-פריטים של גבייה
 
+/**
+ * קבוצות (group id, לא שם תצוגה) לתצוגת "העבודה שלי" של עובד — מ-get_board_info (2026-10-08).
+ * לידים/עסקאות חדשים ב-group "topics" בשני הבורדים (שם זהה, בורדים שונים — לא אותה קבוצה).
+ */
+export const LEADS_GROUP_NEW = "topics"; // "לידים חדשים" (בורד הלידים)
+export const DEALS_GROUP_NEW = "topics"; // "עסקאות חדשות" (בורד העסקאות)
+export const DEALS_GROUP_IN_PROGRESS = "closed"; // "עסקאות בעבודה" (בורד העסקאות)
+
+function assertNumericId(id: string): void {
+  if (!/^\d+$/.test(id)) throw new Error(`מזהה משתמש Monday לא תקין: "${id}"`);
+}
+
 const REL = `... on BoardRelationValue { display_value linked_item_ids } ... on MirrorValue { display_value } ... on CreationLogValue { created_at }`;
 
 type RawCV = {
@@ -99,6 +111,41 @@ export async function fetchOpenLeads(): Promise<Lead[]> {
   return out;
 }
 
+export interface OwnedLead {
+  itemId: string;
+  name: string;
+  status: string;
+  product: string;
+  reminderDate?: string;
+  createdDate?: string;
+  url: string;
+}
+
+/**
+ * לידים "חדשים" (קבוצת "לידים חדשים" בלבד, LEADS_GROUP_NEW) שעובד נתון אחראי עליו —
+ * סינון לפי group+אחראי בצד השרת (לא בתצוגה). בלי סינון תאריך (סעיף 2 בדרישת מוטי, 2026-10-08):
+ * ליד חדש באחריות העובד מוצג גם אם נוצר מזמן.
+ */
+export async function fetchOwnedNewLeads(mondayUserId: string): Promise<OwnedLead[]> {
+  assertNumericId(mondayUserId);
+  const items = await pageAll(
+    () =>
+      `query { boards(ids: [${BOARD_LEADS}]) { items_page(limit: 200, query_params: { operator: and, rules: [
+        { column_id: "group", compare_value: ["${LEADS_GROUP_NEW}"], operator: any_of },
+        { column_id: "multiple_person__1", compare_value: ["person-${mondayUserId}"], operator: any_of }
+      ] }) { cursor items { id name column_values(ids: ${CV_IDS}) { id text ${REL} } } } } }`,
+  );
+  return items.map((it) => ({
+    itemId: it.id,
+    name: it.name,
+    status: cv(it.column_values, "color__1"),
+    product: cv(it.column_values, "color5__1"),
+    reminderDate: dateOnly(cv(it.column_values, "date__1")),
+    createdDate: dateOnly(cv(it.column_values, "pulse_log__1")),
+    url: `${HOST}/boards/${BOARD_LEADS}/pulses/${it.id}`,
+  }));
+}
+
 export interface Deal {
   itemId: string;
   name: string;
@@ -140,6 +187,49 @@ export async function fetchOpenDeals(): Promise<Deal[]> {
     });
   }
   return out;
+}
+
+export interface OwnedDeal {
+  itemId: string;
+  name: string;
+  stage: string;
+  reminderDate?: string;
+  expectedClose?: string;
+  url: string;
+}
+
+/** עסקאות של עובד נתון מתוך קבוצה ספציפית (group id) — סינון group+אחראי בצד השרת. */
+async function fetchOwnedDealsInGroup(mondayUserId: string, groupId: string): Promise<OwnedDeal[]> {
+  assertNumericId(mondayUserId);
+  const items = await pageAll(
+    () =>
+      `query { boards(ids: [${BOARD_DEALS}]) { items_page(limit: 200, query_params: { operator: and, rules: [
+        { column_id: "group", compare_value: ["${groupId}"], operator: any_of },
+        { column_id: "multiple_person__1", compare_value: ["person-${mondayUserId}"], operator: any_of }
+      ] }) { cursor items { id name column_values(ids: ${CV_IDS}) { id text ${REL} } } } } }`,
+  );
+  return items.map((it) => ({
+    itemId: it.id,
+    name: it.name,
+    stage: cv(it.column_values, "color__1"),
+    reminderDate: dateOnly(cv(it.column_values, "date__1")),
+    expectedClose: dateOnly(cv(it.column_values, "date8__1")),
+    url: `${HOST}/boards/${BOARD_DEALS}/pulses/${it.id}`,
+  }));
+}
+
+/** עסקאות "חדשות" (קבוצת "עסקאות חדשות") של העובד — בלי סינון תאריך (סעיף 3א בדרישה). */
+export function fetchOwnedNewDeals(mondayUserId: string): Promise<OwnedDeal[]> {
+  return fetchOwnedDealsInGroup(mondayUserId, DEALS_GROUP_NEW);
+}
+
+/**
+ * עסקאות "בעבודה" (קבוצת "עסקאות בעבודה") של העובד — כל תאריכי התזכורת, בלי סינון תאריך כאן.
+ * סינון "היום או עבר, לא עתידי, לא ריק" (סעיף 3ב) נעשה ב-src/ops/employeeFeed.ts (לוגיקה טהורה,
+ * ניתנת לבדיקה עם תאריך "היום" מוזרק, בלי קריאת Monday).
+ */
+export function fetchOwnedInProgressDeals(mondayUserId: string): Promise<OwnedDeal[]> {
+  return fetchOwnedDealsInGroup(mondayUserId, DEALS_GROUP_IN_PROGRESS);
 }
 
 /** לידים שנוצרו מאז תאריך נתון (ISO) — לדוח השבועי. */

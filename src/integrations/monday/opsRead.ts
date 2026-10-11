@@ -21,6 +21,9 @@ export const BOARD_PROJECT_STAGES = "1550734531";
 export const BOARD_PROJECT_STAGE_TASKS = "1550734556";
 export const BOARD_PROJECTS = "1550734533";
 
+/** קבוצת "משימות חדשות" בבורד המשימות הכלליות — group id מ-get_board_info (2026-10-08). */
+export const GENERAL_TASKS_GROUP_NEW = "topics";
+
 /** תוויות שמשמעותן "סגור" — לא מוצג בשום תצוגה. */
 const GENERAL_DONE = new Set(["בוצע", "מושהה"]);
 const STAGE_TASK_DONE = new Set(["הושלם", "לא רלוונטי"]);
@@ -97,9 +100,16 @@ function linkedIds(values: RawColumnValue[], id: string): string[] {
   return values.find((c) => c.id === id)?.linked_item_ids ?? [];
 }
 
-/** משימות משרד כלליות של המשתמש (בורד 1550734526). */
-async function fetchGeneralTasks(mondayUserId: string): Promise<OpsTask[]> {
-  const rule = `{ column_id: "person", compare_value: ["person-${mondayUserId}"], operator: any_of }`;
+/**
+ * משימות משרד כלליות של המשתמש (בורד 1550734526). `opts.groupId` מוסיף סינון group בצד השרת
+ * (לא נבדק כברירת מחדל — fetchUserOpsTasks/controlScan צריכים את כל המשימות הפתוחות בכל הקבוצות,
+ * לא רק "משימות חדשות"). ר' fetchOwnedNewGeneralTasks למטה לשימוש עם groupId.
+ */
+async function fetchGeneralTasks(mondayUserId: string, opts: { groupId?: string } = {}): Promise<OpsTask[]> {
+  const groupRule = opts.groupId
+    ? `, { column_id: "group", compare_value: ["${opts.groupId}"], operator: any_of }`
+    : "";
+  const rule = `{ column_id: "person", compare_value: ["person-${mondayUserId}"], operator: any_of }${groupRule}`;
   const selection = `
     id
     name
@@ -157,8 +167,17 @@ async function fetchGeneralTasks(mondayUserId: string): Promise<OpsTask[]> {
   return out;
 }
 
+/**
+ * משימות משרד "חדשות" (קבוצת "משימות חדשות" בלבד) של עובד נתון — לתצוגת "העבודה שלי" (סעיף 4
+ * בדרישת מוטי, 2026-10-08). סינון תאריך ("היום או עבר") נעשה ב-src/ops/employeeFeed.ts, לא כאן —
+ * dueDate כבר מגיע על כל OpsTask (עמודת date4, "תאריך לביצוע").
+ */
+export async function fetchOwnedNewGeneralTasks(mondayUserId: string): Promise<OpsTask[]> {
+  return fetchGeneralTasks(mondayUserId, { groupId: GENERAL_TASKS_GROUP_NEW });
+}
+
 /** משימות בתוך שלבי פרויקט של המשתמש (תת-פריטים, בורד 1550734556). */
-async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsTask[]> {
+export async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsTask[]> {
   const rule = `{ column_id: "person", compare_value: ["person-${mondayUserId}"], operator: any_of }`;
   const selection = `
     id

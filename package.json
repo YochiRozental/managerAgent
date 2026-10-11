@@ -14,6 +14,8 @@
     "test:identity": "tsx scripts/test-identity.ts",
     "test:router": "tsx scripts/test-model-router.ts",
     "test:mywork": "tsx scripts/test-mywork-brief.ts",
+    "test:employee-feed": "tsx scripts/test-employee-feed.ts",
+    "test:employee-feed-live": "tsx scripts/test-employee-feed-live.ts",
     "test:agent-tools": "tsx scripts/test-agent-tools.ts",
     "test:whatsapp-agent-tools": "tsx scripts/test-whatsapp-agent-tools.ts",
     "test:shared-prompt": "tsx scripts/test-shared-prompt.ts",

@@ -58,6 +58,7 @@ import { runCrmScan } from "./crmScan.js";
 import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
 import { getOfficeState } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
+import { getEmployeeFeed, formatEmployeeFeedText, employeeFeedCounts } from "./employeeFeed.js";
 
 const MAX_TURNS = 7;
 
@@ -164,6 +165,8 @@ export const WEB_CHAT_LOCAL_TOOL_NAMES: readonly string[] = [
   // "מה יש לי היום" + זיהוי משימה
   "get_today_tasks",
   "find_task",
+  // לידים/עסקאות/משימות באחריות העובד, מסונן group+תאריך (סעיף 2026-10-08)
+  "get_my_pipeline",
   // התחייבויות
   "record_commitment",
   "list_my_commitments",
@@ -422,6 +425,9 @@ export async function runOpsChat(
   // התדריך של "בוקר טוב" מוגש מילה במילה — מודלים נוטים לקצר/לנסח מחדש, וכאן חשוב שהמבנה
   // (פרויקט → 'עכשיו:') יישאר בדיוק כמו שבנינו אותו.
   let capturedBriefing: string | null = null;
+  // כמו capturedBriefing — get_my_pipeline מוגש מילה-במילה כשזה כל מה שקרה בסבב, כדי שהחלוקה
+  // לחמש הקטגוריות (לידים/עסקאות/משימות) לא תיטשטש בניסוח חופשי של המודל.
+  let capturedPipelineText: string | null = null;
 
   const refresh = async () => {
     tasks = await fetchUserOpsTasks(user.mondayUserId!);
@@ -464,12 +470,17 @@ export async function runOpsChat(
     {
       name: "get_today_tasks",
       description:
-        "מחזיר את המשימות של המשתמש להיום: מה לטפל בו היום, מה דורש תשומת לב, ומה אחרים מחכים לו. לכל פרויקט שמופיע במשימות של היום מצורף גם 'הצעד הנוכחי בפרויקט' — המשימה/תת-המשימה שצריך לעשות עכשיו באותו פרויקט לפי סדר השלבים.",
+        "מחזיר את המשימות של המשתמש להיום: מה לטפל בו היום, מה דורש תשומת לב, ומה אחרים מחכים לו. לכל פרויקט שמופיע במשימות של היום מצורף גם 'הצעד הנוכחי בפרויקט' — המשימה/תת-המשימה שצריך לעשות עכשיו באותו פרויקט לפי סדר השלבים. " +
+        "מצורף גם 'pipeline' — חמש הקטגוריות הקבועות (לידים חדשים / עסקאות חדשות / עסקאות לטיפול / משימות רגילות / משימות פרויקטים) שחייבות להופיע בכל תדריך יומי לעובד.",
       input_schema: { type: "object", properties: {} },
       run: async () => {
         const v = buildDashboardViews(tasks, now);
-        const briefing = await buildTodayBriefing(v.myDay, user);
-        capturedBriefing = briefing;
+        const [briefing, feed] = await Promise.all([
+          buildTodayBriefing(v.myDay, user),
+          getEmployeeFeed(user.mondayUserId!, now),
+        ]);
+        const pipelineText = formatEmployeeFeedText(feed);
+        capturedBriefing = `${briefing}\n\n${pipelineText}`;
         return {
           counts: {
             today: v.myDay.length,
@@ -480,7 +491,24 @@ export async function runOpsChat(
           briefing,
           needsAttention: v.needsAttention.slice(0, 8).map(fmtTask),
           waitingOnMe: v.waitingOnMe.slice(0, 8).map(fmtTask),
+          pipeline: { counts: employeeFeedCounts(feed), text: pipelineText },
         };
+      },
+    },
+    {
+      name: "get_my_pipeline",
+      description:
+        "מחזיר את הלידים, העסקאות והמשימות שהעובד אחראי עליהם ב-Monday, מסונן לפי כללי המשרד: " +
+        "לידים חדשים ועסקאות חדשות מוצגים תמיד (בלי קשר לתאריך); עסקאות לטיפול / משימות רגילות / " +
+        "משימות פרויקטים מוצגות רק אם התאריך הרלוונטי (תזכורת/ביצוע) הוא היום או כבר עבר — תאריך " +
+        "עתידי או חסר לא מוצג. השתמש בזה לשאלות כמו 'יש לי לידים חדשים?', 'מה מצב העסקאות שלי?', " +
+        "'מה יש לי לטפל בו' כשרוצים תמונה מלאה כולל CRM, לא רק משימות.",
+      input_schema: { type: "object", properties: {} },
+      run: async () => {
+        const feed = await getEmployeeFeed(user.mondayUserId!, now);
+        const text = formatEmployeeFeedText(feed);
+        capturedPipelineText = text;
+        return { counts: employeeFeedCounts(feed), text };
       },
     },
     {
@@ -871,6 +899,7 @@ export async function runOpsChat(
   //    כאן רק: הרצת הכלים (עם מעקב כתיבות ל-sideEffect) והגשת תדריך הבוקר מילה-במילה.
   const buildLoop = () => {
     capturedBriefing = null; // איפוס לפני כל ניסיון — כדי שה-fallback ל-SMART יאסוף תדריך מחדש
+    capturedPipelineText = null;
     return {
       system: systemPrompt(user, opts.about),
       maxTokens: 1024,
@@ -922,6 +951,9 @@ export async function runOpsChat(
           const hour = now.hour;
           const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
           return `${greet} ${user.name} ☀️\n\n${capturedBriefing}\n\nעל מה מתחילים?`;
+        }
+        if (capturedPipelineText && actions.length === 0 && !opts.about) {
+          return capturedPipelineText;
         }
         return modelText || null;
       },

@@ -22,6 +22,7 @@
 import type { IdentifiedUser } from "../identity/index.js";
 import type { DashboardTask, EmployeeDashboard } from "./dashboard.js";
 import { getEmployeeDashboard } from "./dashboard.js";
+import { getEmployeeFeed, formatEmployeeFeedText } from "./employeeFeed.js";
 
 /** תקרה קשיחה — לעולם לא יותר מזה במודל, גם אם ל-myDay יש מאות. */
 export const BRIEF_HARD_CAP = 30;
@@ -72,6 +73,14 @@ export interface MyWorkBrief {
   tasks: BriefTask[];
   /** הערה קצרה למודל אם חתכנו / אם אין משימות להיום */
   note?: string;
+  /**
+   * חמש הקטגוריות הקבועות (לידים חדשים / עסקאות חדשות / עסקאות לטיפול / משימות רגילות /
+   * משימות פרויקטים), מ-ops/employeeFeed.ts — מקור אחיד עם get_today_tasks/get_my_pipeline
+   * בחלונית (דרישת מוטי, 2026-10-11). אופציונלי בטיפוס כי buildBrief (הפונקציה הטהורה, בלי
+   * Monday) לא יודעת עליו; getMyWorkBrief (למטה) מצרפת אותו בפועל — הוא *תמיד* מופיע בתוצאה
+   * האמיתית שחוזרת ל-list_my_work, עם כל חמש הכותרות גם כשריקות/נכשלו.
+   */
+  pipelineText?: string;
 }
 
 const OFFICE_CONTEXTS = new Set(["", "משימת משרד", "פרויקט לא מקושר"]);
@@ -155,10 +164,13 @@ export function buildBrief(userName: string, dash: EmployeeDashboard, cap = BRIE
 export interface MyWorkBriefDeps {
   /** להזרקה בבדיקות — ברירת מחדל getEmployeeDashboard האמיתי */
   getDashboard?: (user: IdentifiedUser) => Promise<EmployeeDashboard>;
+  /** להזרקה בבדיקות — ברירת מחדל getEmployeeFeed האמיתי (חמש הקטגוריות הקבועות) */
+  getFeed?: typeof getEmployeeFeed;
 }
 
 /**
- * ה-brief של "מה עליי לבצע היום" עבור משתמש מזוהה.
+ * ה-brief של "מה עליי לבצע היום" עבור משתמש מזוהה — כולל pipelineText (חמש הקטגוריות הקבועות,
+ * מ-getEmployeeFeed, אותו מקור בדיוק כמו get_today_tasks/get_my_pipeline בחלונית).
  * זורק שגיאה ברורה אם אין mondayUserId — **לא** נופל למשתמש אחר / לבעל הטוקן.
  */
 export async function getMyWorkBrief(
@@ -173,6 +185,8 @@ export async function getMyWorkBrief(
     );
   }
   const getDashboard = deps.getDashboard ?? getEmployeeDashboard;
-  const dash = await getDashboard(user);
-  return buildBrief(user.name, dash, opts.limit ?? BRIEF_HARD_CAP);
+  const getFeed = deps.getFeed ?? getEmployeeFeed;
+  const [dash, feed] = await Promise.all([getDashboard(user), getFeed(user.mondayUserId)]);
+  const brief = buildBrief(user.name, dash, opts.limit ?? BRIEF_HARD_CAP);
+  return { ...brief, pipelineText: formatEmployeeFeedText(feed) };
 }

@@ -58,7 +58,7 @@ import { runCrmScan } from "./crmScan.js";
 import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
 import { getOfficeState } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
-import { getEmployeeFeed, formatEmployeeFeedText, employeeFeedCounts } from "./employeeFeed.js";
+import { getEmployeeFeed, formatEmployeeFeedText, formatEmployeeFeedBriefing, employeeFeedCounts } from "./employeeFeed.js";
 
 const MAX_TURNS = 7;
 
@@ -262,8 +262,13 @@ function fmtTask(t: DashboardTask): string {
 }
 
 /**
- * תדריך "היום שלי" מקובץ לפי פרויקט, עם שורת "עכשיו:" לכל פרויקט (הפעולה הבאה המחושבת).
- * נבנה בשרת כדי שהתצוגה תהיה עקבית — הצ'אט רק מגיש אותו.
+ * תדריך "היום שלי" הישן, מקובץ לפי פרויקט עם שורת "עכשיו:" לכל פרויקט (הפעולה הבאה המחושבת).
+ *
+ * **לא נקרא יותר מ-get_today_tasks** (2026-10-13, דרישת מוטי): התשובה למשתמש על "מה יש לי
+ * היום" היא כעת רק Employee Feed (formatEmployeeFeedBriefing) — התדריך הזה והתדריך של חמש
+ * הקטגוריות הוצגו ברצף, כפולים וארוכים. הפונקציה נשארת מוגדרת בכוונה (לא נמחק מנגנון ישן —
+ * ר' הנחיית מוטי) למקרה שתידרש שוב (לדוגמה כתשובה נפרדת ל"מה הצעד הבא בפרויקטים שלי"), אך
+ * כיום אין קורא לה בכלל.
  */
 async function buildTodayBriefing(myDay: DashboardTask[], user: IdentifiedUser): Promise<string> {
   if (myDay.length === 0) return "אין משימות לטיפול היום 👌";
@@ -470,28 +475,27 @@ export async function runOpsChat(
     {
       name: "get_today_tasks",
       description:
-        "מחזיר את המשימות של המשתמש להיום: מה לטפל בו היום, מה דורש תשומת לב, ומה אחרים מחכים לו. לכל פרויקט שמופיע במשימות של היום מצורף גם 'הצעד הנוכחי בפרויקט' — המשימה/תת-המשימה שצריך לעשות עכשיו באותו פרויקט לפי סדר השלבים. " +
-        "מצורף גם 'pipeline' — חמש הקטגוריות הקבועות (לידים חדשים / עסקאות חדשות / עסקאות לטיפול / משימות רגילות / משימות פרויקטים) שחייבות להופיע בכל תדריך יומי לעובד.",
+        "מחזיר את תצוגת 'העבודה שלי' של העובד להיום — חמש קטגוריות קבועות (לידים חדשים / עסקאות חדשות / " +
+        "עסקאות לטיפול / משימות רגילות / משימות פרויקטים), תמיד ובאותו סדר. זו התשובה היחידה שיש להציג " +
+        "כשמבקשים 'מה יש לי היום', 'מה המשימות שלי', 'מה יש לי לבצע' — בלי לצרף תדריך ישן נוסף.",
       input_schema: { type: "object", properties: {} },
       run: async () => {
+        // v (needsAttention/waitingOnMe) נשאר מחושב — לא נגעתי במנגנון השליפה/הבקרה הישן — אבל
+        // אינו חלק מהתשובה הנראית למשתמש יותר (ר' docstring מעל buildTodayBriefing). משמש רק
+        // את ה-JSON הפנימי, למקרה שיתבקש במפורש בהמשך השיחה.
         const v = buildDashboardViews(tasks, now);
-        const [briefing, feed] = await Promise.all([
-          buildTodayBriefing(v.myDay, user),
-          getEmployeeFeed(user.mondayUserId!, now),
-        ]);
-        const pipelineText = formatEmployeeFeedText(feed);
-        capturedBriefing = `${briefing}\n\n${pipelineText}`;
+        const feed = await getEmployeeFeed(user.mondayUserId!, now);
+        const briefing = formatEmployeeFeedBriefing(user.name, feed, now);
+        capturedBriefing = briefing;
         return {
           counts: {
-            today: v.myDay.length,
             needsAttention: v.needsAttention.length,
             waitingOnMe: v.waitingOnMe.length,
             totalOpen: tasks.length,
           },
-          briefing,
           needsAttention: v.needsAttention.slice(0, 8).map(fmtTask),
           waitingOnMe: v.waitingOnMe.slice(0, 8).map(fmtTask),
-          pipeline: { counts: employeeFeedCounts(feed), text: pipelineText },
+          pipeline: { counts: employeeFeedCounts(feed), text: briefing },
         };
       },
     },
@@ -944,13 +948,11 @@ export async function runOpsChat(
         }
       },
       finalizeText: (modelText: string) => {
-        // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא, עם ברכה קצרה,
-        // במקום הניסוח החופשי של המודל (שנוטה לאבד את מבנה 'עכשיו:' לכל פרויקט).
-        // לא רלוונטי בתשובה לפנייה יזומה — שם רוצים את התשובה של הכלי.
+        // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא (כולל ברכה+כותרת,
+        // ר' formatEmployeeFeedBriefing) במקום הניסוח החופשי של המודל (שנוטה לשבש את מבנה חמש
+        // הקטגוריות). לא רלוונטי בתשובה לפנייה יזומה — שם רוצים את התשובה של הכלי.
         if (capturedBriefing && actions.length === 0 && !opts.about) {
-          const hour = now.hour;
-          const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
-          return `${greet} ${user.name} ☀️\n\n${capturedBriefing}\n\nעל מה מתחילים?`;
+          return `${capturedBriefing}\n\nעל מה מתחילים?`;
         }
         if (capturedPipelineText && actions.length === 0 && !opts.about) {
           return capturedPipelineText;

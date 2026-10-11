@@ -3,6 +3,7 @@
  * מריץ: npm run test:mywork
  */
 import { readFileSync } from "node:fs";
+import { DateTime } from "luxon";
 import {
   BRIEF_HARD_CAP,
   buildBrief,
@@ -311,16 +312,20 @@ logger.info("— getMyWorkBrief —");
 // H — pipelineText: חמש הכותרות הקבועות תמיד נוכחות, גם כשהכול ריק, וגם כשקטגוריה נכשלה
 {
   const dov = resolveUserByKey("dov")!;
+  const morning = DateTime.fromISO("2026-10-13T08:00:00", { zone: "Asia/Jerusalem" });
   const deps: MyWorkBriefDeps = {
     getDashboard: async () => mkDash({ myDay: [] }),
     getFeed: async () => mkFeed(),
+    now: morning,
   };
   const b = await getMyWorkBrief(dov, {}, deps);
   assert(typeof b.pipelineText === "string" && b.pipelineText.length > 0, "H: pipelineText קיים ולא ריק");
   for (const label of ["לידים חדשים", "עסקאות חדשות", "עסקאות לטיפול", "משימות רגילות", "משימות פרויקטים"]) {
     assert(b.pipelineText!.includes(label), `H: pipelineText מכיל את הכותרת "${label}" גם כשהכול ריק`);
   }
-  assert(b.pipelineText!.includes("אין פריטים לטיפול"), "H: קטגוריה ריקה מוצגת כ'אין פריטים לטיפול', לא מוסתרת");
+  assert(b.pipelineText!.includes("אין פריטים כרגע"), "H: קטגוריה ריקה מוצגת כ'אין פריטים כרגע', לא מוסתרת");
+  assert(b.pipelineText!.startsWith("בוקר טוב, דוב שפירא ☀️\nסדר העבודה שלך להיום"), "H: pipelineText כולל ברכה+שם וכותרת ראשית (formatEmployeeFeedBriefing) — תצוגה אחת, לא תדריך ישן+חדש");
+  assert(/\*[^*]+\*/.test(b.pipelineText!) && !b.pipelineText!.includes("**"), "H: WhatsApp — הדגשה בכוכבית בודדת, לא כפולה כמו בחלונית");
 
   const depsWithError: MyWorkBriefDeps = {
     getDashboard: async () => mkDash({ myDay: [] }),

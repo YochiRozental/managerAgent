@@ -19,6 +19,8 @@ import {
   dueInfo,
   getEmployeeFeed,
   formatEmployeeFeedText,
+  formatEmployeeFeedBriefing,
+  greetingFor,
   employeeFeedCounts,
   type EmployeeFeedDeps,
   type EmployeeFeed,
@@ -209,12 +211,53 @@ logger.info("— formatEmployeeFeedText —");
   const empty = await run({});
   const text = formatEmployeeFeedText(empty);
   for (const label of CATEGORY_LABELS) assert(text.includes(label), `כל הקטגוריות ריקות: כותרת "${label}" מופיעה בכל זאת`);
-  assert((text.match(/אין פריטים לטיפול/g) ?? []).length === 5, "כל 5 הקטגוריות הריקות מציגות 'אין פריטים לטיפול'");
+  assert((text.match(/אין פריטים כרגע/g) ?? []).length === 5, "כל 5 הקטגוריות הריקות מציגות הודעה עדינה ('אין פריטים כרגע')");
+  assert(/\*\*[^*]*\(0\)\*\*/.test(text), "כותרת קטגוריה ריקה מודגשת (**...**) וכוללת ספירה (0)");
 
   // סדר הכותרות קבוע: לידים לפני עסקאות חדשות לפני עסקאות לטיפול לפני משימות לפני משימות פרויקט
   const idx = CATEGORY_LABELS.map((l) => text.indexOf(l));
   const sorted = [...idx].sort((a, b) => a - b);
   assert(JSON.stringify(idx) === JSON.stringify(sorted), "חמש הכותרות מופיעות בדיוק באותו סדר שהוגדר");
+}
+
+// כותרת כוללת אייקון + ספירה אמיתית, ותומכת בעטיפת-הדגשה מותאמת לערוץ (ברירת מחדל vs. WhatsApp)
+{
+  const feed = await run({
+    fetchOwnedNewLeads: async () => [mkLead({ itemId: "l1" }), mkLead({ itemId: "l2" })],
+  });
+  const webText = formatEmployeeFeedText(feed);
+  assert(webText.includes("**🆕 לידים חדשים (2)**"), "ברירת מחדל (חלונית): כותרת מודגשת בכפולת-כוכבית עם אייקון וספירה נכונה (2)");
+  const waText = formatEmployeeFeedText(feed, { bold: (s) => `*${s}*` });
+  assert(waText.includes("*🆕 לידים חדשים (2)*") && !waText.includes("**"), "WhatsApp: עטיפת הדגשה בכוכבית בודדת, בלי כוכבית כפולה");
+}
+
+// formatEmployeeFeedBriefing — ברכה+כותרת ראשית מעל חמש הקטגוריות, תצוגה אחת בלבד
+{
+  const feed = await run({});
+  const morning = DateTime.fromISO("2026-10-13T08:00:00", { zone: "Asia/Jerusalem" });
+  const text = formatEmployeeFeedBriefing("דוב שפירא", feed, morning);
+  assert(text.startsWith("בוקר טוב, דוב שפירא ☀️\nסדר העבודה שלך להיום"), "הכותרת הראשית: ברכה+שם ואז 'סדר העבודה שלך להיום'");
+  for (const label of CATEGORY_LABELS) assert(text.includes(label), `הבריפינג המלא כולל גם את "${label}"`);
+}
+
+// greetingFor — ברכה לפי שעה, אותה לוגיקה גם לחלונית וגם ל-WhatsApp (לא כפולה בין שני המקומות)
+{
+  assert(greetingFor(DateTime.fromISO("2026-10-13T09:00:00")) === "בוקר טוב", "09:00 → בוקר טוב");
+  assert(greetingFor(DateTime.fromISO("2026-10-13T14:00:00")) === "צהריים טובים", "14:00 → צהריים טובים");
+  assert(greetingFor(DateTime.fromISO("2026-10-13T20:00:00")) === "ערב טוב", "20:00 → ערב טוב");
+}
+
+// רגרסיה ממוקדת: תאריך עתיק (430 יום) מסומן "באיחור", לעולם לא "להיום" — לא מסמנים ישן כ"היום" (CLAUDE.md edge case)
+{
+  const veryOldDue = TODAY.minus({ days: 430 }).toISODate()!;
+  const feed = await run({
+    fetchOwnedNewGeneralTasks: async () => [mkTask({ itemId: "ancient", name: "משימה עתיקה", dueDate: veryOldDue })],
+  });
+  const t = items<OpsTask & { overdue: boolean; dueToday: boolean; daysOverdue: number }>(feed.tasks)[0]!;
+  assert(t.overdue === true && t.daysOverdue === 430, "תאריך לפני 430 יום → overdue=true, daysOverdue=430");
+  assert(t.dueToday === false, "תאריך עתיק לעולם לא dueToday=true");
+  const text = formatEmployeeFeedText(feed);
+  assert(text.includes("באיחור 430 ימים") && !text.includes("משימה עתיקה — להיום"), "בתצוגה: מסומן 'באיחור 430 ימים', לא 'להיום'");
 }
 {
   const feed = await run({

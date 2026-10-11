@@ -160,40 +160,85 @@ function fmtDue(d: DueInfo, dueDate?: string): string {
   return dueDate ?? "";
 }
 
-/** דוחף כותרת + שורות הפריטים (או "אין פריטים לטיפול" / שורת שגיאה) — הכותרת מופיעה תמיד. */
-function pushSection<T>(lines: string[], title: string, result: FeedResult<T>, renderItem: (t: T) => string): void {
-  lines.push(title);
+export interface FormatFeedOpts {
+  /** עטיפת הדגשה לכותרת קטגוריה — **x** בחלונית (ברירת מחדל), *x* בוואטסאפ (ר' myWorkBrief.ts). */
+  bold?: (s: string) => string;
+}
+
+const defaultBold = (s: string): string => `**${s}**`;
+
+/** דוחף כותרת מודגשת+ספירה + שורות הפריטים (או "אין פריטים כרגע" / שורת שגיאה) — תמיד מופיעה. */
+function pushSection<T>(
+  lines: string[],
+  icon: string,
+  label: string,
+  result: FeedResult<T>,
+  renderItem: (t: T) => string,
+  bold: (s: string) => string,
+): void {
+  const count = result.ok ? result.items.length : 0;
+  lines.push(bold(`${icon} ${label} (${count})`));
   if (!result.ok) {
-    lines.push(`   ⚠️ שגיאת שליפה — ${result.error}`);
+    lines.push(`⚠️ שגיאת שליפה — ${result.error}`);
     return;
   }
   if (result.items.length === 0) {
-    lines.push("   אין פריטים לטיפול");
+    lines.push("אין פריטים כרגע.");
     return;
   }
   for (const item of result.items) lines.push(renderItem(item));
 }
 
 /**
- * טקסט "העבודה שלי" — חמש הקטגוריות, תמיד באותו סדר ועם אותן כותרות, גם כשריקות/נכשלו
- * (סעיף "אופן ההצגה" בדרישת מוטי, 2026-10-11). מקור עיצוב יחיד — נצרך מ-get_today_tasks,
- * get_my_pipeline (ops/chat.ts) ומ-list_my_work (ops/myWorkBrief.ts, WhatsApp).
+ * טקסט "העבודה שלי" — חמש הקטגוריות, תמיד באותו סדר ועם אותן כותרות (מודגשות, עם אייקון
+ * וספירה), גם כשריקות/נכשלו (דרישת מוטי, 2026-10-08/11/13). מקור עיצוב יחיד — נצרך מ-
+ * get_today_tasks, get_my_pipeline (ops/chat.ts) ומ-list_my_work (ops/myWorkBrief.ts, WhatsApp).
+ * בלי כותרת/ברכה — ר' formatEmployeeFeedBriefing לתדריך היומי המלא.
  */
-export function formatEmployeeFeedText(feed: EmployeeFeed): string {
+export function formatEmployeeFeedText(feed: EmployeeFeed, opts: FormatFeedOpts = {}): string {
+  const bold = opts.bold ?? defaultBold;
   const lines: string[] = [];
-  pushSection(lines, "🆕 לידים חדשים:", feed.newLeads, (l) => `   • ${l.name}${l.status ? ` — ${l.status}` : ""}`);
+  pushSection(lines, "🆕", "לידים חדשים", feed.newLeads, (l) => `• ${l.name}${l.status ? ` — ${l.status}` : ""}`, bold);
   lines.push("");
-  pushSection(lines, "🆕 עסקאות חדשות:", feed.newDeals, (d) => `   • ${d.name}${d.stage ? ` — ${d.stage}` : ""}`);
+  pushSection(lines, "🆕", "עסקאות חדשות", feed.newDeals, (d) => `• ${d.name}${d.stage ? ` — ${d.stage}` : ""}`, bold);
   lines.push("");
-  pushSection(lines, "📌 עסקאות לטיפול:", feed.dealsNeedingAttention, (d) => `   • ${d.name} — ${fmtDue(d, d.reminderDate)}`);
+  pushSection(lines, "📌", "עסקאות לטיפול", feed.dealsNeedingAttention, (d) => `• ${d.name} — ${fmtDue(d, d.reminderDate)}`, bold);
   lines.push("");
-  pushSection(lines, "📝 משימות רגילות:", feed.tasks, (t) => `   • ${t.name} — ${fmtDue(t, t.dueDate)}`);
+  pushSection(lines, "📝", "משימות רגילות", feed.tasks, (t) => `• ${t.name} — ${fmtDue(t, t.dueDate)}`, bold);
   lines.push("");
-  pushSection(lines, "🗂️ משימות פרויקטים:", feed.projectTasks, (t) => {
-    const where = t.project ? (t.stage ? `${t.project} › ${t.stage}` : t.project) : (t.stage ?? "");
-    return `   • ${t.name}${where ? ` (${where})` : ""} — ${fmtDue(t, t.dueDate)}`;
-  });
+  pushSection(
+    lines,
+    "🗂️",
+    "משימות פרויקטים",
+    feed.projectTasks,
+    (t) => {
+      const where = t.project ? (t.stage ? `${t.project} › ${t.stage}` : t.project) : (t.stage ?? "");
+      return `• ${t.name}${where ? ` (${where})` : ""} — ${fmtDue(t, t.dueDate)}`;
+    },
+    bold,
+  );
   return lines.join("\n");
+}
+
+/** "בוקר טוב" / "צהריים טובים" / "ערב טוב" לפי השעה — מקור אחד, לא כפול בין web/WhatsApp. */
+export function greetingFor(now: DateTime): string {
+  const hour = now.hour;
+  return hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
+}
+
+/**
+ * התדריך האישי המלא: כותרת ("<ברכה>, <שם> ☀️" + "סדר העבודה שלך להיום") ואחריה חמש הקטגוריות —
+ * תצוגה אחת, בלי תדריך-פרויקטים ישן נוסף לפניה (דרישת מוטי, 2026-10-13: "Employee Feed בלבד").
+ * זה כל מה שנשלח למשתמש כשהוא שואל "מה יש לי היום" — לא רק בניין-עזר לקטגוריות.
+ */
+export function formatEmployeeFeedBriefing(
+  userName: string,
+  feed: EmployeeFeed,
+  now: DateTime = DateTime.now().setZone(env.TIMEZONE),
+  opts: FormatFeedOpts = {},
+): string {
+  const greet = greetingFor(now);
+  return `${greet}, ${userName} ☀️\nסדר העבודה שלך להיום\n\n${formatEmployeeFeedText(feed, opts)}`;
 }
 
 export interface EmployeeFeedCounts {

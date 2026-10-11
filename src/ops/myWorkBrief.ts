@@ -19,10 +19,15 @@
  *   - אין mutations.
  */
 
+import { DateTime } from "luxon";
+import { env } from "../config/env.js";
 import type { IdentifiedUser } from "../identity/index.js";
 import type { DashboardTask, EmployeeDashboard } from "./dashboard.js";
 import { getEmployeeDashboard } from "./dashboard.js";
-import { getEmployeeFeed, formatEmployeeFeedText } from "./employeeFeed.js";
+import { getEmployeeFeed, formatEmployeeFeedBriefing } from "./employeeFeed.js";
+
+/** WhatsApp מדגיש עם כוכבית בודדת (*x*), לא כפולה כמו בחלונית (**x**) — ר' formatEmployeeFeedBriefing. */
+const whatsappBold = (s: string): string => `*${s}*`;
 
 /** תקרה קשיחה — לעולם לא יותר מזה במודל, גם אם ל-myDay יש מאות. */
 export const BRIEF_HARD_CAP = 30;
@@ -166,6 +171,8 @@ export interface MyWorkBriefDeps {
   getDashboard?: (user: IdentifiedUser) => Promise<EmployeeDashboard>;
   /** להזרקה בבדיקות — ברירת מחדל getEmployeeFeed האמיתי (חמש הקטגוריות הקבועות) */
   getFeed?: typeof getEmployeeFeed;
+  /** להזרקה בבדיקות — קובע גם את ברכת הפתיחה (בוקר טוב/צהריים/ערב) וגם את "היום" לסינון התאריכים בפיד */
+  now?: DateTime;
 }
 
 /**
@@ -184,9 +191,10 @@ export async function getMyWorkBrief(
         `(המערכת לא נופלת למשתמש אחר ולא לבעל טוקן ה-API.)`,
     );
   }
+  const now = deps.now ?? DateTime.now().setZone(env.TIMEZONE);
   const getDashboard = deps.getDashboard ?? getEmployeeDashboard;
   const getFeed = deps.getFeed ?? getEmployeeFeed;
-  const [dash, feed] = await Promise.all([getDashboard(user), getFeed(user.mondayUserId)]);
+  const [dash, feed] = await Promise.all([getDashboard(user), getFeed(user.mondayUserId, now)]);
   const brief = buildBrief(user.name, dash, opts.limit ?? BRIEF_HARD_CAP);
-  return { ...brief, pipelineText: formatEmployeeFeedText(feed) };
+  return { ...brief, pipelineText: formatEmployeeFeedBriefing(user.name, feed, now, { bold: whatsappBold }) };
 }

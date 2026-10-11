@@ -231,6 +231,68 @@ logger.info("— formatEmployeeFeedText —");
   assert(waText.includes("*🆕 לידים חדשים (2)*") && !waText.includes("**"), "WhatsApp: עטיפת הדגשה בכוכבית בודדת, בלי כוכבית כפולה");
 }
 
+// ───────────────────────── קישורים לפריט המקורי ב-Monday ─────────────────────────
+logger.info("— קישורים (Markdown בחלונית, URL גולמי ב-WhatsApp) —");
+
+// חלונית (ברירת מחדל): שם הפריט עטוף כ-[שם](url) — לכל אחת מחמש הקטגוריות
+{
+  const feed = await run({
+    fetchOwnedNewLeads: async () => [mkLead({ itemId: "l1", name: "ליד כהן", url: "https://x/leads/l1" })],
+    fetchOwnedNewDeals: async () => [mkDeal({ itemId: "d1", name: "עסקת לוי", url: "https://x/deals/d1" })],
+    fetchOwnedInProgressDeals: async () => [mkDeal({ itemId: "d2", name: "עסקה לטיפול", reminderDate: "2026-10-01", url: "https://x/deals/d2" })],
+    fetchOwnedNewGeneralTasks: async () => [mkTask({ itemId: "t1", name: "לשלוח חוזה", dueDate: "2026-10-08", url: "https://x/tasks/t1" })],
+    fetchProjectStageTasks: async () => [
+      mkTask({ itemId: "s1", source: "project_stage", name: "תכנית חשמל", context: "פרויקט בלומינג", stageName: "שלב 3", dueDate: "2026-10-08", url: "https://x/subitems/s1" }),
+    ],
+  });
+  const text = formatEmployeeFeedText(feed);
+  assert(text.includes("[ליד כהן](https://x/leads/l1)"), "ליד חדש: שם עטוף כ-[שם](url)");
+  assert(text.includes("[עסקת לוי](https://x/deals/d1)"), "עסקה חדשה: שם עטוף כ-[שם](url)");
+  assert(text.includes("[עסקה לטיפול](https://x/deals/d2) — באיחור 7 ימים"), "עסקה לטיפול: קישור ואז מפריד תאריך, לא לפני");
+  assert(text.includes("[לשלוח חוזה](https://x/tasks/t1) — להיום"), "משימה רגילה: קישור ואז תאריך");
+  assert(text.includes("[תכנית חשמל (פרויקט בלומינג › שלב 3)](https://x/subitems/s1) — להיום"), "משימת פרויקט: הקישור עוטף את שם+הקשר (פרויקט›שלב), מצביע לתת-המשימה (s1), לא לשלב");
+}
+
+// בלי URL תקין (ריק) → טקסט רגיל, לא ממציאים קישור
+{
+  const feed = await run({
+    fetchOwnedNewLeads: async () => [mkLead({ itemId: "l2", name: "ליד בלי קישור", url: "" })],
+  });
+  const text = formatEmployeeFeedText(feed);
+  assert(text.includes("• ליד בלי קישור") && !text.includes("["), "URL ריק → שם כטקסט רגיל, בלי תחביר קישור בכלל");
+}
+
+// WhatsApp (plainLinks) — בלי Markdown; ה-URL הגולמי בשורה נפרדת מתחת לשם, כדי ש-WhatsApp יזהה אותו
+{
+  const feed = await run({
+    fetchOwnedNewGeneralTasks: async () => [mkTask({ itemId: "t2", name: "לשלוח חוזה", dueDate: "2026-10-08", url: "https://x/tasks/t2" })],
+  });
+  const waText = formatEmployeeFeedText(feed, { plainLinks: true });
+  assert(!waText.includes("["), "WhatsApp: אין תחביר Markdown-link בכלל");
+  assert(waText.includes("• לשלוח חוזה — להיום\n  https://x/tasks/t2"), "WhatsApp: שם+תאריך בשורה אחת, ה-URL הגולמי בשורה נפרדת מתחתיו");
+}
+
+// אין כפילות קישור על אותו פריט, וכותרות הקטגוריה (bold) לא מקבלות קישור בכלל
+{
+  const feed = await run({
+    fetchOwnedNewLeads: async () => [mkLead({ itemId: "l3", name: "ליד יחיד", url: "https://x/leads/l3" })],
+  });
+  const text = formatEmployeeFeedText(feed);
+  const occurrences = (text.match(/https:\/\/x\/leads\/l3/g) ?? []).length;
+  assert(occurrences === 1, "אין כפילות — ה-URL מופיע פעם אחת בלבד לכל פריט");
+  const headerLines = text.split("\n").filter((l) => l.startsWith("**"));
+  assert(headerLines.length === 5 && headerLines.every((l) => !l.includes("](")), "כותרות הקטגוריה (מודגשות) אינן עטופות בתחביר קישור");
+}
+
+// התאמה ל-regex הפענוח בצד הלקוח (src/server/ui.html's bubble()) — אותו ביטוי בדיוק, בלי Monday/דפדפן
+{
+  const linkRegex = /\[([^[\]]+)\]\((https:\/\/[^\s()<>]+)\)/g;
+  const sample = "לפני • [לשלוח חוזה](https://gottlieb-league.monday.com/boards/1/pulses/2) — להיום אחרי";
+  const matches = [...sample.matchAll(linkRegex)];
+  assert(matches.length === 1 && matches[0]![1] === "לשלוח חוזה" && matches[0]![2] === "https://gottlieb-league.monday.com/boards/1/pulses/2", "regex הלקוח תופס שם+URL נכון מתוך שורת פריט אמיתית");
+  assert(!linkRegex.test("[לא קישור](http://not-https)"), "regex הלקוח לא תופס http:// (רק https://) — מגן מפני downgrade/javascript: וכו'");
+}
+
 // formatEmployeeFeedBriefing — ברכה+כותרת ראשית מעל חמש הקטגוריות, תצוגה אחת בלבד
 {
   const feed = await run({});

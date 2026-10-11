@@ -163,9 +163,28 @@ function fmtDue(d: DueInfo, dueDate?: string): string {
 export interface FormatFeedOpts {
   /** עטיפת הדגשה לכותרת קטגוריה — **x** בחלונית (ברירת מחדל), *x* בוואטסאפ (ר' myWorkBrief.ts). */
   bold?: (s: string) => string;
+  /**
+   * true בוואטסאפ: אין תמיכה בקישורי Markdown [שם](url) — WhatsApp מזהה ומקשר רק URL גולמי
+   * שמופיע בטקסט עצמו. ברירת מחדל false (חלונית — ר' src/server/ui.html's bubble(), שמפרש
+   * בדיוק את התחביר [שם](https://...) לתגית <a> בטוחה).
+   */
+  plainLinks?: boolean;
 }
 
 const defaultBold = (s: string): string => `**${s}**`;
+
+/**
+ * שורת פריט עם קישור לפריט המקורי ב-Monday (דרישת מוטי, 2026-10-13) — `url` כבר מגיע מוכן מכל
+ * fetchOwned-fetcher וגם מ-OpsTask (לא בונים כאן כתובת, לא מנחשים לוח/מזהה). בלי URL תקין →
+ * טקסט רגיל בלבד (לא ממציאים קישור). חלונית: Markdown-link [שם](url), מפורש ב-ui.html.
+ * WhatsApp (plainLinks): ה-URL הגולמי בשורה נפרדת מתחת לשם — זה הפורמט היחיד שהוא מזהה ומקשר.
+ */
+function formatItemLine(name: string, url: string | undefined, suffix: string, opts: FormatFeedOpts): string {
+  const sfx = suffix ? ` — ${suffix}` : "";
+  if (!url) return `• ${name}${sfx}`;
+  if (opts.plainLinks) return `• ${name}${sfx}\n  ${url}`;
+  return `• [${name}](${url})${sfx}`;
+}
 
 /** דוחף כותרת מודגשת+ספירה + שורות הפריטים (או "אין פריטים כרגע" / שורת שגיאה) — תמיד מופיעה. */
 function pushSection<T>(
@@ -198,13 +217,20 @@ function pushSection<T>(
 export function formatEmployeeFeedText(feed: EmployeeFeed, opts: FormatFeedOpts = {}): string {
   const bold = opts.bold ?? defaultBold;
   const lines: string[] = [];
-  pushSection(lines, "🆕", "לידים חדשים", feed.newLeads, (l) => `• ${l.name}${l.status ? ` — ${l.status}` : ""}`, bold);
+  pushSection(lines, "🆕", "לידים חדשים", feed.newLeads, (l) => formatItemLine(l.name, l.url, l.status, opts), bold);
   lines.push("");
-  pushSection(lines, "🆕", "עסקאות חדשות", feed.newDeals, (d) => `• ${d.name}${d.stage ? ` — ${d.stage}` : ""}`, bold);
+  pushSection(lines, "🆕", "עסקאות חדשות", feed.newDeals, (d) => formatItemLine(d.name, d.url, d.stage, opts), bold);
   lines.push("");
-  pushSection(lines, "📌", "עסקאות לטיפול", feed.dealsNeedingAttention, (d) => `• ${d.name} — ${fmtDue(d, d.reminderDate)}`, bold);
+  pushSection(
+    lines,
+    "📌",
+    "עסקאות לטיפול",
+    feed.dealsNeedingAttention,
+    (d) => formatItemLine(d.name, d.url, fmtDue(d, d.reminderDate), opts),
+    bold,
+  );
   lines.push("");
-  pushSection(lines, "📝", "משימות רגילות", feed.tasks, (t) => `• ${t.name} — ${fmtDue(t, t.dueDate)}`, bold);
+  pushSection(lines, "📝", "משימות רגילות", feed.tasks, (t) => formatItemLine(t.name, t.url, fmtDue(t, t.dueDate), opts), bold);
   lines.push("");
   pushSection(
     lines,
@@ -213,7 +239,8 @@ export function formatEmployeeFeedText(feed: EmployeeFeed, opts: FormatFeedOpts 
     feed.projectTasks,
     (t) => {
       const where = t.project ? (t.stage ? `${t.project} › ${t.stage}` : t.project) : (t.stage ?? "");
-      return `• ${t.name}${where ? ` (${where})` : ""} — ${fmtDue(t, t.dueDate)}`;
+      const nameWithWhere = where ? `${t.name} (${where})` : t.name;
+      return formatItemLine(nameWithWhere, t.url, fmtDue(t, t.dueDate), opts);
     },
     bold,
   );

@@ -196,5 +196,5 @@ export async function getMyWorkBrief(
   const getFeed = deps.getFeed ?? getEmployeeFeed;
   const [dash, feed] = await Promise.all([getDashboard(user), getFeed(user.mondayUserId, now)]);
   const brief = buildBrief(user.name, dash, opts.limit ?? BRIEF_HARD_CAP);
-  return { ...brief, pipelineText: formatEmployeeFeedBriefing(user.name, feed, now, { bold: whatsappBold }) };
+  return { ...brief, pipelineText: formatEmployeeFeedBriefing(user.name, feed, now, { bold: whatsappBold, plainLinks: true }) };
 }

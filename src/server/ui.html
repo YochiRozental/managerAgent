@@ -575,9 +575,16 @@ function bubble(role, text) {
   const b = el("div", "msg " + (role === "user" ? "me" : "bot"));
   if (role === "user") { b.textContent = text; }
   else {
-    // רינדור מינימלי: **מודגש** בלבד, שאר הטקסט כפשוטו
+    // רינדור מינימלי ובטוח: **מודגש**, ו-[שם](https://...) לקישור לחיץ לפריט ב-Monday (נפתח
+    // בלשונית חדשה). הכול רץ על הטקסט *אחרי* esc() — & < > כבר הומרו ל-entities, אז אין דרך
+    // להזריק HTML גם מתוך שם פריט שמגיע מ-Monday. רק https:// מתקבל כקישור (לא javascript:/data:).
     const esc = s => s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
-    b.innerHTML = esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    let html = esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\[([^[\]]+)\]\((https:\/\/[^\s()<>]+)\)/g, (_m, label, url) => {
+      const safeUrl = url.replace(/"/g, "&quot;");
+      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    });
+    b.innerHTML = html;
   }
   $("#chat").appendChild(b);
   return b;

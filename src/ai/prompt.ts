@@ -43,10 +43,16 @@ export interface BuildSystemPromptParams {
   user: IdentifiedUser | null;
   /** Web-only: proactive-nudge context (ops/loopReply.ts). Ignored for channel "whatsapp". */
   about?: LoopContext;
+  /**
+   * מודול נוכחות (2026-10-11, שלב ב) — true ⇔ attendanceEnabledForUser(user) (ops/attendance.ts):
+   * הדגל מופעל, המשתמש ברשימת הפיילוט, ויש לו report:hours. Web-only, כברירת מחדל false — אין
+   * שינוי התנהגות למי שלא בפיילוט.
+   */
+  attendanceEnabled?: boolean;
 }
 
 /** ops/chat.ts's former systemPrompt() body — moved here verbatim. */
-function buildWebPrompt(user: IdentifiedUser, about?: LoopContext): string {
+function buildWebPrompt(user: IdentifiedUser, about?: LoopContext, attendanceEnabled?: boolean): string {
   const now = DateTime.now().setZone(env.TIMEZONE);
   return [
     `אתה העוזר התפעולי של ${user.name} במשרד האדריכלים "גוטליב אדריכלים". תפקיד המשתמש: ${user.roleDescription}`,
@@ -110,6 +116,20 @@ function buildWebPrompt(user: IdentifiedUser, about?: LoopContext): string {
     "• 'תקוע' / 'חסום' / 'מחכה ל...' — קרא report_blocker עם תיאור החסם.",
     "• 'תכתוב בעדכונים של הליד/המשימה/הפרויקט/העסקה X ש…' / 'תוסיף הערה ל…' — זהה את הפריט (find_task / find_lead_or_deal / project_status), קח את ה-itemId, וקרא add_update. עובד על כל סוג פריט ב-Monday, לא רק משימות.",
     "• 'הבטחתי ללקוח...' / 'אמרתי ש...' / 'התחייבתי ל...' — קרא record_commitment. 'שלחתי ללקוח' / 'קיימתי' על התחייבות קיימת — close_commitment. 'מה הבטחתי?' — list_my_commitments.",
+    ...(attendanceEnabled
+      ? [
+          "• נוכחות — פתיחת/סגירת היום כבר טופלה אוטומטית לפני תחילת השיחה הזו, אל תתייחס לזה בעצמך. " +
+            "'אני יוצא עכשיו' / 'יצאתי להפסקה' — attendance_break_start. 'חזרתי' / 'אני ממשיך לעבוד' — attendance_break_end. " +
+            "קרא לאחד מהם רק כשברור שזו הכוונה (לא כל הודעה שמכילה 'יצאתי'/'חזרתי' — למשל 'יצאתי מהפגישה עם הלקוח מרוצה' אינה דיווח נוכחות). " +
+            "'סיימתי להיום' / 'זהו, סיימתי לעבוד' — attendance_day_close, והצג את התוצאה (message) שחוזרת ממנו *בדיוק* כמו שהיא, בלי לנסח מחדש. " +
+            "אם העובד נותן שעה בתשובה לשאלת 'באיזו שעה תרצה שאזכיר לך' (או מבקש לשנות תזכורת קיימת) — attendance_set_reminder עם hour/minute. " +
+            "אל תקרא לכלים האלה כ'בדיקה' בלי שהעובד בפועל דיווח משהו.",
+          "• תיקון/השלמה רטרואקטיבית של נוכחות (על שעה שעברה, לא עכשיו) — 'אתמול סיימתי בארבע', 'התחלתי היום בתשע ולא בעשר', " +
+            "'שכחתי לדווח שחזרתי מההפסקה', 'ביום חמישי יצאתי בשעה שלוש וחצי' — קרא attendance_report_correction עם workDate (YYYY-MM-DD, " +
+            "מחושב מהתאריך/יום-בשבוע שהעובד ציין יחסית להיום), field, ו-time (HH:MM). אם לא ניתנה שעה — שאל לפני הקריאה, אל תנחש. " +
+            "זה *לא* attendance_break_start/end/day_close — אלה לדיווח בזמן אמת בלבד.",
+        ]
+      : []),
     ...(userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")
       ? [
           "• 'תעביר את האחריות על X ל...' / 'תשייך את הליד/הפרויקט/המשימה ל...' — זהה את הפריט, קח itemId, וקרא reassign_item. אשר בקצרה למי הועבר. אם השם לא חד-משמעי — שאל לפני.",
@@ -201,7 +221,7 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
     if (!params.user) {
       throw new Error("buildSystemPrompt('web') דורש משתמש מזוהה — runOpsChat לא קורא לזה בלי אחד.");
     }
-    return buildWebPrompt(params.user, params.about);
+    return buildWebPrompt(params.user, params.about, params.attendanceEnabled);
   }
   return buildWhatsappPrompt(params.user);
 }

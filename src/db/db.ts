@@ -27,10 +27,42 @@ for (const stmt of [
   "ALTER TABLE control_findings ADD COLUMN due_date TEXT",
   "ALTER TABLE control_followups ADD COLUMN processing_started_at TEXT",
   "ALTER TABLE control_followups ADD COLUMN last_error TEXT",
+  "ALTER TABLE attendance_corrections ADD COLUMN idempotency_key TEXT",
 ]) {
   try {
     db.exec(stmt);
   } catch {
     /* העמודה כבר קיימת */
+  }
+}
+// UNIQUE נפרד (לא ב-ALTER עצמו — SQLite לא תומך "ADD COLUMN ... UNIQUE" כש-יש כבר שורות):
+// NULL מרובים מתעלמים מ-UNIQUE ב-SQLite כברירת מחדל, אז שורות ישנות בלי idempotency_key לא מתנגשות.
+try {
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_corrections_idemp ON attendance_corrections (idempotency_key)`);
+} catch {
+  /* כבר קיים */
+}
+
+/**
+ * טרנזקציה סינכרונית אמיתית — BEGIN IMMEDIATE (נועל לכתיבה מיידית, לא "נועל רק כשנכתב"; מתאים
+ * כש-יודעים מראש שהבלוק יכתוב) / COMMIT / ROLLBACK בכשל. node:sqlite אין לו helper כמו
+ * better-sqlite3's db.transaction(fn) — זו העטיפה המקומית. הקריאות בתוך fn כבר סינכרוניות וחסרות
+ * await (עיקרון קיים בכל הקוד — ר' claimApproval/claimFollowupForProcessing), אז זה לא פותר מירוץ
+ * בין threads (node:sqlite רץ בתהליך יחיד) — זה פותר אטומיות-כשל: אם fn זורק באמצע (אחרי שכתב כבר
+ * שינוי אחד ולפני שכתב את השני), ה-ROLLBACK מבטל את מה שכן נכתב, ולא משאיר מצב חצי-עקבי.
+ */
+export function runInTransaction<T>(fn: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* אם ה-ROLLBACK עצמו נכשל (למשל אין טרנזקציה פתוחה בפועל) — לא מטביעים את השגיאה המקורית */
+    }
+    throw err;
   }
 }

@@ -14,6 +14,14 @@ const schema = z.object({
     .string()
     .default("true")
     .transform((v) => v.toLowerCase() === "true"),
+  // מודול נוכחות (2026-10-11, שלב ב) — כבוי כברירת מחדל. ATTENDANCE_PILOT_USER_KEYS: רשימת
+  // user_key (ר' identity/directory.ts) מופרדת בפסיקים, בדיוק תבנית ALLOWED_WHATSAPP_JIDS —
+  // גם כש-ATTENDANCE_MODULE_ENABLED=true, רק מי שמופיע ברשימה הזו רואה את הכלים/מקבל תזכורות.
+  ATTENDANCE_MODULE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
+  ATTENDANCE_PILOT_USER_KEYS: z.string().default(""),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -26,5 +34,9 @@ if (!parsed.success) {
 export const env = parsed.data;
 
 export const allowedWhatsappJids = env.ALLOWED_WHATSAPP_JIDS.split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+export const attendancePilotUserKeys = env.ATTENDANCE_PILOT_USER_KEYS.split(",")
   .map((s) => s.trim())
   .filter(Boolean);

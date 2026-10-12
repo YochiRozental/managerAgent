@@ -653,7 +653,18 @@ async function sendMessage(text) {
     const about = openNudge && openNudge.itemId && openNudge.findingKey
       ? { itemId: openNudge.itemId, source: openNudge.source, findingKey: openNudge.findingKey, taskName: openNudge.taskName, currentDueDateISO: openNudge.currentDueDateISO ?? null, approvalId: openNudge.approvalId ?? undefined, missedCommitment: openNudge.missedCommitment === true }
       : undefined;
-    const { reply, actions, session } = await api("/api/chat", { method:"POST", body: JSON.stringify({ messages: ctx, session: state.session, about }) });
+    // audit שלב ה: מזהה יציב להודעה הזו, לפני השליחה — crypto.randomUUID() (fallback למחרוזת
+    // אקראית בדפדפנים ישנים/הקשר לא-מאובטח). נוצר *פעם אחת* לכל שליחה אמיתית, לא לכל ניסיון —
+    // אם ה-fetch נכשל, שתי הניסיונות למטה (clientMessageId קבוע) הם "אותה הודעה", לא שתיים.
+    const clientMessageId = (crypto.randomUUID ? crypto.randomUUID() : `cmid-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const payload = JSON.stringify({ messages: ctx, session: state.session, about, clientMessageId });
+    let data, lastErr;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { data = await api("/api/chat", { method: "POST", body: payload }); break; }
+      catch (e) { lastErr = e; }
+    }
+    if (!data) throw lastErr;
+    const { reply, actions, session } = data;
     state.session = session;
     typing.remove();
     if (actions && actions.length) {

@@ -48,6 +48,9 @@ const listSessionsStmt = db.prepare(
 const latestSessionStmt = db.prepare(
   `SELECT session_id FROM chat_messages WHERE user_key = ? ORDER BY id DESC LIMIT 1`,
 );
+const countUserMessagesStmt = db.prepare(
+  `SELECT COUNT(*) AS n FROM chat_messages WHERE user_key = ? AND session_id IS ? AND role = 'user'`,
+);
 const clearStmt = db.prepare(`DELETE FROM chat_messages WHERE user_key = ?`);
 const deleteSessionStmt = db.prepare(`DELETE FROM chat_messages WHERE user_key = ? AND session_id IS ?`);
 
@@ -88,6 +91,18 @@ export function listSessions(userKey: string): SessionSummary[] {
 export function latestSessionId(userKey: string): string | null {
   const row = latestSessionStmt.get(userKey) as { session_id: string | null } | undefined;
   return row?.session_id ?? null;
+}
+
+/**
+ * מספר הודעות-משתמש **שכבר נשמרו בפועל** בשיחה הזו — נקרא ב-ops/attendance (idempotency, audit
+ * שלב ד) *לפני* appendChatTurn של ההודעה הנוכחית. יציב בין ניסיון מקורי ל-retry: appendChatTurn
+ * קורה רק *אחרי* ש-runOpsChat מחזיר תוצאה (server/index.ts) — אם הניסיון הראשון קרס/לא הגיע
+ * לתשובה, שום דבר לא נשמר, אז ה-retry סופר את אותו מספר בדיוק. לא תלוי באורך/תוכן מערך history
+ * שהתקבל בבקשה (יכול להיקטע ב-slice(-20) או להשתנות) — נגזר מה-DB המתמיד בלבד.
+ */
+export function countUserMessagesInSession(userKey: string, sessionId: string | null): number {
+  const row = countUserMessagesStmt.get(userKey, sessionId) as { n: number };
+  return row.n;
 }
 
 export function clearChatHistory(userKey: string): void {

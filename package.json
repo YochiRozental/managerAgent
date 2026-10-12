@@ -66,6 +66,13 @@
     "test:create-task-behavior": "tsx scripts/test-create-task-behavior.ts",
     "test:project-stage": "tsx scripts/test-project-stage.ts",
     "test:project-stage-behavior": "tsx scripts/test-project-stage-behavior.ts",
+    "test:attendance-engine": "tsx scripts/test-attendance-engine.ts",
+    "test:attendance": "tsx scripts/test-attendance.ts",
+    "test:attendance-tools": "tsx scripts/test-attendance-tools.ts",
+    "test:attendance-monday-sync": "tsx scripts/test-attendance-monday-sync.ts",
+    "test:attendance-concurrency": "tsx scripts/test-attendance-concurrency.ts",
+    "test:attendance-pilot-readiness": "tsx scripts/test-attendance-pilot-readiness.ts",
+    "test:chat-dedup": "tsx scripts/test-chat-dedup.ts",
     "maintenance:backfill-escalations": "tsx scripts/maintenance/backfill-escalation-identity.ts",
     "maintenance:backfill-escalations:apply": "tsx scripts/maintenance/backfill-escalation-identity.ts --apply"
   },

@@ -35,6 +35,7 @@ import {
   buildSharedToolDefinition,
   filterSharedToolsForUser,
   requireAgentTool,
+  type SharedToolProjection,
   type SharedToolVisibilityEntry,
 } from "../ai/sharedTools.js";
 import type { NormTool, NormToolCall } from "../ai/providers/types.js";
@@ -59,6 +60,9 @@ import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
 import { getOfficeState } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
 import { getEmployeeFeed, formatEmployeeFeedText, formatEmployeeFeedBriefing, employeeFeedCounts } from "./employeeFeed.js";
+import { attendanceEnabledForUser, checkAttendanceDayStart } from "./attendance.js";
+import { buildMessageIdempotencySeed } from "./attendanceEngine.js";
+import { countUserMessagesInSession } from "../db/repositories/chatHistory.js";
 
 const MAX_TURNS = 7;
 
@@ -105,6 +109,40 @@ export const FIND_LEAD_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefiniti
 
 export const UPDATE_LEAD_CONTACT_AGENT_TOOL: AgentTool = requireAgentTool("update_lead_contact", "Web");
 export const UPDATE_LEAD_CONTACT_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(UPDATE_LEAD_CONTACT_AGENT_TOOL);
+
+/**
+ * מודול נוכחות (שלב ג, 2026-10-11) — 5 כלים נוספים, ב-registry המשותף מהתחלה (ops/agentTools.ts),
+ * לא Web-local: ר' דוח המימוש §4 (חיבור ל-WhatsApp בעתיד = להוסיף את השם לרשימת הכלים שם, בלי קוד
+ * חדש). **לא** ב-WEB_SHARED_TOOL_VISIBILITY/WIRED_AGENT_TOOL_NAMES הקיימים בכוונה — אלה מתעדים
+ * מיגרציה היסטורית סגורה (9+2 כלים) ואין להם שום מנגנון flag+pilot; הנוכחות צריכה שער נוסף
+ * (attendanceEnabledForUser) מעבר ל-isToolAllowedForUser הרגיל, אז יש לה טבלת visibility נפרדה
+ * (ATTENDANCE_TOOL_VISIBILITY, למטה) שנדחפת ל-tools[] רק אם attendanceEnabledForUser(user).
+ * transformInput מזריק messageSeed — host-injected, לא חלק מה-input_schema שהמודל רואה (בדיוק
+ * כמו WhatsApp's normalizeTaskSource) — buildMessageIdempotencySeed מחושב *פעם אחת* ב-runOpsChat
+ * (לא כאן, לא בכל כלי בנפרד) כדי שכל הכלים בסבב הזה יקבלו בדיוק את אותו seed.
+ */
+export const ATTENDANCE_BREAK_START_AGENT_TOOL: AgentTool = requireAgentTool("attendance_break_start", "Web");
+export const ATTENDANCE_BREAK_END_AGENT_TOOL: AgentTool = requireAgentTool("attendance_break_end", "Web");
+export const ATTENDANCE_DAY_CLOSE_AGENT_TOOL: AgentTool = requireAgentTool("attendance_day_close", "Web");
+export const ATTENDANCE_SET_REMINDER_AGENT_TOOL: AgentTool = requireAgentTool("attendance_set_reminder", "Web");
+export const ATTENDANCE_REPORT_CORRECTION_AGENT_TOOL: AgentTool = requireAgentTool("attendance_report_correction", "Web");
+
+function withMessageSeed(messageSeed: string): SharedToolProjection {
+  return { transformInput: (input) => ({ ...input, messageSeed }) };
+}
+
+/** נבנה פר-קריאת runOpsChat (לא מודול-level כמו שאר ה-TOOL_DEFINITION-ים) כי messageSeed משתנה
+ *  מסבב לסבב — ר' buildAttendanceToolVisibility למטה. */
+function buildAttendanceToolDefinitions(messageSeed: string) {
+  const proj = withMessageSeed(messageSeed);
+  return {
+    breakStart: buildSharedToolDefinition(ATTENDANCE_BREAK_START_AGENT_TOOL, proj),
+    breakEnd: buildSharedToolDefinition(ATTENDANCE_BREAK_END_AGENT_TOOL, proj),
+    dayClose: buildSharedToolDefinition(ATTENDANCE_DAY_CLOSE_AGENT_TOOL, proj),
+    setReminder: buildSharedToolDefinition(ATTENDANCE_SET_REMINDER_AGENT_TOOL, proj),
+    reportCorrection: buildSharedToolDefinition(ATTENDANCE_REPORT_CORRECTION_AGENT_TOOL, proj),
+  };
+}
 
 /**
  * Step 3F.6 — ה-visibility policy המוצהר, אחד לכל אחד מ-9 הכלים: "always" = נדחף ל-tools[] ללא
@@ -248,7 +286,7 @@ export interface OpsChatResult {
  * מייבאים אותו ישירות מ-"./chat.js".
  */
 export function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
-  return buildSystemPrompt({ channel: "web", user, about });
+  return buildSystemPrompt({ channel: "web", user, about, attendanceEnabled: attendanceEnabledForUser(user) });
 }
 
 function fmtTask(t: DashboardTask): string {
@@ -392,6 +430,18 @@ interface SharedToolUiEffect {
 export interface OpsChatOptions {
   /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
   about?: LoopContext;
+  /** מזהה השיחה (server/index.ts's session) — בשימוש רק כ-fallback (ר' clientMessageId למטה). */
+  session?: string;
+  /**
+   * audit שלב ה (2026-10-11) — מזהה שהלקוח מקצה (ui.html, crypto.randomUUID()) *לפני* השליחה,
+   * פר-פעולת-שליחה אמיתית. זה המזהה ה-**ראשי** ל-idempotency (לא turnOrdinal — ר'
+   * attendanceEngine.ts's MessageIdentity): יציב ברטרי (אותה הודעה שנכשלה ונשלחה שוב = אותו
+   * מזהה), ותמיד שונה בין שתי הודעות אמיתיות (שתי לשוניות/מכשירים, גם עם תוכן זהה) כי כל אחת
+   * מריצה את ה-UUID שלה בעצמה — לא תלוי ב-history/session בכלל. חסר (קורא ישן/לא-חלונית) →
+   * fallback ל-turnOrdinal (session+ספירת הודעות מה-DB) — עדיין נכון ל-retry תוך שיחה בודדת,
+   * רק לא מגן על המקרה הגבולי של שתי בקשות מקביליות *בלי* clientMessageId בכלל.
+   */
+  clientMessageId?: string;
 }
 
 export async function runOpsChat(
@@ -425,6 +475,24 @@ export async function runOpsChat(
   }
 
   const now = DateTime.now().setZone(env.TIMEZONE);
+
+  // Day-Start Gate (מודול נוכחות, שלב ב/ג) — בדיקת DB טהורה, בלי קריאת AI נוספת ובלי Monday. רק
+  // מי שב-attendanceEnabledForUser (דגל+פיילוט+הרשאה) יכול בכלל לפתוח יום; לכולם אחרים זה no-op
+  // מיידי. הבנר מצורף לתשובה הסופית למטה, לא מוחלף לה.
+  const attendanceOn = attendanceEnabledForUser(user);
+  const attendanceBanner = attendanceOn ? checkAttendanceDayStart(user, now).banner : null;
+  // idempotency (audit שלב ה): clientMessageId (מה-UI, ר' OpsChatOptions) הוא הראשי — יציב ברטרי,
+  // ולעולם לא מתנגש בין שתי הודעות אמיתיות (גם מקביליות, גם זהות-תוכן) כי כל שליחה מקבלת UUID
+  // משלה בלקוח. turnOrdinal (ספירת הודעות מה-DB) הוא fallback בלבד לקוראים שלא שולחים clientMessageId.
+  const scopeId = opts.session ?? "no-session";
+  const messageSeed = attendanceOn
+    ? buildMessageIdempotencySeed(
+        opts.clientMessageId
+          ? { scopeId, channelMessageId: opts.clientMessageId }
+          : { scopeId, turnOrdinal: countUserMessagesInSession(user.key, opts.session ?? null) },
+      )
+    : "";
+
   let tasks = await fetchUserOpsTasks(user.mondayUserId);
   const actions: string[] = [];
   // התדריך של "בוקר טוב" מוגש מילה במילה — מודלים נוטים לקצר/לנסח מחדש, וכאן חשוב שהמבנה
@@ -469,6 +537,13 @@ export async function runOpsChat(
     create_project_stage: { message: (r) => `🆕 ${(r as { message: string }).message}` },
     reassign_item: { message: (r) => `👤 ${(r as { message: string }).message}` },
     update_lead_contact: { message: (r) => `📇 ${(r as { message: string }).message}` },
+    // מודול נוכחות (שלב ג) — AttendanceActionResult.ok מצביע אם היה ok; message הוא טקסט מוכן
+    // (כבר בעברית, כולל הניסוח המדויק שהתבקש ל-day_close) — לא בונים טקסט חדש, רק מציגים.
+    attendance_break_start: { message: (r) => `⏸️ ${(r as { message: string }).message}` },
+    attendance_break_end: { message: (r) => `▶️ ${(r as { message: string }).message}` },
+    attendance_day_close: { message: (r) => `🏁 ${(r as { message: string }).message}` },
+    attendance_set_reminder: { message: (r) => `⏰ ${(r as { message: string }).message}` },
+    attendance_report_correction: { message: (r) => `📝 ${(r as { message: string }).message}` },
   };
 
   const tools: (ToolDef | ToolDefinition)[] = [
@@ -606,6 +681,14 @@ export async function runOpsChat(
   // קודם, ר' git history). ה-policy (always/gated) מוצהרת אחת, גלויה, במקום אחד — לא נגזרת מצורת
   // הקוד. סדר הכלים בתוך tools[] לא משפיע על שום דבר (המודל בוחר לפי name, לא לפי מיקום).
   tools.push(...filterSharedToolsForUser(WEB_SHARED_TOOL_VISIBILITY, user));
+
+  // מודול נוכחות (שלב ג) — שער נפרד מ-WEB_SHARED_TOOL_VISIBILITY בכוונה: attendanceEnabledForUser
+  // כולל Feature Flag+pilot allowlist, לא רק הרשאה (filterSharedToolsForUser בודק permission בלבד
+  // — לא מספיק כאן). messageSeed מוזרק דרך transformInput, מחושב פעם אחת למעלה.
+  if (attendanceOn) {
+    const a = buildAttendanceToolDefinitions(messageSeed);
+    tools.push(a.breakStart, a.breakEnd, a.dayClose, a.setReminder, a.reportCorrection);
+  }
 
   // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה ----
   if (opts.about) {
@@ -974,5 +1057,6 @@ export async function runOpsChat(
     sideEffectCount: () => actions.length,
   });
 
-  return { reply: routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?", actions };
+  const finalText = routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?";
+  return { reply: attendanceBanner ? `${attendanceBanner}\n\n${finalText}` : finalText, actions };
 }

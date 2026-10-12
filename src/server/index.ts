@@ -37,6 +37,9 @@ import { listApprovalsForManager, recoverStuckApprovals } from "../db/repositori
 import { listApprovalMessages } from "../db/repositories/approvalMessages.js";
 import { listFollowups, recoverStuckFollowups } from "../db/repositories/controlFollowups.js";
 import { recordHeartbeat } from "../db/repositories/systemHealth.js";
+import { recoverStuckChatMessageClaims } from "../db/repositories/chatMessageDedup.js";
+import { runDedupedChatTurn, ChatMessageConflictError, ChatMessageStillProcessingError } from "./chatDedup.js";
+import { createHash } from "node:crypto";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import type { LoopContext } from "../ops/loopReply.js";
@@ -88,6 +91,15 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   } catch {
     return {};
   }
+}
+
+/**
+ * audit שלב ה: hash של תוכן ההודעה+ה-context — לא קריפטוגרפי, רק "לגלות אם clientMessageId
+ * נשלח פעמיים עם תוכן אחר" (client bug/שימוש חוזר, ר' chatDedup.ts). retry לגיטימי (אותו client
+ * שולח את אותה הודעה בדיוק שוב) מגיע עם hash זהה.
+ */
+function hashChatContent(text: string, about: LoopContext | undefined): string {
+  return createHash("sha256").update(JSON.stringify({ text, about })).digest("hex");
 }
 
 /** מזהה משתמש לפי מייל, שם (עברית) או מפתח פנימי. */
@@ -184,6 +196,13 @@ const server = createServer(async (req, res) => {
         return send(res, 400, { error: "אין הודעה" });
       }
       const session = typeof body.session === "string" && body.session ? body.session : newSessionId();
+      // audit שלב ה: מזהה שהלקוח הקצה (ui.html, crypto.randomUUID()) לפני השליחה — ר' chatDedup.ts.
+      // ולידציה בסיסית בלבד (לא קריפטוגרפית): מחרוזת סבירה, לא ריקה, גבול אורך — משמש כמפתח DB.
+      const rawClientMessageId = body.clientMessageId;
+      const clientMessageId =
+        typeof rawClientMessageId === "string" && rawClientMessageId.length > 0 && rawClientMessageId.length <= 128
+          ? rawClientMessageId
+          : undefined;
       // תשובה לפנייה יזומה של הבקרה — ה-UI שולח את הקשר המשימה כדי שהצ'אט ידע על מה מדובר.
       let about: LoopContext | undefined;
       const a = body.about as Record<string, unknown> | undefined;
@@ -209,12 +228,25 @@ const server = createServer(async (req, res) => {
           missedCommitment: a.missedCommitment === true,
         };
       }
-      const result = await runOpsChat(user, messages, about ? { about } : {});
-      if (result.actions.length) {
-        logger.info({ user: user.key, actions: result.actions }, "עדכוני משימה מהצ'אט");
+
+      const lastUserMessage = messages[messages.length - 1]!.content;
+      const contentHash = hashChatContent(lastUserMessage, about);
+
+      try {
+        const { result } = await runDedupedChatTurn(user.key, clientMessageId, session, contentHash, async () => {
+          const r = await runOpsChat(user, messages, { ...(about ? { about } : {}), session, clientMessageId });
+          if (r.actions.length) {
+            logger.info({ user: user.key, actions: r.actions }, "עדכוני משימה מהצ'אט");
+          }
+          appendChatTurn(user.key, session, lastUserMessage, r.reply, r.actions);
+          return { ...r, session };
+        });
+        return send(res, 200, result);
+      } catch (err) {
+        if (err instanceof ChatMessageConflictError) return send(res, 409, { error: err.message, code: err.code });
+        if (err instanceof ChatMessageStillProcessingError) return send(res, 409, { error: err.message, code: err.code });
+        throw err;
       }
-      appendChatTurn(user.key, session, messages[messages.length - 1]!.content, result.reply, result.actions);
-      return send(res, 200, { ...result, session });
     }
 
     if (req.method === "GET" && path === "/api/chat/sessions") {
@@ -516,6 +548,11 @@ setInterval(() => {
   const recoveredFollowups = recoverStuckFollowups();
   if (recoveredFollowups > 0) {
     logger.warn(`follow-ups ששוחזרו אחרי הפעלה מחדש (היו תקועים ב-'processing'): ${recoveredFollowups}`);
+  }
+  // audit שלב ה: chat_message_dedup תקוע ב-'processing' משרת קודם שקרס — לא "עדיין רץ" באמת.
+  const recoveredChatClaims = recoverStuckChatMessageClaims();
+  if (recoveredChatClaims > 0) {
+    logger.warn(`הודעות צ'אט ששוחזרו אחרי הפעלה מחדש (היו תקועות ב-'processing'): ${recoveredChatClaims}`);
   }
 }
 

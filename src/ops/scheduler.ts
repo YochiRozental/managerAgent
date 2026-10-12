@@ -26,6 +26,8 @@ import { buildEndOfDaySummary } from "./eodSummary.js";
 import { runDailyControlCycle } from "./escalation.js";
 import { runDueFollowups, type FollowupRunnerDeps, type FollowupRunResult } from "./followups.js";
 import { buildWeeklyReport } from "./weeklyReport.js";
+import { startAttendanceReminderSchedule } from "./attendanceReminderScheduler.js";
+import { startAttendanceMondaySyncSchedule } from "./attendanceMondaySyncScheduler.js";
 
 const BACKUP_HOUR = Number(process.env.BACKUP_HOUR ?? 6);
 const DAILY_HOUR = Number(process.env.CONTROL_SCAN_HOUR ?? 7);
@@ -230,4 +232,10 @@ export function startScheduler(): void {
   catchUp();
   startFollowupSchedule();
   void maybeRunFollowupCatchUpOnStartup();
+  // כבוי בפועל כש-ATTENDANCE_MODULE_ENABLED=false (בודק את עצמו בתוך startAttendanceReminderSchedule) —
+  // חיווט כאן בטוח גם לפני הפעלה: בלי הדגל השאילתה הפנימית שלו תמיד מוצאת 0 ימי נוכחות פתוחים.
+  startAttendanceReminderSchedule();
+  // כבוי בפועל כש-ATTENDANCE_MODULE_ENABLED=false (בודק את עצמו) — אפס קריאה ל-Monday האמיתי
+  // לפני שהדגל יופעל במפורש (שלב פיילוט נפרד, לא חלק מהחיווט הזה).
+  startAttendanceMondaySyncSchedule();
 }

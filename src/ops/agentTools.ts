@@ -29,10 +29,50 @@
  * שכבת ה-registry: מאפשר לבדוק ש-execute מפנה לפונקציה הנכונה בלי לגעת ב-Monday האמיתי.
  */
 
+import { DateTime } from "luxon";
+import { env } from "../config/env.js";
 import type { IdentifiedUser, Permission } from "../identity/index.js";
 import { userCan } from "../identity/index.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { LEAD_PRODUCT_OPTIONS, LEAD_SOURCE_OPTIONS } from "../integrations/monday/leads.js";
+import {
+  reportBreakStart,
+  reportBreakEnd,
+  reportDayClose,
+  setAttendanceReminderTime,
+  requestAttendanceCorrection,
+  attendanceEnabledForUser,
+  type AttendanceActionResult,
+  type RequestCorrectionResult,
+} from "./attendance.js";
+import type { AttendanceEventType } from "./attendanceEngine.js";
+
+/**
+ * ops/attendance.ts מחזיר {ok:false, message} על כשל "רגיל" (למשל state machine דוחה פעולה) —
+ * חוזה נוח לבדיקות ישירות (ר' scripts/test-attendance.ts). אבל דיספצ'ר הכלים המשותף
+ * (dispatchToolDefinition) מבדיל הצלחה/כישלון רק לפי throw-or-not (ר' onExecuted/onError שם) —
+ * בלי ההמרה הזו, כשל "רגיל" היה מופיע ל-UI כאילו הפעולה הצליחה (SHARED_TOOL_UI_EFFECT נקרא על
+ * כל החזרה שלא זרקה). ממירה כאן, בגבול ה-AgentTool, בלי לשנות את החוזה הנבדק של attendance.ts.
+ */
+function throwIfFailed<T extends { ok: boolean; message: string }>(r: T): T {
+  if (!r.ok) throw new Error(r.message);
+  return r;
+}
+
+/**
+ * הגנת-עומק (שלב ה, הכנת פיילוט — 2026-10-12): chat.ts בודק attendanceEnabledForUser לפני שהוא
+ * בכלל מכניס את חמשת כלי הנוכחות ל-tools[] שנשלח למודל — זו ההגנה הראשית (המודל פיזית לא יכול
+ * לבקש כלי שלא הוצע לו). הבדיקה הזו כאן היא שכבה שנייה, לא תלויה ב"מה המודל קיבל להציע": אם
+ * הדיספצ'ר אי-פעם יקרא ל-execute של כלי נוכחות עבור משתמש לא-פיילוט (בדיקת-מוכנות-לפיילוט גילתה
+ * שאין היום הגנה כזו) — נכשל כאן במפורש, לא בשקט. requiredPermission=report:hours *לבדו* לא
+ * מספיק: כל 6 התפקידים בספר הצוות כוללים report:hours, כך שבלעדי הבדיקה הזו כל עובד (לא רק
+ * מי שהוגדר לפיילוט) היה יכול לכתוב נוכחות בפועל אם המודל אי-פעם יוזם קריאה לכלי שלא הוצע לו.
+ */
+function assertAttendanceEnabled(user: IdentifiedUser, check: typeof attendanceEnabledForUser): void {
+  if (!check(user)) {
+    throw new Error("מודול הנוכחות לא פעיל עבורך כרגע.");
+  }
+}
 import {
   addUpdateToItem,
   createLeadAction,
@@ -153,6 +193,8 @@ export interface BuildAgentToolsDeps {
   addUpdateToItem?: typeof addUpdateToItem;
   findLeadAction?: typeof findLeadAction;
   updateLeadContactAction?: typeof updateLeadContactAction;
+  /** בדיקות-מוכנות-לפיילוט: מאפשר להזריק allowlist מדומה בלי תלות ב-ATTENDANCE_PILOT_USER_KEYS האמיתי. */
+  attendanceEnabledForUser?: typeof attendanceEnabledForUser;
 }
 
 /**
@@ -169,6 +211,7 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
   const doAddUpdateToItem = deps.addUpdateToItem ?? addUpdateToItem;
   const doFindLeadAction = deps.findLeadAction ?? findLeadAction;
   const doUpdateLeadContactAction = deps.updateLeadContactAction ?? updateLeadContactAction;
+  const doAttendanceEnabledForUser = deps.attendanceEnabledForUser ?? attendanceEnabledForUser;
 
   const tools: AgentTool[] = [
     {
@@ -421,6 +464,112 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
         };
         const result: UpdateLeadContactResult = await doUpdateLeadContactAction(ctx.user, updateInput);
         return result;
+      },
+    },
+    // ─────────────────────────────────────────────────────────────────────
+    // מודול נוכחות (שלב ג, 2026-10-11) — ב-registry המשותף מהתחלה (לא Web-local), כדי שחיבור
+    // ל-WhatsApp בעתיד (ר' דוח המימוש §4) יהיה "להוסיף את השם לרשימת הכלים שם" בלבד, בלי שום קוד
+    // חדש כאן. `input.messageSeed` מגיע מ-transformInput בצד הערוץ (ops/chat.ts) — לא חלק מה-
+    // input_schema הנראה למודל (host-injected, בדיוק כמו normalizeTaskSource ב-WhatsApp). חסר/ריק
+    // (ערוץ שלא חובר עדיין) → "" — buildEventIdempotencyKey עדיין לא קורס, רק מאבד את הגנת ה-retry.
+    {
+      name: "attendance_break_start",
+      description:
+        "העובד מדווח שהוא יוצא זמנית/להפסקה מהעבודה עכשיו ('אני יוצא עכשיו', 'יצאתי להפסקה', 'יוצא לכמה דקות'). " +
+        "קרא רק כשברור שזו הכוונה בפועל — לא כל הודעה שמכילה את המילה 'יצאתי' (למשל 'יצאתי מהפגישה מרוצה' אינה דיווח נוכחות).",
+      input_schema: { type: "object", properties: {} },
+      requiredPermission: ["report:hours"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
+        const r: AttendanceActionResult = reportBreakStart(ctx.user, DateTime.now().setZone(env.TIMEZONE), String(input.messageSeed ?? ""));
+        return throwIfFailed(r);
+      },
+    },
+    {
+      name: "attendance_break_end",
+      description: "העובד מדווח שהוא חזר מהפסקה/יציאה זמנית וממשיך לעבוד ('חזרתי', 'אני ממשיך לעבוד', 'חזרתי מההפסקה').",
+      input_schema: { type: "object", properties: {} },
+      requiredPermission: ["report:hours"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
+        const r: AttendanceActionResult = reportBreakEnd(ctx.user, DateTime.now().setZone(env.TIMEZONE), String(input.messageSeed ?? ""));
+        return throwIfFailed(r);
+      },
+    },
+    {
+      name: "attendance_day_close",
+      description:
+        "העובד מדווח שסיים את יום העבודה כולו להיום ('סיימתי להיום', 'זהו, סיימתי', 'סוגר את היום'). " +
+        "סוגר את הנוכחות של היום וחושב שעות נטו. הצג את ה-message שחוזר *בדיוק* כמו שהוא, בלי לנסח מחדש.",
+      input_schema: { type: "object", properties: {} },
+      requiredPermission: ["report:hours"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
+        const r: AttendanceActionResult = reportDayClose(ctx.user, DateTime.now().setZone(env.TIMEZONE), String(input.messageSeed ?? ""));
+        return throwIfFailed(r);
+      },
+    },
+    {
+      name: "attendance_set_reminder",
+      description:
+        "קובע/משנה את שעת התזכורת היומית האישית של העובד לסיום דיווח נוכחות — כשהוא עונה על השאלה 'באיזו שעה תרצה שאזכיר לך', " +
+        "או מבקש לשנות שעה קיימת ('תזכיר לי ב-17:30', 'שנה את שעת התזכורת שלי').",
+      input_schema: {
+        type: "object",
+        properties: {
+          hour: { type: "number", description: "שעה, 0-23" },
+          minute: { type: "number", description: "דקה, 0-59" },
+        },
+        required: ["hour", "minute"],
+      },
+      requiredPermission: ["report:hours"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
+        const r: AttendanceActionResult = setAttendanceReminderTime(ctx.user, Number(input.hour), Number(input.minute));
+        return throwIfFailed(r);
+      },
+    },
+    {
+      name: "attendance_report_correction",
+      description:
+        "תיקון/השלמה רטרואקטיבית של נוכחות — כשהעובד מדווח על שעה שעברה או שנשכחה, לא על עכשיו. " +
+        "דוגמאות: 'אתמול סיימתי בארבע' (field=day_close, workDate=אתמול, time=16:00). " +
+        "'התחלתי היום בתשע ולא בעשר' (field=day_open, workDate=היום, time=09:00). " +
+        "'שכחתי לדווח שחזרתי מההפסקה' (field=break_end, workDate=היום; אם לא ניתנה שעה — שאל 'באיזו שעה חזרת?' לפני הקריאה). " +
+        "'ביום חמישי יצאתי בשעה שלוש וחצי' (field=break_start, workDate=תאריך יום חמישי האחרון, time=15:30). " +
+        "חשב workDate כ-YYYY-MM-DD לפי התאריך/יום-בשבוע שהעובד ציין יחסית להיום (בדיוק כמו dueDate בכלים אחרים) — אל תנחש אם לא ברור, שאל. " +
+        "זה *לא* דיווח בזמן אמת (attendance_break_start/end/day_close) — רק לשעות שעברו/נשכחו.",
+      input_schema: {
+        type: "object",
+        properties: {
+          workDate: { type: "string", description: "YYYY-MM-DD — התאריך שאליו מתייחס התיקון" },
+          field: {
+            type: "string",
+            enum: ["day_open", "break_start", "break_end", "day_close"],
+            description: "day_open=כניסה/התחלת יום · break_start=יציאה/תחילת הפסקה · break_end=חזרה/סיום הפסקה · day_close=סיום יום",
+          },
+          time: { type: "string", description: "HH:MM — השעה המקומית הנכונה" },
+          reason: { type: "string", description: "הסבר קצר, אם ניתן" },
+        },
+        required: ["workDate", "field", "time"],
+      },
+      requiredPermission: ["report:hours"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
+        const workDate = String(input.workDate ?? "");
+        const time = String(input.time ?? "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error(`workDate לא תקין: "${workDate}" (צריך YYYY-MM-DD)`);
+        if (!/^\d{2}:\d{2}$/.test(time)) throw new Error(`time לא תקין: "${time}" (צריך HH:MM)`);
+        const newReportedForAtUtcIso = DateTime.fromISO(`${workDate}T${time}`, { zone: env.TIMEZONE }).toUTC().toISO();
+        if (!newReportedForAtUtcIso) throw new Error(`לא הצלחתי לפרש תאריך/שעה: ${workDate} ${time}`);
+        const r: RequestCorrectionResult = requestAttendanceCorrection(ctx.user, {
+          workDate,
+          field: input.field as AttendanceEventType,
+          newReportedForAtUtcIso,
+          reason: input.reason ? String(input.reason) : undefined,
+          messageSeed: String(input.messageSeed ?? ""),
+        });
+        return throwIfFailed(r);
       },
     },
   ];

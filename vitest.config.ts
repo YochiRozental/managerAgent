@@ -43,6 +43,7 @@ const SAFE_TESTS = [
   "tests/integration/attendanceConcurrency.test.ts",
   "tests/integration/attendanceTools.test.ts",
   "tests/integration/attendanceMondaySync.test.ts",
+  "tests/integration/attendanceIncident1013.test.ts",
   "tests/integration/deferralPlan.test.ts",
   "tests/integration/followups.test.ts",
   "tests/integration/followupScheduler.test.ts",

@@ -27,6 +27,8 @@ import {
 } from "../db/repositories/commitments.js";
 import { logger } from "../utils/logger.js";
 import { runCentralAgent } from "../ai/routedAgent.js";
+import type { RunModelFn } from "../ai/agentLoop.js";
+import type { AiConfig } from "../ai/tierConfig.js";
 import { buildSystemPrompt } from "../ai/prompt.js";
 import type { ToolDefinition } from "../ai/toolRegistry.js";
 import { dispatchToolDefinition } from "../ai/dispatcher.js";
@@ -126,6 +128,10 @@ export const ATTENDANCE_BREAK_END_AGENT_TOOL: AgentTool = requireAgentTool("atte
 export const ATTENDANCE_DAY_CLOSE_AGENT_TOOL: AgentTool = requireAgentTool("attendance_day_close", "Web");
 export const ATTENDANCE_SET_REMINDER_AGENT_TOOL: AgentTool = requireAgentTool("attendance_set_reminder", "Web");
 export const ATTENDANCE_REPORT_CORRECTION_AGENT_TOOL: AgentTool = requireAgentTool("attendance_report_correction", "Web");
+/** audit שלב ז (2026-10-13) — קריאה בלבד, אין לה messageSeed/תופעת-לוואי, לכן לא בתוך
+ *  buildAttendanceToolDefinitions (שקיים כי *לאלה* יש messageSeed שמשתנה פר-קריאה). */
+export const ATTENDANCE_DAY_STATUS_AGENT_TOOL: AgentTool = requireAgentTool("attendance_day_status", "Web");
+export const ATTENDANCE_DAY_STATUS_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(ATTENDANCE_DAY_STATUS_AGENT_TOOL);
 
 function withMessageSeed(messageSeed: string): SharedToolProjection {
   return { transformInput: (input) => ({ ...input, messageSeed }) };
@@ -143,6 +149,66 @@ function buildAttendanceToolDefinitions(messageSeed: string) {
     reportCorrection: buildSharedToolDefinition(ATTENDANCE_REPORT_CORRECTION_AGENT_TOOL, proj),
   };
 }
+
+/**
+ * audit שלב ז (2026-10-13) — תקלת 13/10: הסוכן טען "רשמתי — חזרת ב-12:28" (ניסוח חופשי, לא
+ * תוצאת כלי) כש-אף כלי לא רץ בפועל (turns=1, אפס tool_use בלוג). אלה הם הפתיחים המדויקים
+ * שהתבניות הקיימות (attendance.ts) מפיקות בהצלחה — אם המודל מפיק את אחד מהם *בלי* שהתבצע כלי
+ * נוכחות אמיתי בסבב הזה (ר' liveAttendanceConfirmation ב-runOpsChat), זה חשוד כניסוח-חופשי
+ * שמחקה הצלחה, לא הצלחה אמיתית. לא נועד לפרש כוונת-משתמש (regex על מה שהמשתמש אמר) — רק לזהות
+ * שהמודל *עצמו* מייצר פלט שתואם *לתבניות הקנוניות של המערכת עצמה*, בלי גיבוי.
+ */
+const ATTENDANCE_CONFIRMATION_PATTERNS: RegExp[] = [
+  /רשמתי\s*—\s*יצאת\s+ב-?\d{1,2}:\d{2}/,
+  /רשמתי\s*—\s*חזרת\s+ב-?\d{1,2}:\d{2}/,
+  /סיימתי את דיווח הנוכחות שלך להיום/,
+  /התיקון (נשמר|אושר)/,
+  /העברתי את בקשת התיקון למוטי/,
+];
+function matchesCannedAttendanceConfirmation(text: string): boolean {
+  return ATTENDANCE_CONFIRMATION_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * audit שלב ח (2026-10-13) — בדיקת-המוכנות גילתה שה-guard לעיל תלוי בניסוח *הפלט* של המודל: אם
+ * המודל מאשר הצלחה במילים אחרות (למשל "סידרתי, הכול טוב" במקום אחד מ-5 התבניות) — אין גיבוי
+ * אמיתי *וגם* אין התאמת-תבנית, אז שום דבר לא תופס. התיקון: זיהוי *בקשת-הפעולה* מתוך הודעת
+ * המשתמש (לא תשובת המודל) — אותו אוצר-מילים שה-system prompt (ai/prompt.ts) כבר מצהיר עליו
+ * כטריגר לכלי נוכחות. במכוון לא תופס שאלות-מידע ("מה רשום לי", "כמה עבדתי", "אני בעבודה או
+ * בהפסקה?") — אלה attendance_day_status, לא בקשת-ביצוע (דרישה מפורשת: לשמור על ההפרדה).
+ */
+const ATTENDANCE_ACTION_INTENT_PATTERNS: RegExp[] = [
+  /^(אני\s+)?יוצאת?\s+(עכשיו|להפסקה|לכמה דקות)/, // "אני יוצא עכשיו" / "יוצאת להפסקה"
+  /יצאתי\s+(עכשיו|להפסקה|לכמה דקות)/, // "יצאתי עכשיו" / "יצאתי להפסקה"
+  /^הפסקה\s+של\s+\d+/, // "הפסקה של 10 דק'"
+  /^חזרתי(?:\s|$)/, // "חזרתי", "חזרתי לעבוד..." — לא \b: Hebrew אינו \w ב-JS regex, \b לא עובד כצפוי כאן
+  /^אני\s+ממשיך\s+לעבוד/, // "אני ממשיך לעבוד"
+  /סיימתי\s+(את העבודה\s+)?להיום/, // "סיימתי להיום"
+  /זהו,?\s*סיימתי\s+לעבוד/, // "זהו, סיימתי לעבוד"
+  /תעדכן\s+ש(חזרתי|יצאתי|התחלתי|סיימתי)/, // "תעדכן שחזרתי ב-12:28" (תיקון)
+  /שכחתי\s+לדווח/, // "שכחתי לדווח שחזרתי מההפסקה" (תיקון)
+  /(אתמול|היום)\s+(סיימתי|התחלתי)\s+ב/, // "אתמול סיימתי בארבע" / "התחלתי היום בתשע" (תיקון)
+];
+function looksLikeAttendanceActionRequest(text: string): boolean {
+  const t = text.trim();
+  return ATTENDANCE_ACTION_INTENT_PATTERNS.some((re) => re.test(t));
+}
+/** מילות-השלמה גנריות — רחבות יותר מ-5 התבניות המדויקות למעלה, בכוונה: בשילוב עם בקשת-פעולה
+ *  מהמשתמש (looksLikeAttendanceActionRequest) זה מספיק לתפוס "סידרתי, הכול טוב" גם בלי שהמודל
+ *  חזר על התבנית הקנונית. תגובה שלא טוענת כלום (שאלת-הבהרה כמו "באיזו שעה בדיוק?") לא מכילה
+ *  אף אחת מהן — לא נחסמת, בדיוק הדרישה (לא לחסום שאלות/הודעות רגילות). */
+const GENERIC_COMPLETION_MARKERS = ["רשמתי", "נרשם", "סודר", "סידרתי", "בוצע", "עודכן", "נקלט"];
+function soundsLikeCompletionClaim(text: string): boolean {
+  return GENERIC_COMPLETION_MARKERS.some((w) => text.includes(w));
+}
+/** שמות הכלים שעלולים "לאשר פעולה" — אם אחד מהם רץ בהצלחה, יש גיבוי אמיתי; אם לא, וגם הטקסט
+ *  תואם לתבנית למעלה, זה חשד לאישור-שקרי (ר' docstring מעל ATTENDANCE_CONFIRMATION_PATTERNS). */
+const ATTENDANCE_LIVE_CONFIRMATION_TOOLS = new Set([
+  "attendance_break_start",
+  "attendance_break_end",
+  "attendance_day_close",
+  "attendance_report_correction",
+]);
 
 /**
  * Step 3F.6 — ה-visibility policy המוצהר, אחד לכל אחד מ-9 הכלים: "always" = נדחף ל-tools[] ללא
@@ -442,6 +508,13 @@ export interface OpsChatOptions {
    * רק לא מגן על המקרה הגבולי של שתי בקשות מקביליות *בלי* clientMessageId בכלל.
    */
   clientMessageId?: string;
+  /** בדיקות בלבד — אותם test seams ש-runCentralAgent/runRoutedAgent כבר תומכים בהם (ai/routedAgent.ts),
+   *  מוזרקים דרך runOpsChat כדי לבדוק את ה-guard הדטרמיניסטי (audit שלב ז) בלי קריאת AI אמיתית. */
+  _runModel?: RunModelFn;
+  _config?: AiConfig;
+  /** בדיקות בלבד — עוקף את attendanceEnabledForUser האמיתי (בדיוק עיקרון deps ב-agentTools.ts's
+   *  buildAgentTools), כדי לא להיות תלוי ב-ATTENDANCE_MODULE_ENABLED/PILOT_USER_KEYS האמיתיים. */
+  _attendanceEnabledForUser?: (user: IdentifiedUser) => boolean;
 }
 
 export async function runOpsChat(
@@ -479,7 +552,7 @@ export async function runOpsChat(
   // Day-Start Gate (מודול נוכחות, שלב ב/ג) — בדיקת DB טהורה, בלי קריאת AI נוספת ובלי Monday. רק
   // מי שב-attendanceEnabledForUser (דגל+פיילוט+הרשאה) יכול בכלל לפתוח יום; לכולם אחרים זה no-op
   // מיידי. הבנר מצורף לתשובה הסופית למטה, לא מוחלף לה.
-  const attendanceOn = attendanceEnabledForUser(user);
+  const attendanceOn = (opts._attendanceEnabledForUser ?? attendanceEnabledForUser)(user);
   const attendanceBanner = attendanceOn ? checkAttendanceDayStart(user, now).banner : null;
   // idempotency (audit שלב ה): clientMessageId (מה-UI, ר' OpsChatOptions) הוא הראשי — יציב ברטרי,
   // ולעולם לא מתנגש בין שתי הודעות אמיתיות (גם מקביליות, גם זהות-תוכן) כי כל שליחה מקבלת UUID
@@ -501,6 +574,10 @@ export async function runOpsChat(
   // כמו capturedBriefing — get_my_pipeline מוגש מילה-במילה כשזה כל מה שקרה בסבב, כדי שהחלוקה
   // לחמש הקטגוריות (לידים/עסקאות/משימות) לא תיטשטש בניסוח חופשי של המודל.
   let capturedPipelineText: string | null = null;
+  // audit שלב ז (2026-10-13) — נתיב דטרמיניסטי לאישור פעולת נוכחות: מתעד את ה-message *האמיתי*
+  // שכלי נוכחות החזיר בהצלחה בסבב הזה (לא ניסוח חופשי של המודל). אם קיים — הוא מחליף את תשובת
+  // המודל כליל (ר' למטה, אחרי runCentralAgent). מאופס מחדש בכל ניסיון (ר' runAttempt).
+  const liveAttendanceConfirmation: { current: { tool: string; message: string } | null } = { current: null };
 
   const refresh = async () => {
     tasks = await fetchUserOpsTasks(user.mondayUserId!);
@@ -620,11 +697,15 @@ export async function runOpsChat(
     {
       name: "record_commitment",
       description:
-        "רושם התחייבות שהעובד נתן — משהו שהובטח ללקוח / ליועץ / לגורם אחר. קרא לזה כשהעובד אומר 'הבטחתי ל...', 'אמרתי ללקוח ש...', 'התחייבתי לשלוח עד...'. נסה למלא תאריך יעד אם נאמר.",
+        "רושם התחייבות שהעובד נתן — משהו שהובטח ל**צד שלישי אמיתי**: לקוח / יועץ / גורם חוץ. קרא לזה כשהעובד אומר " +
+        "'הבטחתי ל...', 'אמרתי ללקוח ש...', 'התחייבתי לשלוח עד...'. נסה למלא תאריך יעד אם נאמר. " +
+        "toWhom חייב להיות מישהו *אחר* מהעובד הנוכחי — לעולם לא שם המשתמש עצמו, גם אם מה שצריך הוא 'להזכיר לעצמי'/" +
+        "'לטפל בזה בהמשך'. זו רשומה פנימית בלבד (list_my_commitments) — **אין מנגנון שמעביר ממנה הודעה לאף אחד**, לא " +
+        "ל-toWhom ולא לשום גורם אחר. אחרי קריאה מוצלחת, אל תגיד 'העברתי/שלחתי' — רק 'נשמר ביומן הפתוח שלך'.",
       input_schema: {
         type: "object",
         properties: {
-          toWhom: { type: "string", description: "למי הובטח (שם הלקוח/הגורם)" },
+          toWhom: { type: "string", description: "למי הובטח (שם הלקוח/הגורם) — לא שם המשתמש הנוכחי עצמו" },
           what: { type: "string", description: "מה הובטח" },
           dueDate: { type: "string", description: "תאריך יעד YYYY-MM-DD, אם נאמר" },
           project: { type: "string", description: "שם הפרויקט אם רלוונטי" },
@@ -632,14 +713,30 @@ export async function runOpsChat(
         required: ["toWhom", "what"],
       },
       run: async (input) => {
+        const toWhom = String(input.toWhom ?? "").trim();
+        // audit שלב ז (2026-10-13) — תקלת 13/10: הסוכן השתמש בכלי הזה כ"תזכורת לעצמי" עם
+        // toWhom=שם המשתמש הנוכחי, ואז טען (בניסוח החופשי שלו) ש"יוכי תטפל בזה" כאילו זו הודעה
+        // שתגיע לצד שלישי — כשבפועל המשתמש *הוא* יוכי, ואין שום מנגנון מסירה. נדחה כאן במפורש,
+        // לא רק בתיאור (ר' גם description למעלה) — הגנת-עומק, לא רק תלות בציות-להנחיה של המודל.
+        if (toWhom && (toWhom.toLowerCase() === user.key.toLowerCase() || toWhom === user.name)) {
+          return {
+            ok: false,
+            error:
+              "אי אפשר להשתמש בכלי הזה להתחייבות/תזכורת לעצמך — הוא מיועד להבטחות לצד שלישי אמיתי (לקוח/יועץ/גורם " +
+              "חוץ), ואין מנגנון שמעביר ממנו הודעה לאף אחד, גם לא למשתמש עצמו. אם רק צריך לזכור משהו עצמאית, אפשר " +
+              "לציין זאת בתשובה בטקסט רגיל — בלי לטעון שזה 'הועבר' או 'יטופל' על ידי מישהו אחר.",
+          };
+        }
         const c = addCommitment({
           createdBy: user.key,
-          toWhom: String(input.toWhom),
+          toWhom,
           what: String(input.what),
           dueDate: input.dueDate ? String(input.dueDate) : undefined,
           project: input.project ? String(input.project) : undefined,
         });
-        actions.push(`🤝 התחייבות נרשמה: ${c.toWhom} — ${c.what}`);
+        // "ביומן הפתוח" (לא "נרשמה" בלבד) — מבהיר בתוך הטוסט עצמו שזו רשומה פנימית, לא הודעה
+        // שנשלחה; מצטרף לדרישה שהתשובה-בטקסט-חופשי של המודל לא תחזור/תפרט את זה שוב (ר' description).
+        actions.push(`🤝 נשמר ביומן הפתוח שלך (לא נשלח לאף אחד): ${c.toWhom} — ${c.what}`);
         return { ok: true, id: c.id, dueDate: c.dueDate };
       },
     },
@@ -687,7 +784,7 @@ export async function runOpsChat(
   // — לא מספיק כאן). messageSeed מוזרק דרך transformInput, מחושב פעם אחת למעלה.
   if (attendanceOn) {
     const a = buildAttendanceToolDefinitions(messageSeed);
-    tools.push(a.breakStart, a.breakEnd, a.dayClose, a.setReminder, a.reportCorrection);
+    tools.push(a.breakStart, a.breakEnd, a.dayClose, a.setReminder, a.reportCorrection, ATTENDANCE_DAY_STATUS_TOOL_DEFINITION);
   }
 
   // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה ----
@@ -1012,6 +1109,13 @@ export async function runOpsChat(
             // מפורש, זהה למה שהיה: actions.push קודם, refresh() אחריו, שניהם רק אם execute הצליח
             // (onExecuted נקרא רק בהצלחה — אם זרק, onError למטה תופס, לא כאן).
             onExecuted: async (_t, out, inp) => {
+              // audit שלב ז: גיבוי דטרמיניסטי — out.message הוא תוצאת הכלי *האמיתית* (onExecuted
+              // נקרא רק בהצלחה, ר' הערה למעלה), לא מה שהמודל יגיד בטקסט הסופי. נלכד *לפני* ה-UI
+              // effect, לא תלוי בו.
+              if (ATTENDANCE_LIVE_CONFIRMATION_TOOLS.has(call.name)) {
+                const msg = (out as { message?: string } | undefined)?.message;
+                if (msg) liveAttendanceConfirmation.current = { tool: call.name, message: msg };
+              }
               const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
               if (uiEffect) {
                 actions.push(uiEffect.message(out, inp));
@@ -1045,18 +1149,57 @@ export async function runOpsChat(
     };
   };
 
-  const routed = await runCentralAgent({
-    useCase: "ops_chat",
-    latestMessage: history[history.length - 1]?.content ?? "",
-    historyLength: history.length,
-    canSeeAllWork: userCan(user, "view:all_work"),
-    // תשובה לפנייה יזומה → SMART: הבנת הכוונה + הפעולה הנכונה ב-Monday חשובה מהעלות.
-    forceTier: opts.about ? "smart" : undefined,
-    buildLoop,
-    // ל-ops chat "תופעת לוואי" = כתיבה ל-Monday/DB (actions), לא סתם קריאת מידע
-    sideEffectCount: () => actions.length,
-  });
+  const runAttempt = (forceTier?: "smart") => {
+    liveAttendanceConfirmation.current = null; // מאופס פר-ניסיון — גיבוי חייב להיות מהניסיון הזה, לא קודם
+    return runCentralAgent({
+      useCase: "ops_chat",
+      latestMessage: history[history.length - 1]?.content ?? "",
+      historyLength: history.length,
+      canSeeAllWork: userCan(user, "view:all_work"),
+      // תשובה לפנייה יזומה → SMART: הבנת הכוונה + הפעולה הנכונה ב-Monday חשובה מהעלות.
+      forceTier: forceTier ?? (opts.about ? "smart" : undefined),
+      buildLoop,
+      // ל-ops chat "תופעת לוואי" = כתיבה ל-Monday/DB (actions), לא סתם קריאת מידע
+      sideEffectCount: () => actions.length,
+      _runModel: opts._runModel,
+      _config: opts._config,
+    });
+  };
 
-  const finalText = routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?";
+  let routed = await runAttempt();
+  let finalText = routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?";
+
+  // audit שלב ז/ח (2026-10-13) — נתיב דטרמיניסטי: אם כלי נוכחות אמיתי רץ בהצלחה בסבב הזה, תשובת
+  // המשתמש היא *בדיוק* ה-message שהוא החזיר — לא ניסוח חופשי של המודל (גם אם המודל כתב משהו
+  // אחר/נוסף). אם לא רץ כלום אבל יש חשד — **משני מקורות בלתי-תלויים**: (א) הטקסט תואם תבנית-אישור
+  // קנונית מדויקת (ממצא 1 המקורי), או (ב) המשתמש *ביקש פעולה* (זוהה מתוך ההודעה שלו, לא מהמודל)
+  // *וגם* התשובה נשמעת כמו הצהרת-ביצוע גנרית (סגירת-הפער: מודל שמנסח הצלחה-שקרית במילים אחרות,
+  // למשל "סידרתי, הכול טוב") — ניסיון חוזר *אחד*, מאולץ ל-SMART; אם גם זה לא מייצר גיבוי אמיתי —
+  // הודעת כישלון ברורה, לעולם לא הטקסט החשוד. שאלת-מידע טהורה (אין (א) ואין (ב), כי אין טענת-
+  // ביצוע בתשובה) לעולם לא מפעילה את זה — ההפרדה בין שאלה לבקשת-ביצוע נשמרת. אין סיכון כפילות:
+  // runAttempt חדש אבל messageSeed (מ-clientMessageId, חושב פעם אחת למעלה) נשאר אותו —
+  // getEventByIdempotencyKey/getCorrectionByIdempotencyKey ב-attendance.ts מגנים בדיוק על זה.
+  if (attendanceOn) {
+    const lastUserMsg = history[history.length - 1]?.content ?? "";
+    const userRequestedAction = looksLikeAttendanceActionRequest(lastUserMsg);
+    const isSuspicious = (text: string) => matchesCannedAttendanceConfirmation(text) || (userRequestedAction && soundsLikeCompletionClaim(text));
+
+    const confirmed1 = liveAttendanceConfirmation.current;
+    if (confirmed1) {
+      finalText = confirmed1.message;
+    } else if (isSuspicious(finalText)) {
+      logger.warn({ user: user.key, userRequestedAction }, "חשד לאישור נוכחות בלי tool_use מאומת — מנסה שוב (SMART) לפני הצגה למשתמש");
+      routed = await runAttempt("smart");
+      finalText = routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?";
+      const confirmed2 = liveAttendanceConfirmation.current;
+      if (confirmed2) {
+        finalText = confirmed2.message;
+      } else if (isSuspicious(finalText)) {
+        logger.warn({ user: user.key }, "חשד לאישור נוכחות נמשך גם אחרי ניסיון חוזר — מציג כישלון מפורש, לא את הטקסט החשוד");
+        finalText = "לא הצלחתי לאשר בוודאות שהפעולה בוצעה בפועל. נסה לשלוח את ההודעה שוב, או נסח אותה במפורש (למשל 'יצאתי להפסקה עכשיו' / 'חזרתי מההפסקה').";
+      }
+    }
+  }
+
   return { reply: attendanceBanner ? `${attendanceBanner}\n\n${finalText}` : finalText, actions };
 }

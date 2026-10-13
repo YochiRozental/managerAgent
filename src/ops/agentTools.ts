@@ -42,10 +42,11 @@ import {
   setAttendanceReminderTime,
   requestAttendanceCorrection,
   attendanceEnabledForUser,
+  getAttendanceDayStatus,
   type AttendanceActionResult,
   type RequestCorrectionResult,
 } from "./attendance.js";
-import type { AttendanceEventType } from "./attendanceEngine.js";
+import { workDateFor, type AttendanceEventType } from "./attendanceEngine.js";
 
 /**
  * ops/attendance.ts מחזיר {ok:false, message} על כשל "רגיל" (למשל state machine דוחה פעולה) —
@@ -550,6 +551,20 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
           },
           time: { type: "string", description: "HH:MM — השעה המקומית הנכונה" },
           reason: { type: "string", description: "הסבר קצר, אם ניתן" },
+          eventId: {
+            type: "number",
+            description:
+              "מזהה אירוע ספציפי לתיקון (מ-attendance_day_status) — ציין את זה כשיש כמה אירועים מאותו סוג ביום (למשל " +
+              "שתי הפסקות) וידוע בדיוק לאיזה מהם מתכוונים. בלעדיו, עם כמה אירועים מאותו type, הכלי נדחה (עמומות).",
+          },
+          insertNew: {
+            type: "boolean",
+            description:
+              "true כשזו *תוספת* (דיווח חסר שצריך להוסיף) ולא תיקון של אירוע קיים — למשל חזרה שלא נרשמה מהפסקה פתוחה, " +
+              "כשכבר יש break_end אחר מהפסקה קודמת היום. בלי זה, אם יש כבר אירוע אחד מאותו סוג, הכלי יתקן אותו (ברירת מחדל " +
+              "לתיקון עצמי רגיל) — מה שלא נכון כשהכוונה היא להוסיף אירוע נפרד. אם יש עמימות אחרי קריאת attendance_day_status " +
+              "(למשל לא בטוח אם זו תוספת או תיקון לקיים) — שאל שאלה אחת ממוקדת לפני הקריאה, אל תנחש.",
+          },
         },
         required: ["workDate", "field", "time"],
       },
@@ -568,8 +583,33 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
           newReportedForAtUtcIso,
           reason: input.reason ? String(input.reason) : undefined,
           messageSeed: String(input.messageSeed ?? ""),
+          eventId: input.eventId != null ? Number(input.eventId) : undefined,
+          insertNew: input.insertNew === true,
         });
         return throwIfFailed(r);
+      },
+    },
+    {
+      name: "attendance_day_status",
+      description:
+        "קריאה בלבד — אף פעם לא כותב/משנה כלום. מחזיר את כל אירועי הנוכחות של העובד ליום מבוקש, בסדר כרונומטי, עם מזהה " +
+        "אירוע, שעה מקומית, סוג (כניסה/יציאה-להפסקה/חזרה-מהפסקה/סיום-יום), מצב נוכחי (עובד/בהפסקה/סגור), ושעות עבודה/" +
+        "הפסקה מחושבות *עד כה* (אם היום עדיין פתוח — זו הערכה זמנית, לא סופית; isFinal=false מציין את זה). " +
+        "קרא לזה על: 'מה רשום לי היום', 'מתי יצאתי/חזרתי מהפסקה', 'אני כרגע בעבודה או בהפסקה', 'כמה עבדתי עד עכשיו', " +
+        "'מה רשום לי אתמול'. גם *לפני* תיקון (attendance_report_correction) כשיש חוסר-בטחון באיזה אירוע/eventId מתכוונים. " +
+        "workDate אופציונלי (YYYY-MM-DD, חשב יחסית להיום כמו בכלים אחרים) — בלי זה, ברירת המחדל היא היום.",
+      input_schema: {
+        type: "object",
+        properties: {
+          workDate: { type: "string", description: "YYYY-MM-DD, אופציונלי — ברירת מחדל: היום" },
+        },
+      },
+      requiredPermission: ["report:hours"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
+        const workDate = input.workDate ? String(input.workDate) : workDateFor(DateTime.now().setZone(env.TIMEZONE));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error(`workDate לא תקין: "${workDate}" (צריך YYYY-MM-DD)`);
+        return getAttendanceDayStatus(ctx.user, workDate);
       },
     },
   ];

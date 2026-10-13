@@ -25,6 +25,8 @@ import { runInTransaction } from "../db/db.js";
 import {
   checkTransition,
   computeDaySummary,
+  computeLiveDaySummary,
+  statusAfter,
   validateEventSequence,
   applyCorrections,
   buildEventIdempotencyKey,
@@ -33,6 +35,7 @@ import {
   formatMinutes,
   type AttendanceEventType,
   type AttendanceEventLike,
+  type AttendanceStatus,
 } from "./attendanceEngine.js";
 import {
   getDay,
@@ -56,6 +59,7 @@ import {
   decideCorrection,
   attachAppliedEvent,
   getCorrection,
+  getCorrectionByIdempotencyKey,
   type StoredCorrection,
 } from "../db/repositories/attendanceCorrections.js";
 import { isPayrollMonthClosed } from "../db/repositories/payrollMonths.js";
@@ -75,6 +79,83 @@ export function isAttendancePilotUser(userKey: string): boolean {
 /** true ⇔ הדגל מופעל, המשתמש ברשימת הפיילוט, ויש לו הרשאת report:hours — כל שלושה, לא רק אחד. */
 export function attendanceEnabledForUser(user: IdentifiedUser): boolean {
   return isAttendanceModuleEnabled() && isAttendancePilotUser(user.key) && userCan(user, "report:hours");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// קריאה בלבד — attendance_day_status (audit שלב ז, 2026-10-13: הסוכן לא ידע להציג את אירועי
+// היום בכלל — זה הכלי שסוגר את הפער).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AttendanceDayStatusEvent {
+  id: number;
+  eventType: AttendanceEventType;
+  /** HH:mm:ss, env.TIMEZONE — הערך *האפקטיבי* (אחרי תיקון, אם היה). */
+  localTime: string;
+  source: EventSource;
+  /** true ⇔ תיקון קיים שינה את reportedForAt של האירוע הזה — localTime כבר משקף את הערך המתוקן. */
+  wasCorrected: boolean;
+}
+
+export interface AttendanceDayStatusResult {
+  workDate: string;
+  /** סדר כרונולוגי (לפי הזמן האפקטיבי, אחרי תיקונים) — לא סדר-כתיבה. */
+  events: AttendanceDayStatusEvent[];
+  status: AttendanceStatus | "pending_completion";
+  /** שעות נטו עד עכשיו — ר' isFinal. */
+  netMinutesSoFar: number;
+  breakMinutesSoFar: number;
+  /** true ⇔ status==="closed": netMinutesSoFar/breakMinutesSoFar סופיים. false ⇔ עדיין הערכה
+   *  זמנית (היום פתוח/בהפסקה) — להבחין במפורש בתשובה למשתמש, לא להציג כ"שעות מאושרות". */
+  isFinal: boolean;
+  asOfLocal: string;
+}
+
+/**
+ * קריאה בלבד — לכלי attendance_day_status (agentTools.ts). ההרשאה/פיילוט נאכפים ב-AgentTool
+ * (assertAttendanceEnabled, injectable, בדיוק כמו שאר 5 כלי הנוכחות) — לא כפול כאן, עקבי עם שאר
+ * פונקציות הכתיבה בקובץ הזה (reportBreakStart וכו') שגם הן לא בודקות את הדגל ישירות, רק ה-AgentTool.
+ * userKey נלקח תמיד מ-user.key (אין פרמטר "עבור מי" חוץ) — מבנית אי אפשר לבקש נתוני עובד אחר.
+ */
+export function getAttendanceDayStatus(
+  user: IdentifiedUser,
+  workDate: string,
+  now: DateTime = DateTime.now().setZone(env.TIMEZONE),
+): AttendanceDayStatusResult {
+  const rawEvents = listEventsForDay(user.key, workDate).filter((e) => e.eventType !== "correction");
+  const overlay = existingCorrectionOverlay(user.key, workDate);
+  const overlayMap = new Map(overlay.map((o) => [o.correctsEventId, o.reportedForAt]));
+  const effective = applyCorrections(rawEvents.map(toEventLike), overlay);
+
+  const events: AttendanceDayStatusEvent[] = rawEvents
+    .map((e) => ({
+      id: e.id,
+      eventType: e.eventType as AttendanceEventType,
+      effectiveUtc: overlayMap.get(e.id) ?? e.reportedForAt,
+      source: e.source,
+      wasCorrected: overlayMap.has(e.id),
+    }))
+    .sort((a, b) => DateTime.fromISO(a.effectiveUtc).toMillis() - DateTime.fromISO(b.effectiveUtc).toMillis())
+    .map((e) => ({
+      id: e.id,
+      eventType: e.eventType,
+      localTime: DateTime.fromISO(e.effectiveUtc).setZone(env.TIMEZONE).toFormat("HH:mm:ss"),
+      source: e.source,
+      wasCorrected: e.wasCorrected,
+    }));
+
+  const day = getDay(user.key, workDate);
+  const status: AttendanceStatus | "pending_completion" = day?.status === "pending_completion" ? "pending_completion" : statusAfter(effective);
+  const live = computeLiveDaySummary(effective, now.toUTC().toISO()!);
+
+  return {
+    workDate,
+    events,
+    status,
+    netMinutesSoFar: live.netMinutesSoFar,
+    breakMinutesSoFar: live.breakMinutesSoFar,
+    isFinal: live.status === "closed",
+    asOfLocal: now.toFormat("HH:mm:ss"),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -291,6 +372,13 @@ export interface RequestCorrectionInput {
   reason?: string;
   /** מזהה יציב לההודעה הזו (buildMessageIdempotencySeed) — מונע בקשת תיקון כפולה מ-retry. */
   messageSeed: string;
+  /** תיקון מפורש של אירוע ספציפי (ר' attendance_day_status לקבלת מזהים) — עוקף את ההתאמה-לפי-type
+   *  למטה. מאומת: שייך ל-user.key, ל-workDate, ומסוג field (אחרת נדחה עם שגיאה ברורה). */
+  eventId?: number;
+  /** השלמת דיווח חסר — מוסיף אירוע *חדש* גם כש-כבר קיים אירוע אחד+ מאותו סוג היום (למשל הפסקה
+   *  שנייה באותו יום). בלי זה, candidates.length>1 נדחה (עמימות), ו-candidates.length===1 מתקן
+   *  את הקיים — לא משנה, כדי לא לשבור את ברירת המחדל הקיימת (תיקון עצמי "רגיל"). */
+  insertNew?: boolean;
 }
 
 export interface RequestCorrectionResult extends AttendanceActionResult {
@@ -356,14 +444,48 @@ function simulateCorrection(userKey: string, workDate: string, targetId: number 
 }
 
 export function requestAttendanceCorrection(user: IdentifiedUser, input: RequestCorrectionInput): RequestCorrectionResult {
-  const candidates = listEventsForDay(user.key, input.workDate).filter((e) => e.eventType === input.field);
-  if (candidates.length > 1) {
-    return {
-      ok: false,
-      message: `יש כמה אירועי "${input.field}" ביום ${input.workDate} — לא ניתן לתקן אוטומטית איזה מהם מתכוונים אליו. אפשר לפנות ליוכי.`,
-    };
+  // audit שלב ז (2026-10-13): שלוש דרכים לקבוע את ה-target, לפי סדר-עדיפות מפורש — לא עוד ניחוש
+  // "אם יש בדיוק אחד, תקן אותו" בלי קשר לכוונה האמיתית (זה הממצא המדויק מהתקלה ב-13/10: הפסקה
+  // שנייה פתוחה "תיקנה" בטעות את ה-break_end הסגור של ההפסקה הראשונה).
+  let target: ReturnType<typeof getEvent> = null;
+  if (input.eventId != null) {
+    const ev = getEvent(input.eventId);
+    if (!ev || ev.userKey !== user.key || ev.workDate !== input.workDate) {
+      return { ok: false, message: `לא מצאתי אירוע מספר ${input.eventId} ביום ${input.workDate} עבורך.` };
+    }
+    if (ev.eventType !== input.field) {
+      return {
+        ok: false,
+        message: `אירוע ${input.eventId} הוא מסוג "${ev.eventType}", לא "${input.field}" — בדוק את מזהה האירוע (attendance_day_status).`,
+      };
+    }
+    target = ev;
+  } else if (!input.insertNew) {
+    const candidates = listEventsForDay(user.key, input.workDate).filter((e) => e.eventType === input.field);
+    if (candidates.length > 1) {
+      return {
+        ok: false,
+        message: `יש כמה אירועי "${input.field}" ביום ${input.workDate} — ציין eventId (ר' attendance_day_status) או insertNew אם זו תוספת (למשל הפסקה נוספת), לא תיקון לאחת הקיימות.`,
+      };
+    }
+    target = candidates[0] ?? null;
   }
-  const target = candidates[0] ?? null;
+  // input.insertNew && input.eventId==null → target נשאר null בכוונה: הוספת אירוע חדש, גם אם יש
+  // כבר אירוע/ים מאותו סוג היום (למשל break_end שני לסגירת הפסקה שנייה).
+
+  // audit שלב ז (2026-10-13) — retry-check *לפני* סימולציה/תיקוף, לא רק בתוך createCorrectionRequest:
+  // ל-insertNew (תוספת), simulateCorrection מוסיף הצעה חדשה ליומן *הנוכחי* — ביומן שכבר כולל את
+  // האירוע שניסיון קודם (אותה בקשה בדיוק) כתב בפועל, ההצעה הנוספת-מדומה מתנגשת עם האירוע האמיתי
+  // (למשל שני break_end רצופים) ונדחית כ"רצף לא תקין" — גם כש-זו *אותה* בקשה בדיוק. בדיוק עיקרון
+  // getEventByIdempotencyKey לפני checkTransition ב-applyEvent (audit שלב ג) — בודקים idempotency
+  // לפני שמנסים לשחזר/לתקף מחדש, לא אחרי.
+  const idempotencyKey = `${user.key}:correction-request:${input.field}:${input.workDate}:${input.messageSeed}`;
+  const existingByKey = getCorrectionByIdempotencyKey(idempotencyKey);
+  if (existingByKey) {
+    if (existingByKey.status === "applied") return { ok: true, message: "התיקון הזה כבר נשמר ועודכן.", correction: existingByKey };
+    if (existingByKey.status === "rejected") return { ok: true, message: "התיקון הזה נדחה.", correction: existingByKey };
+    return { ok: true, message: "התיקון הזה ממתין לאישור מוטי.", correction: existingByKey };
+  }
 
   const simulated = simulateCorrection(user.key, input.workDate, target?.id ?? null, input.field, input.newReportedForAtUtcIso);
   const validation = validateEventSequence(simulated);
@@ -373,7 +495,6 @@ export function requestAttendanceCorrection(user: IdentifiedUser, input: Request
 
   const payrollMonth = payrollMonthFor(input.workDate);
   const autoApproved = !isPayrollMonthClosed(payrollMonth);
-  const idempotencyKey = `${user.key}:correction-request:${input.field}:${input.workDate}:${input.messageSeed}`;
 
   return runInTransaction(() => {
     const { correction, created } = createCorrectionRequest({

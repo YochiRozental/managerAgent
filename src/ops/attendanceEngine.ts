@@ -202,6 +202,88 @@ export function computeDaySummary(events: readonly AttendanceEventLike[]): DaySu
   };
 }
 
+export interface LiveDaySummary extends DaySummary {
+  /** שעות נטו *עד עכשיו* (asOfIso) — אם status==="working", כולל את המקטע הפתוח הנוכחי, מחושב
+   *  עד asOfIso בלבד. **הערכה זמנית** — לא "שעות מאושרות" (אלו רק כש-status==="closed", ר' netMinutes). */
+  netMinutesSoFar: number;
+  /** דקות הפסקה *עד עכשיו* — אם status==="on_break", כולל את ההפסקה הפתוחה הנוכחית. */
+  breakMinutesSoFar: number;
+  /** true ⇔ status!=="closed" — netMinutesSoFar/breakMinutesSoFar הם הערכה זמנית, לא ערך סופי. */
+  isEstimate: boolean;
+}
+
+/**
+ * גרסה "חיה" של computeDaySummary, לכלי קריאה בלבד (attendance_day_status) — כמה שעות עבדת/
+ * הפסקת *עד עכשיו*, גם כשהיום עדיין פתוח/בהפסקה. asOfIso הוא גבול-תצוגה בלבד (לא נכתב לשום
+ * event/correction) — פונקציה טהורה, מריצה את אותה לולאת state-machine כמו computeDaySummary
+ * בנפרד (בכוונה לא refactor משותף, כדי לא ליצור סיכון רגרסיה בפונקציה הקיימת והנבדקת).
+ */
+export function computeLiveDaySummary(events: readonly AttendanceEventLike[], asOfIso: string): LiveDaySummary {
+  const segments: AttendanceSegment[] = [];
+  let breakMinutes = 0;
+  let status: AttendanceStatus = "closed";
+  let segmentStart: string | null = null;
+  let breakStart: string | null = null;
+  let firstInAt: string | null = null;
+  let lastOutAt: string | null = null;
+
+  for (const e of sorted(events)) {
+    const check = checkTransition(status, e.eventType);
+    if (!check.ok) continue;
+    switch (e.eventType) {
+      case "day_open":
+        segmentStart = e.reportedForAt;
+        if (!firstInAt) firstInAt = e.reportedForAt;
+        break;
+      case "break_start":
+        if (segmentStart) {
+          segments.push({ startAt: segmentStart, endAt: e.reportedForAt });
+          segmentStart = null;
+        }
+        breakStart = e.reportedForAt;
+        break;
+      case "break_end":
+        if (breakStart) {
+          breakMinutes += minutesBetween(breakStart, e.reportedForAt);
+          breakStart = null;
+        }
+        segmentStart = e.reportedForAt;
+        break;
+      case "day_close":
+        if (breakStart) {
+          breakMinutes += minutesBetween(breakStart, e.reportedForAt);
+          breakStart = null;
+        }
+        if (segmentStart) {
+          segments.push({ startAt: segmentStart, endAt: e.reportedForAt });
+          segmentStart = null;
+        }
+        lastOutAt = e.reportedForAt;
+        break;
+    }
+    status = check.nextStatus;
+  }
+
+  const netMsClosed = segments.reduce((sum, s) => sum + (s.endAt ? minutesBetween(s.startAt, s.endAt) : 0), 0);
+  let netMinutesSoFar = netMsClosed;
+  let breakMinutesSoFar = breakMinutes;
+  if (status === "working" && segmentStart) netMinutesSoFar += minutesBetween(segmentStart, asOfIso);
+  if (status === "on_break" && breakStart) breakMinutesSoFar += minutesBetween(breakStart, asOfIso);
+
+  return {
+    status,
+    segments,
+    netMinutes: status === "closed" ? Math.round(netMsClosed) : null,
+    breakMinutes: Math.round(breakMinutes),
+    segmentCount: segments.length,
+    firstInAt,
+    lastOutAt,
+    netMinutesSoFar: Math.round(netMinutesSoFar),
+    breakMinutesSoFar: Math.round(breakMinutesSoFar),
+    isEstimate: status !== "closed",
+  };
+}
+
 /**
  * מפתח יציב, לא תלוי-זמן, לפעולה/הודעה בודדת — **לא** דלי-זמן (audit שלב ג, 2026-10-11: דלי-דקה
  * היה חוסם בטעות שני מקטעים לגיטימיים (למשל שתי יציאות-הפסקה נפרדות) שנפלו באותה דקה בפועל).

@@ -135,6 +135,18 @@ export function createCorrectionRequest(input: CreateCorrectionInput): { correct
   return { correction: fromRow(row ?? (getStmt.get(Number(info.lastInsertRowid)) as unknown as Row)), created: true };
 }
 
+/**
+ * audit שלב ז (2026-10-13) — מאפשר לקורא (attendance.ts) לבדוק retry *לפני* תיקוף-רצף/סימולציה,
+ * לא רק כש-createCorrectionRequest כבר רץ. בלעדי זה, insertNew (תוספת אירוע) נכשל בטעות על retry
+ * אמיתי: ה-simulateCorrection ב-attendance.ts בונה מהיומן *הנוכחי* (שכבר כולל את האירוע שהניסיון
+ * הראשון הוסיף בפועל) ומוסיף *עוד* הצעה — שתי תוספות-מדומות באותו רגע נראות כרצף לא תקין, גם
+ * כש-זו בדיוק אותה בקשה. בדיוק עיקרון getEventByIdempotencyKey ב-attendanceEvents.ts.
+ */
+export function getCorrectionByIdempotencyKey(idempotencyKey: string): StoredCorrection | null {
+  const row = getByIdempotencyKeyStmt.get(idempotencyKey) as unknown as Row | undefined;
+  return row ? fromRow(row) : null;
+}
+
 export function getCorrection(id: number): StoredCorrection | null {
   const row = getStmt.get(id) as unknown as Row | undefined;
   return row ? fromRow(row) : null;

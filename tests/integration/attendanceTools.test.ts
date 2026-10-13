@@ -131,6 +131,16 @@ async function run() {
     unauthorizedResult.content,
   );
 
+  // audit שלב ז (2026-10-13) — attendance_day_status (כלי קריאה חדש) חייב את אותה הגנת-עומק,
+  // לא רק הכתיבות. אין לו messageSeed (קריאה בלבד) — אין צורך ב-transformInput.
+  const realDayStatusTool = findRealTool("attendance_day_status");
+  const unauthorizedStatusResult = await dispatchToolDefinition(buildSharedToolDefinition(realDayStatusTool), {}, { user: yochi });
+  check(
+    "הגנת-עומק: attendance_day_status גם נדחה למשתמש לא-פיילוט (לא רק כלי הכתיבה)",
+    unauthorizedStatusResult.sideEffect === false && unauthorizedStatusResult.content.includes("מודול הנוכחות לא פעיל"),
+    unauthorizedStatusResult.content,
+  );
+
   cleanup();
 }
 

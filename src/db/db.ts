@@ -2,7 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const DB_PATH = "data/agent.db";
+// נתיב ה-DB: ברירת מחדל `data/agent.db` (ייצור — ללא שינוי). AGENT_DB_PATH מאפשר להפנות למסד אחר,
+// ומשמש בעיקר את סביבת הבדיקות (tests/setup/isolate.ts) שמפנה ל-DB זמני מחוץ לריפו.
+// fail-closed: תחת Vitest (process.env.VITEST) בלי AGENT_DB_PATH מפורש — זורקים, לעולם לא נופלים
+// בשקט ל-data/agent.db. מחוץ ל-Vitest ההתנהגות זהה לחלוטין לקודם.
+const DB_PATH = process.env.AGENT_DB_PATH || "data/agent.db";
+if (process.env.VITEST && !process.env.AGENT_DB_PATH) {
+  throw new Error("בדיקות Vitest חייבות AGENT_DB_PATH מבודד — לא נפתח את data/agent.db");
+}
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);

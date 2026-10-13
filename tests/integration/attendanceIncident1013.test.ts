@@ -425,6 +425,93 @@ async function run() {
     db.prepare(`DELETE FROM attendance_corrections WHERE user_key=? AND work_date=?`).run(yochi.key, day);
   }
 
+  // ── 3g: שחזור מדויק של כשל Production (13/10, אחרי הפריסה) — 4 אירועים אמיתיים (day_open,
+  //    break_start, break_end, break_start-פתוח), לא 2 כמו ב-3d. מטרה: לאשר/לשלול שהסיבה היא
+  //    "המודל לא שלח insertNew" (ולא באג חדש ב-simulateCorrection/validateEventSequence עם רצף
+  //    עשיר יותר) — לפי "אל תניח שהסיבה ידועה מראש" ──────────────────────────────────────────────
+  {
+    const day = "2033-05-20";
+    checkAttendanceDayStart(yochi, at(day, "10:58"));
+    reportBreakStart(yochi, at(day, "11:10"), seed());
+    reportBreakEnd(yochi, at(day, "11:40"), seed());
+    reportBreakStart(yochi, at(day, "12:17"), seed()); // בדיוק מצב Production: on_break, 4 אירועים
+
+    // (a) בלי insertNew/eventId — candidates.length===1 (break_end ב-11:40 היחיד הקיים) מתקן
+    //     אוטומטית אותו ל-12:28 → יוצר שני break_start רצופים (11:10..) ו-(12:17) → נדחה.
+    //     זו *בדיוק* ההתנהגות שתועדה ב-production (אותה הודעת שגיאה מילה-במילה).
+    const withoutInsertNew = requestAttendanceCorrection(yochi, {
+      workDate: day,
+      field: "break_end",
+      newReportedForAtUtcIso: at(day, "12:28").toUTC().toISO()!,
+      messageSeed: seed(),
+    });
+    check(
+      "3g1. שחזור מדויק: בלי insertNew → נדחה עם ההודעה המדויקת שתועדה ב-production",
+      !withoutInsertNew.ok && withoutInsertNew.message === "התיקון הזה ייצור רצף נוכחות לא תקין (אתה כבר בהפסקה.) — לא ביצעתי אותו.",
+      withoutInsertNew.message,
+    );
+    check("3g2. שום דבר לא נכתב מהניסיון הדחוי (append-only, אין שורת correction חדשה)", listEventsForDay(yochi.key, day).filter((e) => e.eventType === "correction").length === 0);
+
+    // (b) עם insertNew:true — אותו רצף עשיר (4 אירועים אמיתיים, לא 2) — מצליח, וממשיך לשתי
+    //     ההשלמות הבאות (13:57 יציאה, 14:07 חזרה) בדיוק כמו שהתבקש ב-production.
+    const r1 = requestAttendanceCorrection(yochi, { workDate: day, field: "break_end", newReportedForAtUtcIso: at(day, "12:28").toUTC().toISO()!, insertNew: true, messageSeed: seed() });
+    check("3g3. עם insertNew:true על אותו רצף עשיר — מצליח", r1.ok && r1.correction?.status === "applied", r1.message);
+    const r2 = requestAttendanceCorrection(yochi, { workDate: day, field: "break_start", newReportedForAtUtcIso: at(day, "13:57").toUTC().toISO()!, insertNew: true, messageSeed: seed() });
+    check("3g4. השלמת break_start (13:57) מצליחה", r2.ok && r2.correction?.status === "applied", r2.message);
+    const r3 = requestAttendanceCorrection(yochi, { workDate: day, field: "break_end", newReportedForAtUtcIso: at(day, "14:07").toUTC().toISO()!, insertNew: true, messageSeed: seed() });
+    check("3g5. השלמת break_end (14:07) מצליחה", r3.ok && r3.correction?.status === "applied", r3.message);
+
+    const status = getAttendanceDayStatus(yochi, day);
+    check("3g6. 7 אירועים בסך הכל (day_open+4 מקוריים+2 הוספות = בדיוק 7)", status.events.length === 7, String(status.events.length));
+    // ההשלמה השלישית היא break_end (14:07) → המצב הסופי הוא working (לא on_break) — היום עדיין
+    // לא נסגר (אין day_close), כמו ב-production.
+    check("3g7. מצב סופי = working (היום עדיין לא נסגר, כמו ב-production)", status.status === "working", status.status);
+
+    cleanup2(day);
+  }
+
+  // ── 3h: בקשה בשפה טבעית, דרך chat.ts המלא (לא קריאה ישירה כמו 3g) — שלוש פניות עוקבות, שהמודל
+  //    (מדומה) בוחר בהן את הכלי+הפרמטרים הנכונים (insertNew=true) בדיוק כפי שההנחיה המחוזקת ב-
+  //    ai/prompt.ts/agentTools.ts מכוונת אליו. attendance_report_correction לא תלוי ב-DateTime.now()
+  //    (workDate הוא קלט מפורש) — אפשר תאריך פיקטיבי, לא "today" כמו 1a-1e ──────────────────────
+  {
+    const day = "2033-05-21";
+    checkAttendanceDayStart(yochi, at(day, "10:58"));
+    reportBreakStart(yochi, at(day, "11:10"), seed());
+    reportBreakEnd(yochi, at(day, "11:40"), seed());
+    reportBreakStart(yochi, at(day, "12:17"), seed()); // אותו מצב מדויק כמו ב-3g/production
+
+    const turn = async (text: string, field: string, time: string, cmid: string) => {
+      const { fn } = makeScriptedRunModel({
+        "test-fast": [
+          { toolCalls: [{ name: "attendance_report_correction", input: { workDate: day, field, time, insertNew: true } }] },
+          { text: "עודכן." },
+        ],
+      });
+      return runOpsChat(yochi, msg(text), { session: "s-3h", clientMessageId: cmid, _runModel: fn, _config: TEST_CONFIG, _attendanceEnabledForUser: alwaysOn });
+    };
+
+    const r1 = await turn("חזרתי מההפסקה ב-12:28", "break_end", "12:28", "cmid-3h-1");
+    check("3h1. 'חזרתי מההפסקה ב-12:28' — התשובה היא תוצאת הכלי האמיתית (לא ניסוח חופשי)", r1.reply.includes("נשמר") || r1.reply.includes("עודכן") || r1.reply.includes("התיקון"), r1.reply);
+
+    const r2 = await turn("יצאתי שוב ב-13:57", "break_start", "13:57", "cmid-3h-2");
+    void r2;
+
+    const r3 = await turn("חזרתי ב-14:07", "break_end", "14:07", "cmid-3h-3");
+    void r3;
+
+    const status = getAttendanceDayStatus(yochi, day);
+    check("3h2. שלוש הפניות בשפה טבעית השלימו את כל הרצף (7 אירועים)", status.events.length === 7, String(status.events.length));
+    check(
+      "3h3. הרצף הכרונולוגי המלא תואם לבקשה המקורית: 10:58→11:10→11:40→12:17→12:28→13:57→14:07",
+      status.events.map((e) => e.localTime.slice(0, 5)).join(",") === "10:58,11:10,11:40,12:17,12:28,13:57,14:07",
+      status.events.map((e) => e.localTime).join(","),
+    );
+    check("3h4. מצב סופי = working", status.status === "working", status.status);
+
+    cleanup2(day);
+  }
+
   // ── 4/5/6: record_commitment — לא לעצמי, לא "נשלח", לא בלבול-זהות ─────────────────────────────
   {
     const { fn } = makeScriptedRunModel({

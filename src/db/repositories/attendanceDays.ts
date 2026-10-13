@@ -7,7 +7,8 @@ import type { AttendanceStatus } from "../../ops/attendanceEngine.js";
  * אף פעם לא ישירות ממקום אחר.
  */
 
-export type AttendanceDayStatus = AttendanceStatus | "pending_completion";
+// "open" — הערך שנשמר בפועל ליום פתוח (recomputeAndPersistDay ב-attendance.ts, schema.sql).
+export type AttendanceDayStatus = AttendanceStatus | "open" | "pending_completion";
 export type MondaySyncStatus = "not_synced" | "pending" | "synced" | "failed";
 export type ReminderStatus = "none" | "pending_send" | "sent";
 

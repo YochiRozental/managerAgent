@@ -23,6 +23,7 @@ import {
 import { logger } from "../utils/logger.js";
 import { runDbBackup } from "./backup.js";
 import { pruneChatPerfMetrics } from "../db/repositories/chatPerfMetrics.js";
+import { pruneChatPerfSteps } from "../db/repositories/chatPerfSteps.js";
 import { buildEndOfDaySummary } from "./eodSummary.js";
 import { runDailyControlCycle } from "./escalation.js";
 import { runDueFollowups, type FollowupRunnerDeps, type FollowupRunResult } from "./followups.js";
@@ -48,9 +49,19 @@ interface Job {
 
 const JOBS: Job[] = [
   { key: "db_backup", label: "גיבוי DB", hour: BACKUP_HOUR, runsOn: () => true, run: async () => runDbBackup() },
-  // ניטור ביצועים ל-Web Chat (2026-10-14) — retention מוגבל (ר' chatPerfMetrics.ts), אותה שעה כמו
-  // הגיבוי כי זה גם "תחזוקת DB" יומית, לא תלוי בה.
-  { key: "perf_metrics_prune", label: "ניקוי מדדי ביצועים", hour: BACKUP_HOUR, runsOn: () => true, run: async () => pruneChatPerfMetrics() },
+  // ניטור ביצועים ל-Web Chat (2026-10-14, הורחב) — retention מוגבל (ר' chatPerfMetrics.ts/
+  // chatPerfSteps.ts), אותה שעה כמו הגיבוי כי זה גם "תחזוקת DB" יומית, לא תלוי בה. שתי הטבלאות
+  // (chat_perf_metrics + chat_perf_steps) מתנקות יחד — אותה עבודה, לא שתי עבודות job_runs נפרדות.
+  {
+    key: "perf_metrics_prune",
+    label: "ניקוי מדדי ביצועים",
+    hour: BACKUP_HOUR,
+    runsOn: () => true,
+    run: async () => {
+      pruneChatPerfMetrics();
+      pruneChatPerfSteps();
+    },
+  },
   { key: "daily_cycle", label: "סבב יומי", hour: DAILY_HOUR, runsOn: isWorkday, run: runDailyControlCycle },
   { key: "eod_summary", label: "סיכום סוף יום", hour: EOD_SUMMARY_HOUR, runsOn: isWorkday, run: async () => buildEndOfDaySummary() },
   { key: "weekly_report", label: "דוח שבועי", hour: WEEKLY_HOUR, runsOn: isSunday, run: buildWeeklyReport },

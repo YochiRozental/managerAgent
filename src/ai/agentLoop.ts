@@ -59,6 +59,14 @@ export interface AgentLoopParams {
    * (הגשת תדריך הבוקר מילה-במילה ב-runOpsChat.)
    */
   finalizeText?: (modelText: string) => string | null;
+  /**
+   * ניטור ביצועים (2026-10-14) — נקרא פעם אחת לכל tool call, עם *אותו* משך שכבר נספר לתוך
+   * toolTimeMs (לא טיימר נוסף — ר' docstring מעל AgentLoopResult.toolTimeMs, "לא נספר פעמיים").
+   * ok=false ⇔ executeToolCall עצמו זרק (לא קשור לתוכן תוצאת הכלי, שלעולם לא נבדק כאן).
+   * אופציונלי — channel שלא מעביר אותו (orchestrator.ts) ממשיך לעבוד בלי שינוי. אם הקריאה עצמה
+   * זורקת, היא נבלעת כאן (לא אמורה להכשיל את הלולאה/תשובת הסוכן — ניטור הוא best-effort).
+   */
+  onToolTiming?: (toolName: string, durationMs: number, ok: boolean) => void;
   /** לבדיקות בלבד — הזרקת פונקציית קריאה למודל במקום ה-runModel האמיתי. */
   _runModel?: RunModelFn;
 }
@@ -152,15 +160,25 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
     const resultBlocks: NormContentBlock[] = [];
     for (const call of result.toolCalls) {
       let outcome: ToolCallOutcome;
+      let toolOk = true;
       const toolStart = performance.now();
       try {
         outcome = await p.executeToolCall(call);
       } catch (err) {
+        toolOk = false;
         outcome = { content: `שגיאה: ${(err as Error).message}`, sideEffect: false };
       }
-      toolTimeMs += performance.now() - toolStart;
+      const toolDuration = performance.now() - toolStart;
+      toolTimeMs += toolDuration;
       toolCallCount += 1;
       if (outcome.sideEffect) sideEffects += 1;
+      if (p.onToolTiming) {
+        try {
+          p.onToolTiming(call.name, toolDuration, toolOk);
+        } catch {
+          /* ניטור best-effort — ר' docstring מעל AgentLoopParams.onToolTiming */
+        }
+      }
       resultBlocks.push({ type: "tool_result", toolUseId: call.id, content: outcome.content });
     }
     messages.push({ role: "user", content: resultBlocks });

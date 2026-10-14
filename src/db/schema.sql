@@ -312,3 +312,26 @@ CREATE TABLE IF NOT EXISTS chat_perf_metrics (
   client_reported_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_chat_perf_created ON chat_perf_metrics (created_at);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- פירוט שלבים לכל בקשת צ'אט (2026-10-14) — הרחבה ל-chat_perf_metrics: מי הממצא בפרודקשן
+-- (23.5 שנ' ב"כלים" בלי לדעת איזה כלי; 800-1500ms לא-מיוחסים לפני ה-AI) חייב לפתוח. שתי קטגוריות
+-- (kind): 'tool' — כל קריאת כלי בודדת בלולאת ה-tool-use (ר' agentLoop.ts's onToolTiming), אותו
+-- משך שכבר נספר לתוך chat_perf_metrics.tool_time_ms — לא טיימר נוסף, לא נספר פעמיים, רק דיווח
+-- מפורט יותר של *אותה* מדידה. 'prep' — שלבי I/O לפני שה-AI loop בכלל מתחיל (fetchUserOpsTasks וכו',
+-- ר' chat.ts's timedPrepStep) — זמן שלא נכלל בשום עמודה קיימת ב-chat_perf_metrics, לכן לא עלול
+-- "להתווסף" לשום סכום קיים. name הוא שם כלי/שלב בלבד (metadata טכני) — בכוונה *אין* כאן ארגומנטים
+-- של כלי, תוכן הודעה, תוצאת כלי, מזהה לקוח או פרטי פרויקט. retention זהה ל-chat_perf_metrics
+-- (pruneChatPerfSteps, נקרא מאותה עבודה יומית ב-scheduler.ts).
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS chat_perf_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL,             -- מצטרף ל-chat_perf_metrics.request_id (אין FK פיזי — נכתב בטרנזקציה אחת בסוף הבקשה, אחרי chat_perf_metrics)
+  kind TEXT NOT NULL,                   -- tool | prep
+  name TEXT NOT NULL,                   -- שם כלי (למשל mark_done) או שם שלב הכנה (למשל fetch_user_ops_tasks) — לא ארגומנטים/תוצאה
+  duration_ms INTEGER NOT NULL,
+  ok INTEGER NOT NULL,                  -- 1 הצליח · 0 executeToolCall/שלב ההכנה זרק
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_perf_steps_request ON chat_perf_steps (request_id);
+CREATE INDEX IF NOT EXISTS idx_chat_perf_steps_created ON chat_perf_steps (created_at);

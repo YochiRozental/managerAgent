@@ -46,6 +46,11 @@ import {
   recordClientTimingSafe,
   getChatPerfSummarySafe,
 } from "../db/repositories/chatPerfMetrics.js";
+import {
+  recordChatPerfStepsSafe,
+  getChatPerfStepsForRequestSafe,
+  type ChatPerfStepEntry,
+} from "../db/repositories/chatPerfSteps.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import type { LoopContext } from "../ops/loopReply.js";
@@ -272,6 +277,15 @@ const server = createServer(async (req, res) => {
           toolTimeMs: result.perf?.toolTimeMs ?? null,
           toolCallCount: result.perf?.toolCallCount ?? null,
         });
+        // ניטור ביצועים (2026-10-14, הרחבה) — פירוט per-tool/per-prep-step, כתיבה מרוכזת אחת
+        // (טרנזקציה יחידה ב-recordChatPerfStepsSafe) בסוף הבקשה, לא תוך כדי — ר' chatPerfSteps.ts.
+        if (result.perf) {
+          const steps: ChatPerfStepEntry[] = [
+            ...result.perf.prepSteps.map((s) => ({ kind: "prep" as const, name: s.name, durationMs: s.durationMs, ok: s.ok })),
+            ...result.perf.toolCalls.map((s) => ({ kind: "tool" as const, name: s.name, durationMs: s.durationMs, ok: s.ok })),
+          ];
+          recordChatPerfStepsSafe(requestId, steps);
+        }
         return send(res, 200, { ...result, requestId });
       } catch (err) {
         const serverTotalMs = performance.now() - serverStart;
@@ -328,6 +342,23 @@ const server = createServer(async (req, res) => {
       const sinceHours = Number.isFinite(hoursParam) && hoursParam > 0 && hoursParam <= 24 * 30 ? hoursParam : 24;
       // *Safe — מחזיר summary ריק (200) במקום לזרוק אם השליפה נכשלת.
       return send(res, 200, getChatPerfSummarySafe(sinceHours));
+    }
+
+    // ניטור ביצועים (2026-10-14, הרחבה): פירוט שלבים (כלים/הכנה) לבקשה ספציפית לפי requestId —
+    // מאפשר לנתח "למה הבקשה הזו הייתה איטית" (ר' /api/perf/summary להצגת ה-requestId הרלוונטי).
+    // אותן הרשאות בקרה קיימות (view:all_work) — לא נוסף permission חדש.
+    if (req.method === "GET" && path === "/api/perf/steps") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (!user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "פירוט ביצועים — למוטי בלבד" });
+      }
+      const requestId = url.searchParams.get("requestId") ?? "";
+      if (!requestId || requestId.length > 128) {
+        return send(res, 400, { error: "requestId חסר/לא תקין" });
+      }
+      // *Safe — מחזיר [] (200) במקום לזרוק אם השליפה נכשלת.
+      return send(res, 200, { requestId, steps: getChatPerfStepsForRequestSafe(requestId) });
     }
 
     if (req.method === "GET" && path === "/api/chat/sessions") {

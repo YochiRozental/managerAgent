@@ -11,6 +11,7 @@
  * הכל ממודר לעובד המחובר בלבד.
  */
 
+import { performance } from "node:perf_hooks";
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
 import { userCan, type IdentifiedUser } from "../identity/index.js";
@@ -340,6 +341,18 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * ניטור ביצועים (2026-10-14, הרחבה) — רשומה אחת לכלי/שלב-הכנה בודד: שם + משך + הצלחה/כשל בלבד.
+ * אין כאן ארגומנטים של כלי, תוכן הודעה, תוצאת כלי, מזהה לקוח או פרטי פרויקט — ר' chat_perf_steps
+ * ב-schema.sql. durationMs לכלים הוא *אותו* משך שכבר נספר לתוך OpsChatPerf.toolTimeMs
+ * (agentLoop.ts's onToolTiming) — לא טיימר נוסף, לא נספר פעמיים.
+ */
+export interface PerfStepRecord {
+  name: string;
+  durationMs: number;
+  ok: boolean;
+}
+
 export interface OpsChatPerf {
   aiTimeMs: number;
   aiCallCount: number;
@@ -350,6 +363,10 @@ export interface OpsChatPerf {
   attempts: number;
   tier: ModelTier;
   fallbackUsed: boolean;
+  /** פירוט כל קריאת כלי בודדת בסבב הזה (על פני כל הניסיונות) — ר' PerfStepRecord. */
+  toolCalls: PerfStepRecord[];
+  /** שלבי I/O לפני שה-AI loop בכלל מתחיל (fetchUserOpsTasks וכו') — זמן *שאינו* נכלל ב-aiTimeMs/toolTimeMs. */
+  prepSteps: PerfStepRecord[];
 }
 
 export interface OpsChatResult {
@@ -512,6 +529,25 @@ interface SharedToolUiEffect {
   refresh?: boolean;
 }
 
+/**
+ * ניטור ביצועים (2026-10-14) — מודד שלב I/O *לפני* ה-AI loop (כרגע: fetchUserOpsTasks, היחיד
+ * שאומת ידנית כ-I/O אסינכרוני במסלול לפני runAttempt — ר' audit; אם יתווסף שלב נוסף בעתיד, זה
+ * ה-helper לעטוף אותו). דוחף רשומה ל-sink בשני המקרים (הצלחה/כשל) ו-**זורק מחדש בדיוק את
+ * השגיאה המקורית** בכשל — לא עוטף, לא בולע, לא משנה את זרימת הבקרה הקיימת. בכוונה שם קבוע
+ * (`name`), לא דינמי מהקלט — אין כאן שום תוכן.
+ */
+async function timedPrepStep<T>(name: string, fn: () => Promise<T>, sink: PerfStepRecord[]): Promise<T> {
+  const start = performance.now();
+  try {
+    const result = await fn();
+    sink.push({ name, durationMs: performance.now() - start, ok: true });
+    return result;
+  } catch (err) {
+    sink.push({ name, durationMs: performance.now() - start, ok: false });
+    throw err;
+  }
+}
+
 export interface OpsChatOptions {
   /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
   about?: LoopContext;
@@ -585,7 +621,11 @@ export async function runOpsChat(
       )
     : "";
 
-  let tasks = await fetchUserOpsTasks(user.mondayUserId);
+  // ניטור ביצועים (2026-10-14) — מצטבר על פני כל הבקשה (לא מתאפס בכל ניסיון/runAttempt, בדיוק
+  // כמו actions), ונכתב ל-DB פעם אחת בסוף ע"י server/index.ts (ר' OpsChatResult.perf).
+  const toolCallRecords: PerfStepRecord[] = [];
+  const prepStepRecords: PerfStepRecord[] = [];
+  let tasks = await timedPrepStep("fetch_user_ops_tasks", () => fetchUserOpsTasks(user.mondayUserId!), prepStepRecords);
   const actions: string[] = [];
   // התדריך של "בוקר טוב" מוגש מילה במילה — מודלים נוטים לקצר/לנסח מחדש, וכאן חשוב שהמבנה
   // (פרויקט → 'עכשיו:') יישאר בדיוק כמו שבנינו אותו.
@@ -1153,6 +1193,12 @@ export async function runOpsChat(
           return { content: `שגיאה: ${(err as Error).message}`, sideEffect: false };
         }
       },
+      // ניטור ביצועים (2026-10-14) — toolCallRecords מוגדר *מעל* buildLoop (לא כאן), כך שנשאר
+      // אותו מערך על פני כל הניסיונות (fast→smart fallback, retry אישור נוכחות) — בדיוק כמו
+      // actions. agentLoop.ts כבר קורא לזה עם *אותו* durationMs שנספר ל-toolTimeMs — לא טיימר שני.
+      onToolTiming: (name: string, durationMs: number, ok: boolean) => {
+        toolCallRecords.push({ name, durationMs, ok });
+      },
       finalizeText: (modelText: string) => {
         // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא (כולל ברכה+כותרת,
         // ר' formatEmployeeFeedBriefing) במקום הניסוח החופשי של המודל (שנוטה לשבש את מבנה חמש
@@ -1243,6 +1289,8 @@ export async function runOpsChat(
       attempts: perfAttempts,
       tier: routed.tier,
       fallbackUsed: routed.fallbackUsed,
+      toolCalls: toolCallRecords,
+      prepSteps: prepStepRecords,
     },
   };
 }

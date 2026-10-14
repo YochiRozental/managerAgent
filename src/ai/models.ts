@@ -9,7 +9,7 @@
  */
 
 import { logger } from "../utils/logger.js";
-import { estimateCostUsd } from "./pricing.js";
+import { estimateCostUsd, hasCachePricing } from "./pricing.js";
 import { aiConfig } from "./tierConfig.js";
 import type { NormUsage, ProviderName } from "./providers/types.js";
 
@@ -87,10 +87,12 @@ export interface UsageAcc {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  /** ניסוי Prompt Caching (2026-10-14) — טוקנים שנכתבו ל-cache (cache miss שיצר entry). */
+  cacheCreationInputTokens: number;
 }
 
 export function newUsageAcc(): UsageAcc {
-  return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+  return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheCreationInputTokens: 0 };
 }
 
 export function addUsage(acc: UsageAcc, usage: NormUsage | null | undefined): void {
@@ -98,6 +100,7 @@ export function addUsage(acc: UsageAcc, usage: NormUsage | null | undefined): vo
   acc.inputTokens += usage.inputTokens ?? 0;
   acc.outputTokens += usage.outputTokens ?? 0;
   acc.cachedInputTokens += usage.cachedInputTokens ?? 0;
+  acc.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
 }
 
 // ───────────────────────── logging ─────────────────────────
@@ -125,8 +128,14 @@ export function logAiCall(entry: AiCallLog): void {
         inputTokens: entry.usage.inputTokens,
         outputTokens: entry.usage.outputTokens,
         cachedInputTokens: entry.usage.cachedInputTokens,
+        cacheCreationInputTokens: entry.usage.cacheCreationInputTokens,
       })
     : null;
+  // ניסוי Prompt Caching (2026-10-14) — cost_exact מופיע *רק* כש-יש בפועל טוקני cache בקריאה הזו
+  // (לא מציף לוגים רגילים, שם cache=0 ואין שום אי-דיוק לדווח עליו). false ⇔ המודל הזה עדיין לא
+  // אומת למחירי cache מדויקים (hasCachePricing, pricing.ts) — est_cost_usd למעלה במקרה הזה הוא
+  // הערכה-שמרנית-כ-input-מלא, לא עלות מדויקת. ר' דרישה "אל תציג כעלות מדויקת אם אינה כזו".
+  const cacheActive = entry.usage.cachedInputTokens > 0 || entry.usage.cacheCreationInputTokens > 0;
   logger.info(
     {
       ai_call: true,
@@ -140,7 +149,9 @@ export function logAiCall(entry: AiCallLog): void {
       input_tokens: entry.usage.inputTokens,
       output_tokens: entry.usage.outputTokens,
       cached_tokens: entry.usage.cachedInputTokens,
+      cache_creation_tokens: entry.usage.cacheCreationInputTokens,
       ...(cost != null ? { est_cost_usd: Number(cost.toFixed(5)) } : {}),
+      ...(cacheActive ? { cost_exact: hasCachePricing(entry.model) } : {}),
     },
     `AI ${entry.tier}/${entry.provider}/${entry.model} · ${entry.useCase}${entry.fallback ? " (fallback→smart)" : ""}`,
   );

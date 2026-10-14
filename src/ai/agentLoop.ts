@@ -67,6 +67,8 @@ export interface AgentLoopParams {
    * זורקת, היא נבלעת כאן (לא אמורה להכשיל את הלולאה/תשובת הסוכן — ניטור הוא best-effort).
    */
   onToolTiming?: (toolName: string, durationMs: number, ok: boolean) => void;
+  /** ניסוי Prompt Caching (2026-10-14) — מועבר כמו שהוא ל-callModel. ר' RunModelParams.promptCaching. */
+  promptCaching?: { cacheableSystem: string; volatileSystemSuffix: string };
   /** לבדיקות בלבד — הזרקת פונקציית קריאה למודל במקום ה-runModel האמיתי. */
   _runModel?: RunModelFn;
 }
@@ -122,6 +124,7 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
         messages,
         tools: p.tools,
         maxTokens: p.maxTokens,
+        ...(p.promptCaching ? { promptCaching: p.promptCaching } : {}),
       });
     } catch (err) {
       aiTimeMs += performance.now() - aiStart;

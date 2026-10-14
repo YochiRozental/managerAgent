@@ -22,6 +22,13 @@ const schema = z.object({
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
   ATTENDANCE_PILOT_USER_KEYS: z.string().default(""),
+  // ניסוי Prompt Caching ל-Web Chat (2026-10-14) — כבוי כברירת מחדל. בכוונה בלי רשימת-פיילוט
+  // (כמו ATTENDANCE_PILOT_USER_KEYS) — מוגבל ל"יוכי" בלבד, hardcoded בקוד (ops/chat.ts), לא
+  // קונפיגורבילי: זה ניסוי יחיד-משתמש, לא פיילוט מתרחב.
+  PROMPT_CACHING_EXPERIMENT_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
 });
 
 const parsed = schema.safeParse(process.env);

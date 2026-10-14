@@ -7,12 +7,12 @@
 import { describe, expect, it } from "vitest";
 import { resolveAiConfig, type TierConfig } from "../../src/ai/tierConfig.js";
 import { getProvider, isProviderName } from "../../src/ai/providers/index.js";
-import { estimateCostUsd, MODEL_PRICING } from "../../src/ai/pricing.js";
+import { estimateCostUsd, hasCachePricing, MODEL_PRICING } from "../../src/ai/pricing.js";
 import { addUsage, newUsageAcc } from "../../src/ai/models.js";
 import { runRoutedAgent } from "../../src/ai/routedAgent.js";
 import type { RunModelFn } from "../../src/ai/agentLoop.js";
 import type { NormToolCall, RunModelResult } from "../../src/ai/providers/types.js";
-import { fromAnthropicResponse, toAnthropicMessages, toAnthropicTools } from "../../src/ai/providers/anthropic.js";
+import { applyPromptCaching, fromAnthropicResponse, toAnthropicMessages, toAnthropicTools } from "../../src/ai/providers/anthropic.js";
 import { fromOpenAiResponse, toOpenAiMessages, toOpenAiTools } from "../../src/ai/providers/openai.js";
 
 // ─────────────────────────── מוק provider ───────────────────────────
@@ -146,6 +146,46 @@ describe("עלות", () => {
     addUsage(acc, null);
     expect(acc).toMatchObject({ inputTokens: 200, outputTokens: 100, cachedInputTokens: 10 });
   });
+
+  // ═══ ניסוי Prompt Caching (2026-10-14) ═══
+  describe("מחירי cache", () => {
+    it("hasCachePricing: Haiku 4.5 — מדויק (אומת מול platform.claude.com/docs)", () => {
+      expect(hasCachePricing("claude-haiku-4-5-20251001")).toBe(true);
+    });
+    it("hasCachePricing: Sonnet 5 — עדיין לא אומת, לא מדויק", () => {
+      expect(hasCachePricing("claude-sonnet-5")).toBe(false);
+    });
+    it("hasCachePricing: מודל לא ידוע — false", () => {
+      expect(hasCachePricing("מודל-דמיוני")).toBe(false);
+    });
+
+    it("Haiku 4.5: cache read 1M טוקנים = $0.10 (לא $1 — לא מחיר input מלא)", () => {
+      const cost = estimateCostUsd("claude-haiku-4-5-20251001", { inputTokens: 0, outputTokens: 0, cachedInputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(0.1, 5);
+    });
+    it("Haiku 4.5: cache write (5 דק') 1M טוקנים = $1.25 (1.25x base input)", () => {
+      const cost = estimateCostUsd("claude-haiku-4-5-20251001", { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(1.25, 5);
+    });
+    it("Haiku 4.5: input+output+cache-read+cache-write משולבים, מחושב במחיר המדויק של כל אחד", () => {
+      const cost = estimateCostUsd("claude-haiku-4-5-20251001", {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cachedInputTokens: 1_000_000,
+        cacheCreationInputTokens: 1_000_000,
+      });
+      // $1 (input) + $5 (output) + $0.10 (cache read) + $1.25 (cache write) = $7.35
+      expect(cost).toBeCloseTo(7.35, 5);
+    });
+    it("מודל בלי מחירי cache מדויקים (Sonnet 5) — cache read/write נופל ל-input מלא (הערכה שמרנית, ללא שינוי)", () => {
+      const cost = estimateCostUsd("claude-sonnet-5", { inputTokens: 0, outputTokens: 0, cachedInputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(2, 5); // $2/MTok inputPerMTok של sonnet-5, לא $0.1-משהו
+    });
+    it("בלי שום טוקן cache (כמו כל קריאה היום) — העלות זהה למה שהייתה לפני ההרחבה", () => {
+      const cost = estimateCostUsd("claude-haiku-4-5-20251001", { inputTokens: 1_000_000, outputTokens: 1_000_000 });
+      expect(cost).toBe(6);
+    });
+  });
 });
 
 // ═══ תרגום schema / messages ═══
@@ -202,6 +242,63 @@ describe("תרגום schema / messages", () => {
     expect(r.text).toBe("היי");
     expect(r.toolCalls[0]!.name).toBe("t1");
     expect(r.usage.cachedInputTokens).toBe(4);
+  });
+  it("fromAnthropicResponse: cache_creation_input_tokens נקלט ל-cacheCreationInputTokens", () => {
+    const r = fromAnthropicResponse({
+      content: [{ type: "text", text: "היי" }],
+      usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 4, cache_creation_input_tokens: 800 },
+    } as never);
+    expect(r.usage.cacheCreationInputTokens).toBe(800);
+  });
+  it("fromAnthropicResponse: בלי cache_creation_input_tokens בתשובה → 0 (לא undefined/NaN)", () => {
+    const r = fromAnthropicResponse({
+      content: [{ type: "text", text: "היי" }],
+      usage: { input_tokens: 12, output_tokens: 3 },
+    } as never);
+    expect(r.usage.cacheCreationInputTokens).toBe(0);
+  });
+
+  describe("applyPromptCaching (ניסוי 2026-10-14) — מבנה הבקשה", () => {
+    const promptCaching = { cacheableSystem: "הוראות קבועות", volatileSystemSuffix: "היום יום שלישי" };
+
+    it("system הופך למערך 2 בלוקים: cache_control על הראשון בלבד", () => {
+      const { system } = applyPromptCaching("לא בשימוש", undefined, promptCaching);
+      expect(Array.isArray(system)).toBe(true);
+      const blocks = system as { type: string; text: string; cache_control?: unknown }[];
+      expect(blocks).toHaveLength(2);
+      expect(blocks[0]).toMatchObject({ type: "text", text: "הוראות קבועות", cache_control: { type: "ephemeral" } });
+      expect(blocks[1]).toMatchObject({ type: "text", text: "היום יום שלישי" });
+      expect(blocks[1]!.cache_control).toBeUndefined();
+    });
+
+    it("תוכן שני הבלוקים יחד = התוכן המקורי, בלי אובדן/שינוי טקסט", () => {
+      const { system } = applyPromptCaching("", undefined, promptCaching);
+      const blocks = system as { text: string }[];
+      expect(blocks.map((b) => b.text).join("\n")).toBe("הוראות קבועות\nהיום יום שלישי");
+    });
+
+    it("tools: cache_control רק על הכלי האחרון במערך, לא על האחרים", () => {
+      const tools = toAnthropicTools([
+        { name: "t1", description: "d1", parameters: { type: "object", properties: {} } },
+        { name: "t2", description: "d2", parameters: { type: "object", properties: {} } },
+        { name: "t3", description: "d3", parameters: { type: "object", properties: {} } },
+      ]);
+      const { tools: marked } = applyPromptCaching("", tools, promptCaching);
+      expect((marked as { cache_control?: unknown }[])[0]!.cache_control).toBeUndefined();
+      expect((marked as { cache_control?: unknown }[])[1]!.cache_control).toBeUndefined();
+      expect((marked as { cache_control?: unknown }[])[2]).toMatchObject({ cache_control: { type: "ephemeral" } });
+    });
+
+    it("אין כלים בכלל → tools נשאר undefined, לא קורס", () => {
+      const { tools } = applyPromptCaching("", undefined, promptCaching);
+      expect(tools).toBeUndefined();
+    });
+
+    it("סימון ה-cache_control לא פוגע בשם/תיאור/schema של אף כלי", () => {
+      const tools = toAnthropicTools([{ name: "t1", description: "d1", parameters: { type: "object", properties: { x: { type: "string" } } } }]);
+      const { tools: marked } = applyPromptCaching("", tools, promptCaching);
+      expect(marked![0]).toMatchObject({ name: "t1", description: "d1" });
+    });
   });
   it("fromOpenAiResponse: text + toolCalls (arguments מפורסר) + usage", () => {
     const r = fromOpenAiResponse({

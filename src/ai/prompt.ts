@@ -51,12 +51,17 @@ export interface BuildSystemPromptParams {
   attendanceEnabled?: boolean;
 }
 
-/** ops/chat.ts's former systemPrompt() body — moved here verbatim. */
-function buildWebPrompt(user: IdentifiedUser, about?: LoopContext, attendanceEnabled?: boolean): string {
-  const now = DateTime.now().setZone(env.TIMEZONE);
+/**
+ * ops/chat.ts's former systemPrompt() body — moved here verbatim (3F.1), ועכשיו (2026-10-14,
+ * ניסוי Prompt Caching) מפוצל: dateLine (השורה היחידה שמשתנה בין בקשות של אותו משתמש — ר'
+ * audit) מחושב ומוזרק כפרמטר, לא עוד inline. buildWebPrompt ו-buildWebPromptCacheSplit (למטה)
+ * שניהם קוראים לזה — אותו תוכן, אותו סדר, בדיוק כמו קודם; dateLine יושב *באותו מיקום* (index 1)
+ * בשני המקרים. אין שום שינוי טקסט/משמעות/סדר להוראות עצמן — רק היכן dateLine מחושב.
+ */
+function buildWebPromptLines(user: IdentifiedUser, about: LoopContext | undefined, attendanceEnabled: boolean | undefined, dateLine: string): string[] {
   return [
     `אתה העוזר התפעולי של ${user.name} במשרד האדריכלים "גוטליב אדריכלים". תפקיד המשתמש: ${user.roleDescription}`,
-    `היום ${now.toFormat("EEEE, dd/MM/yyyy")}, השעה ${now.toFormat("HH:mm")} (${env.TIMEZONE}).`,
+    dateLine,
     "דבר עברית, קצר, חם ולעניין. אתה בצד של העובד — עוזר לו לנהל את היום, לא בודק אותו.",
     ...(about
       ? [
@@ -179,7 +184,40 @@ function buildWebPrompt(user: IdentifiedUser, about?: LoopContext, attendanceEna
           "יש לך גם ראייה על כל המשרד. כשמוטי שואל 'מה תקוע?', 'מה דורש אותי?', 'מה קורה אצל דוב?', 'מה מצב פרויקט X?', 'מה מצב המכירות/הגבייה?', 'איזה פרויקטים בסיכון?' — השתמש בכלי הבקרה (office_overview / person_status / project_status / list_findings / sales_and_collection). כשמוטי מבקש למצוא ליד או עסקה ספציפית ('גש לליד X', 'מה מצב העסקה של Y') — קרא find_lead_or_deal (מחפש בכל הסטטוסים). ענה תמציתי עם המספרים והשמות, והצע צעד הבא כשברור.",
         ]
       : []),
-  ].join("\n");
+  ];
+}
+
+function buildDateLine(): string {
+  const now = DateTime.now().setZone(env.TIMEZONE);
+  return `היום ${now.toFormat("EEEE, dd/MM/yyyy")}, השעה ${now.toFormat("HH:mm")} (${env.TIMEZONE}).`;
+}
+
+function buildWebPrompt(user: IdentifiedUser, about?: LoopContext, attendanceEnabled?: boolean): string {
+  return buildWebPromptLines(user, about, attendanceEnabled, buildDateLine()).join("\n");
+}
+
+export interface CacheableWebPrompt {
+  /** כל התוכן הקבוע (הוראות/הרשאות/"איך לעבוד") — ללא שורת התאריך/שעה. ניתן למטמון (cache_control). */
+  cacheable: string;
+  /** שורת התאריך/שעה בלבד — משתנה כל דקה, לא ניתן למטמון. */
+  volatile: string;
+}
+
+/**
+ * ניסוי Prompt Caching (2026-10-14, מאחורי flag, יוכי בלבד — ר' ops/chat.ts's
+ * PROMPT_CACHING_EXPERIMENT_ENABLED). מפרק בדיוק את אותו תוכן ש-buildWebPrompt בונה (אותה
+ * buildWebPromptLines, אותו dateLine) לשני חלקים, כדי שהחלק הקבוע יהיה ניתן למטמון אצל Anthropic
+ * בלי לכלול את השורה היחידה שמשתנה כל דקה. **לא משנה טקסט, סדר, או משמעות של שום הוראה** — ר'
+ * tests/unit/promptCacheSplit.test.ts שמוכיח ששני החלקים מתאחדים בחזרה בדיוק לתוצאה של
+ * buildWebPrompt. buildWebPrompt/buildSystemPrompt עצמם לא השתנו אות אחת — כל משתמש/ערוץ שלא
+ * בניסוי ממשיך להפעיל אותם בדיוק כקודם.
+ */
+export function buildWebPromptCacheSplit(user: IdentifiedUser, about?: LoopContext, attendanceEnabled?: boolean): CacheableWebPrompt {
+  const dateLine = buildDateLine();
+  const lines = buildWebPromptLines(user, about, attendanceEnabled, dateLine);
+  // dateLine יושב ב-index 1 (ר' buildWebPromptLines) — מוציאים אותו, לא מוחקים/משנים שום דבר אחר.
+  const cacheableLines = [lines[0]!, ...lines.slice(2)];
+  return { cacheable: cacheableLines.join("\n"), volatile: dateLine };
 }
 
 /** integrations/claude/orchestrator.ts's former systemPrompt() body — moved here verbatim. */

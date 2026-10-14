@@ -71,19 +71,50 @@ export function fromAnthropicResponse(res: Anthropic.Message): RunModelResult {
       inputTokens: res.usage?.input_tokens ?? 0,
       outputTokens: res.usage?.output_tokens ?? 0,
       cachedInputTokens: res.usage?.cache_read_input_tokens ?? 0,
+      // ניסוי Prompt Caching (2026-10-14) — טוקנים שנכתבו ל-cache בבקשה הזו (cache miss שיצר entry).
+      cacheCreationInputTokens: res.usage?.cache_creation_input_tokens ?? 0,
     },
   };
+}
+
+/**
+ * ניסוי Prompt Caching (2026-10-14) — בונה system כמערך 2 בלוקים (קבוע עם cache_control, אחריו
+ * המשתנה) ומסמן את הכלי האחרון ב-tools, לפי סדר ה-prefix של Anthropic (tools→system→messages —
+ * מאומת מול התיעוד הרשמי, 2026-10-14). משתמש ב-TTL ברירת המחדל (5 דק') — לא 1h, לא בניסוי הזה.
+ * מחזיר tools כ-undefined אם אין כלים כלל (כמו ההתנהגות הקיימת — tools לא נשלח אם ריק).
+ */
+export function applyPromptCaching(
+  system: string,
+  tools: Anthropic.Tool[] | undefined,
+  promptCaching: NonNullable<RunModelParams["promptCaching"]>,
+): { system: string | Anthropic.TextBlockParam[]; tools: Anthropic.Tool[] | undefined } {
+  const systemBlocks: Anthropic.TextBlockParam[] = [
+    { type: "text", text: promptCaching.cacheableSystem, cache_control: { type: "ephemeral" } },
+    { type: "text", text: promptCaching.volatileSystemSuffix },
+  ];
+  if (tools && tools.length > 0) {
+    const markedTools = tools.slice();
+    markedTools[markedTools.length - 1] = { ...markedTools[markedTools.length - 1]!, cache_control: { type: "ephemeral" } };
+    return { system: systemBlocks, tools: markedTools };
+  }
+  return { system: systemBlocks, tools };
 }
 
 export const anthropicProvider: LlmProvider = {
   name: "anthropic",
   async runModel(params: RunModelParams): Promise<RunModelResult> {
+    const toolsParam = params.tools.length > 0 ? toAnthropicTools(params.tools) : undefined;
+    let system: string | Anthropic.TextBlockParam[] = params.system;
+    let tools = toolsParam;
+    if (params.promptCaching) {
+      ({ system, tools } = applyPromptCaching(params.system, toolsParam, params.promptCaching));
+    }
     const res = await getClient().messages.create({
       model: params.model,
       max_tokens: params.maxTokens,
-      system: params.system,
+      system,
       messages: toAnthropicMessages(params.messages),
-      ...(params.tools.length > 0 ? { tools: toAnthropicTools(params.tools) } : {}),
+      ...(tools ? { tools } : {}),
     });
     return fromAnthropicResponse(res);
   },

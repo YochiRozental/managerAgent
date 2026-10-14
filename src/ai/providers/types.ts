@@ -44,6 +44,13 @@ export interface NormUsage {
   outputTokens: number;
   /** טוקני input שנקראו מ-cache (Anthropic: cache_read; OpenAI: prompt cached_tokens). 0 אם אין. */
   cachedInputTokens: number;
+  /**
+   * ניסוי Prompt Caching (2026-10-14) — טוקני input שנכתבו ל-cache בבקשה הזו (Anthropic:
+   * cache_creation_input_tokens). אופציונלי בכוונה (לא כמו cachedInputTokens) כדי שלא לדרוש
+   * עדכון לכל ה-fakes/literals הקיימים בבדיקות שבונים NormUsage בלי השדה הזה — addUsage מתייחס
+   * ל-undefined כ-0, זהה ל-cachedInputTokens.
+   */
+  cacheCreationInputTokens?: number;
 }
 
 export interface RunModelParams {
@@ -52,6 +59,18 @@ export interface RunModelParams {
   messages: NormMessage[];
   tools: NormTool[];
   maxTokens: number;
+  /**
+   * ניסוי Prompt Caching (2026-10-14, מאחורי flag, יוכי בלבד — ר' ops/chat.ts). כש-קיים, ה-provider
+   * שתומך (רק anthropic.ts — openai.ts מתעלם) בונה את ה-system כמערך בלוקים עם cache_control על
+   * הבלוק הקבוע, ומסמן גם את הכלי האחרון ב-tools (סדר prefix של Anthropic: tools→system→messages).
+   * volatileSystemSuffix הוא *אותו* תוכן בדיוק של השורה המשתנה (לא הוראה — תאריך/שעה), רק לא
+   * ב-cache. cacheableSystem+volatileSystemSuffix יחד = תוכן זהה ל-system (המחרוזת הרגילה), רק
+   * מפוצל. שדה זה לא קיים כלל לכל קורא אחר — אין שינוי התנהגות ברירת מחדל.
+   */
+  promptCaching?: {
+    cacheableSystem: string;
+    volatileSystemSuffix: string;
+  };
 }
 
 export interface RunModelResult {

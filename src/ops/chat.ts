@@ -31,7 +31,7 @@ import { runCentralAgent } from "../ai/routedAgent.js";
 import type { RunModelFn } from "../ai/agentLoop.js";
 import type { AiConfig } from "../ai/tierConfig.js";
 import type { ModelTier } from "../ai/models.js";
-import { buildSystemPrompt } from "../ai/prompt.js";
+import { buildSystemPrompt, buildWebPromptCacheSplit } from "../ai/prompt.js";
 import type { ToolDefinition } from "../ai/toolRegistry.js";
 import { dispatchToolDefinition } from "../ai/dispatcher.js";
 import { toNormMessages, toNormTools } from "../ai/normalize.js";
@@ -391,6 +391,17 @@ export function systemPrompt(user: IdentifiedUser, about?: LoopContext): string 
   return buildSystemPrompt({ channel: "web", user, about, attendanceEnabled: attendanceEnabledForUser(user) });
 }
 
+/**
+ * ניסוי Prompt Caching (2026-10-14) — ממיר את הפיצול של buildWebPromptCacheSplit לשם השדות
+ * שה-provider מצפה להם (RunModelParams.promptCaching). attendanceEnabled מחושב **באותו אופן
+ * בדיוק** כמו ב-systemPrompt למעלה (attendanceEnabledForUser(user), לא attendanceOn/ה-override
+ * לבדיקות) — כדי ששני הפיצולים (הרגיל וה-cacheable) יתארו בדיוק את אותו טקסט לאותם user/about.
+ */
+export function buildPromptCachingSplitFor(user: IdentifiedUser, about?: LoopContext): { cacheableSystem: string; volatileSystemSuffix: string } {
+  const split = buildWebPromptCacheSplit(user, about, attendanceEnabledForUser(user));
+  return { cacheableSystem: split.cacheable, volatileSystemSuffix: split.volatile };
+}
+
 function fmtTask(t: DashboardTask): string {
   const where = t.stageName ? `${t.context} › ${t.stageName}` : t.context;
   const bits = [where];
@@ -615,6 +626,10 @@ export async function runOpsChat(
   // מיידי. הבנר מצורף לתשובה הסופית למטה, לא מוחלף לה.
   const attendanceOn = (opts._attendanceEnabledForUser ?? attendanceEnabledForUser)(user);
   const attendanceBanner = attendanceOn ? checkAttendanceDayStart(user, now).banner : null;
+  // ניסוי Prompt Caching (2026-10-14) — דגל גלובלי (env) + hardcoded ל-"yochi" בלבד (לא רשימת
+  // פיילוט, ר' env.ts). כל משתמש אחר, או יוכי כש-הדגל כבוי, מקבל את ה-buildLoop המקורי בדיוק
+  // כמו קודם (system כמחרוזת רגילה, בלי promptCaching) — אפס שינוי התנהגות.
+  const promptCachingEnabled = env.PROMPT_CACHING_EXPERIMENT_ENABLED && user.key === "yochi";
   // idempotency (audit שלב ה): clientMessageId (מה-UI, ר' OpsChatOptions) הוא הראשי — יציב ברטרי,
   // ולעולם לא מתנגש בין שתי הודעות אמיתיות (גם מקביליות, גם זהות-תוכן) כי כל שליחה מקבלת UUID
   // משלה בלקוח. turnOrdinal (ספירת הודעות מה-DB) הוא fallback בלבד לקוראים שלא שולחים clientMessageId.
@@ -1191,6 +1206,9 @@ export async function runOpsChat(
     capturedPipelineText = null;
     return {
       system: systemPrompt(user, opts.about),
+      // ניסוי Prompt Caching (2026-10-14) — ר' promptCachingEnabled למעלה. כש-כבוי (כל משתמש
+      // חוץ מ-yochi+flag) השדה הזה undefined, ו-agentLoop/anthropic.ts מתנהגים בדיוק כקודם.
+      ...(promptCachingEnabled ? { promptCaching: buildPromptCachingSplitFor(user, opts.about) } : {}),
       maxTokens: 1024,
       maxTurns: MAX_TURNS,
       messages: toNormMessages(history),

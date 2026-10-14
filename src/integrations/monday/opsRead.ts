@@ -273,14 +273,14 @@ export interface DependentRef {
   project: string;
 }
 
-let reverseDepCache: { at: number; map: Map<string, DependentRef[]> } | null = null;
+let reverseDepCache: { at: number; generation: number; map: Map<string, DependentRef[]> } | null = null;
 const REVERSE_DEP_TTL_MS = 5 * 60_000;
+/** שליפה פעילה (single-flight) — מונע סריקה כפולה של כל בורד תת-המשימות כש-cache קר. */
+let reverseDepInFlight: Promise<Map<string, DependentRef[]>> | null = null;
+/** מונה מונוטוני — ר' הסבר תואם ב-src/ops/officeState.ts (nextGeneration): Date.now() לא מספיק. */
+let reverseDepNextGeneration = 0;
 
-export async function getReverseDependencyMap(): Promise<Map<string, DependentRef[]>> {
-  if (reverseDepCache && Date.now() - reverseDepCache.at < REVERSE_DEP_TTL_MS) {
-    return reverseDepCache.map;
-  }
-
+async function fetchReverseDependencyMap(): Promise<Map<string, DependentRef[]>> {
   const selection = `
     id
     name
@@ -342,8 +342,33 @@ export async function getReverseDependencyMap(): Promise<Map<string, DependentRe
     }
   }
 
-  reverseDepCache = { at: Date.now(), map };
   return map;
+}
+
+export async function getReverseDependencyMap(): Promise<Map<string, DependentRef[]>> {
+  if (reverseDepCache && Date.now() - reverseDepCache.at < REVERSE_DEP_TTL_MS) {
+    return reverseDepCache.map;
+  }
+  if (reverseDepInFlight) return reverseDepInFlight;
+
+  const generation = ++reverseDepNextGeneration; // סינכרוני — לא תלוי ברזולוציית Date.now()
+  const promise: Promise<Map<string, DependentRef[]>> = fetchReverseDependencyMap().then(
+    (map) => {
+      // ראו הסבר תואם ב-src/ops/officeState.ts: לא לדרוס תוצאה שהתחילה מאוחר יותר ולכן עדכנית ממנה.
+      if (!reverseDepCache || generation >= reverseDepCache.generation) {
+        reverseDepCache = { at: Date.now(), generation, map };
+      }
+      if (reverseDepInFlight === promise) reverseDepInFlight = null;
+      return map;
+    },
+    (err) => {
+      if (reverseDepInFlight === promise) reverseDepInFlight = null;
+      throw err;
+    },
+  );
+
+  reverseDepInFlight = promise;
+  return promise;
 }
 
 // ---------------------------------------------------------------------------

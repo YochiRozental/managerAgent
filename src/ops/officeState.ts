@@ -28,8 +28,20 @@ export interface OfficeState {
   reverseDeps: Map<string, DependentRef[]>;
 }
 
-let cache: { at: number; state: OfficeState } | null = null;
+let cache: { at: number; generation: number; state: OfficeState } | null = null;
 const TTL_MS = 3 * 60_000;
+/**
+ * שליפה פעילה (single-flight) — בקשות מקבילות שמגיעות כש-cache קר מצטרפות לאותה שליפה אחת
+ * במקום לכפול את קריאות ה-Monday (getReverseDependencyMap + fetchActiveProjects + 6 חברי צוות).
+ * force=true לא מצטרף אליה ולא נרשם בה בכוונה — ר' getOfficeState.
+ */
+let inFlight: Promise<OfficeState> | null = null;
+/**
+ * מונה מונוטוני לקביעת "מי התחיל מאוחר יותר" בין שליפות חופפות — Date.now() לא מספיק (רזולוציה
+ * של אלפית שנייה; שתי קריאות סינכרוניות ברצף, כמו getOfficeState()+getOfficeState(true) בלי await
+ * ביניהן, יכולות לקבל timestamp זהה). ++ סינכרוני מובטח להיות שונה בכל קריאה, בלי תלות בשעון.
+ */
+let nextGeneration = 0;
 
 /** מקבילות מוגבלת — מהיר יותר מטור, בלי להטיס את תקרת המורכבות של Monday (mondayRequest עושה retry). */
 async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -46,9 +58,7 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise
   return out;
 }
 
-export async function getOfficeState(force = false): Promise<OfficeState> {
-  if (!force && cache && Date.now() - cache.at < TTL_MS) return cache.state;
-
+async function fetchOfficeState(): Promise<OfficeState> {
   const now = DateTime.now().setZone(env.TIMEZONE);
   const members = TEAM_DIRECTORY.filter((m) => m.mondayUserId);
 
@@ -72,7 +82,7 @@ export async function getOfficeState(force = false): Promise<OfficeState> {
     }
   }
 
-  const state: OfficeState = {
+  return {
     now,
     generatedAt: now.toISO() ?? "",
     perPerson,
@@ -80,6 +90,31 @@ export async function getOfficeState(force = false): Promise<OfficeState> {
     projects,
     reverseDeps,
   };
-  cache = { at: Date.now(), state };
-  return state;
+}
+
+export async function getOfficeState(force = false): Promise<OfficeState> {
+  if (!force) {
+    if (cache && Date.now() - cache.at < TTL_MS) return cache.state;
+    if (inFlight) return inFlight;
+  }
+
+  const generation = ++nextGeneration; // סינכרוני — לא יכול להתנגש גם כש-Date.now() זהה בין שתי קריאות
+  const promise: Promise<OfficeState> = fetchOfficeState().then(
+    (state) => {
+      // משווים לפי מי התחיל מאוחר יותר (generation) — שליפה שהתחילה לפני cache.generation (למשל
+      // force מקביל שכבר הספיק לכתוב) לא דורסת תוצאה שהתחילה מאוחר יותר ולכן עדכנית ממנה.
+      if (!cache || generation >= cache.generation) {
+        cache = { at: Date.now(), generation, state };
+      }
+      if (!force && inFlight === promise) inFlight = null;
+      return state;
+    },
+    (err) => {
+      if (!force && inFlight === promise) inFlight = null;
+      throw err;
+    },
+  );
+
+  if (!force) inFlight = promise;
+  return promise;
 }

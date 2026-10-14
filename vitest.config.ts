@@ -17,6 +17,8 @@ const SAFE_TESTS = [
   "tests/unit/identity.test.ts",
   "tests/unit/modelRouter.test.ts",
   "tests/unit/myWorkBrief.test.ts",
+  "tests/unit/officeStateSingleFlight.test.ts",
+  "tests/unit/reverseDependencyMapSingleFlight.test.ts",
   "tests/unit/aiProviders.test.ts",
   "tests/unit/attendanceEngine.test.ts",
   "tests/unit/employeeFeed.test.ts",

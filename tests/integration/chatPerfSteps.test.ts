@@ -1,7 +1,10 @@
 /**
  * ניטור ביצועים (2026-10-14, הרחבה) — runOpsChat מקצה-לקצה: perf.prepSteps (fetchUserOpsTasks)
- * ו-perf.toolCalls (per-tool), כולל אי-כפילות מול toolTimeMs (req #3) ושמירה על זרימת-שגיאה
- * קיימת כש-fetchUserOpsTasks נכשל (req: "אל תשנה התנהגות").
+ * ו-perf.toolCalls (per-tool), כולל אי-כפילות מול toolTimeMs (req #3).
+ *
+ * audit lazy loading (2026-10-14, המשך): fetchUserOpsTasks הפך ל-lazy — שני התרחישים "prep תמיד
+ * קיים" ו-"כשל מתפשט כרגיל" השתנו בכוונה (ר' tests/integration/lazyTasksLoading.test.ts למטריצה
+ * המלאה של ההתנהגות החדשה). כאן נשארות רק הבדיקות שלא השתנו + עדכון מינימלי לשתיים שכן.
  *
  * READ-ONLY מול Monday (fetchUserOpsTasks מדומה ומבוקר per-test). אפס קריאת AI אמיתית — _runModel מוזרק.
  */
@@ -38,11 +41,7 @@ beforeEach(() => {
 });
 
 describe("runOpsChat — ניטור שלבים (prep + tool)", () => {
-  it("prepSteps כולל fetch_user_ops_tasks עם ok=true ומשך אמיתי", async () => {
-    fetchUserOpsTasksMock.mockImplementationOnce(async () => {
-      await sleep(15);
-      return [];
-    });
+  it("lazy loading: תשובה בלי tool_use — prepSteps ריק, fetchUserOpsTasks לא נקרא בכלל", async () => {
     const fn: RunModelFn = async () => ({
       text: "בוצע",
       toolCalls: [],
@@ -55,6 +54,35 @@ describe("runOpsChat — ניטור שלבים (prep + tool)", () => {
       _runModel: fn,
       _config: TEST_CONFIG,
     });
+    expect(result.perf?.prepSteps).toEqual([]);
+    expect(fetchUserOpsTasksMock).not.toHaveBeenCalled();
+  });
+
+  it("prepSteps כולל fetch_user_ops_tasks עם ok=true ומשך אמיתי, כש-כלי שתלוי ב-tasks נקרא", async () => {
+    fetchUserOpsTasksMock.mockImplementationOnce(async () => {
+      await sleep(15);
+      return [];
+    });
+    let turn = 0;
+    const fn: RunModelFn = async () => {
+      turn += 1;
+      if (turn === 1) {
+        return {
+          text: "",
+          toolCalls: [{ id: "tc1", name: "find_task", input: { query: "x" } }],
+          assistantContent: [{ type: "tool_use", id: "tc1", name: "find_task", input: { query: "x" } }],
+          usage: USAGE,
+        } satisfies RunModelResult;
+      }
+      return { text: "לא נמצא", toolCalls: [], assistantContent: [{ type: "text", text: "לא נמצא" }], usage: USAGE };
+    };
+    const result = await runOpsChat(dov, msg("מצא את המשימה של בלומינג"), {
+      session: "steps-s1b",
+      clientMessageId: "steps-cmid-1b",
+      _runModel: fn,
+      _config: TEST_CONFIG,
+    });
+    expect(fetchUserOpsTasksMock).toHaveBeenCalledTimes(1);
     expect(result.perf?.prepSteps).toHaveLength(1);
     expect(result.perf?.prepSteps[0]).toMatchObject({ name: "fetch_user_ops_tasks", ok: true });
     expect(result.perf!.prepSteps[0]!.durationMs).toBeGreaterThanOrEqual(10);
@@ -88,12 +116,20 @@ describe("runOpsChat — ניטור שלבים (prep + tool)", () => {
     expect(Math.abs(sumIndividual - result.perf!.toolTimeMs)).toBeLessThan(1);
   });
 
-  it("fetchUserOpsTasks נכשל → השגיאה המקורית מתפשטת כרגיל (לא נבלעת ע\"י הניטור)", async () => {
+  it("fetchUserOpsTasks נכשל, בלי tool_use כלל → לא מנוסה בכלל (lazy), הבקשה מצליחה כרגיל", async () => {
+    // תרחיש מקביל ל-tests/integration/lazyTasksLoading.test.ts's req #9 — כאן ברמת ה-perf בלבד.
     const boom = new Error("Monday timeout מדומה");
     fetchUserOpsTasksMock.mockRejectedValueOnce(boom);
-    await expect(
-      runOpsChat(dov, msg("בוקר טוב"), { session: "steps-s3", clientMessageId: "steps-cmid-3", _config: TEST_CONFIG }),
-    ).rejects.toThrow("Monday timeout מדומה");
+    const fn: RunModelFn = async () => ({ text: "בוקר טוב גם לך", toolCalls: [], assistantContent: [{ type: "text", text: "בוקר טוב גם לך" }], usage: USAGE });
+    const result = await runOpsChat(dov, msg("בוקר טוב"), {
+      session: "steps-s3",
+      clientMessageId: "steps-cmid-3",
+      _runModel: fn,
+      _config: TEST_CONFIG,
+    });
+    expect(result.reply).toBe("בוקר טוב גם לך");
+    expect(fetchUserOpsTasksMock).not.toHaveBeenCalled();
+    expect(result.perf?.prepSteps).toEqual([]);
   });
 
   it("בלי mondayUserId — אין prep/tool records (perf כולו undefined, כמו קודם)", async () => {

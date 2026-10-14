@@ -318,11 +318,19 @@ CREATE INDEX IF NOT EXISTS idx_chat_perf_created ON chat_perf_metrics (created_a
 -- (23.5 שנ' ב"כלים" בלי לדעת איזה כלי; 800-1500ms לא-מיוחסים לפני ה-AI) חייב לפתוח. שתי קטגוריות
 -- (kind): 'tool' — כל קריאת כלי בודדת בלולאת ה-tool-use (ר' agentLoop.ts's onToolTiming), אותו
 -- משך שכבר נספר לתוך chat_perf_metrics.tool_time_ms — לא טיימר נוסף, לא נספר פעמיים, רק דיווח
--- מפורט יותר של *אותה* מדידה. 'prep' — שלבי I/O לפני שה-AI loop בכלל מתחיל (fetchUserOpsTasks וכו',
--- ר' chat.ts's timedPrepStep) — זמן שלא נכלל בשום עמודה קיימת ב-chat_perf_metrics, לכן לא עלול
--- "להתווסף" לשום סכום קיים. name הוא שם כלי/שלב בלבד (metadata טכני) — בכוונה *אין* כאן ארגומנטים
--- של כלי, תוכן הודעה, תוצאת כלי, מזהה לקוח או פרטי פרויקט. retention זהה ל-chat_perf_metrics
--- (pruneChatPerfSteps, נקרא מאותה עבודה יומית ב-scheduler.ts).
+-- מפורט יותר של *אותה* מדידה. 'prep' — שלבי I/O לקבלת מידע שכלי מסוים צריך (fetchUserOpsTasks וכו',
+-- ר' chat.ts's timedPrepStep/ensureTasksLoaded) — name הוא שם כלי/שלב בלבד (metadata טכני), בכוונה
+-- *אין* כאן ארגומנטים של כלי, תוכן הודעה, תוצאת כלי, מזהה לקוח או פרטי פרויקט.
+--
+-- ⚠️ audit lazy loading (2026-10-14, המשך): 'prep' ו-'tool' של אותה בקשה **יכולים לחפוף בזמן**.
+-- fetchUserOpsTasks הפך ל-lazy — נטען רק כש-כלי ספציפי צריך אותו (get_today_tasks/find_task/
+-- mark_done וכו', ר' chat.ts's needsTasks), ולכן יכול לקרות *בתוך* חלון הזמן הנמדד של אותו כלי,
+-- לא לפני לולאת ה-AI כמו קודם. כל מספר (duration_ms) בפני עצמו **נכון ומדויק**, אבל **אין להניח**
+-- ש-SUM(prep.duration_ms)+SUM(tool.duration_ms) לכל request_id ישווה ל-chat_perf_metrics's
+-- server_total_ms — זו הנחת "לא-חופפים" שכבר לא מתקיימת בהכרח. ניתוח שרוצה פירוק מדויק של
+-- server_total_ms חייב להתייחס לזה כשני ממדים שיכולים לחפוף, לא כפירוק אדיטיבי מלא.
+--
+-- retention זהה ל-chat_perf_metrics (pruneChatPerfSteps, נקרא מאותה עבודה יומית ב-scheduler.ts).
 -- ───────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS chat_perf_steps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

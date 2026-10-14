@@ -347,6 +347,9 @@ const server = createServer(async (req, res) => {
     // ניטור ביצועים (2026-10-14, הרחבה): פירוט שלבים (כלים/הכנה) לבקשה ספציפית לפי requestId —
     // מאפשר לנתח "למה הבקשה הזו הייתה איטית" (ר' /api/perf/summary להצגת ה-requestId הרלוונטי).
     // אותן הרשאות בקרה קיימות (view:all_work) — לא נוסף permission חדש.
+    // ⚠️ audit lazy loading (2026-10-14): שורות kind='prep' ו-kind='tool' עבור אותו requestId
+    // יכולות לחפוף בזמן (fetchUserOpsTasks נטען lazy, בתוך חלון הזמן של הכלי שצריך אותו) — אל
+    // תסכמו prep+tool בהנחה שהן בלתי-חופפות. ר' הסבר מלא ב-schema.sql's chat_perf_steps.
     if (req.method === "GET" && path === "/api/perf/steps") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });

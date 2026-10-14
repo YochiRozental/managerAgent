@@ -527,6 +527,12 @@ interface SharedToolUiEffect {
   message: (result: unknown, input: Record<string, unknown>) => string;
   /** true ⇐ הדיספצ'ר מריץ await refresh() אחרי actions.push, רק אם execute הצליח. */
   refresh?: boolean;
+  /**
+   * true ⇐ ה-message הזה קורא ל-findTask (תלוי ב-tasks) — onExecuted יקרא await ensureTasksLoaded()
+   * *לפניו*. חסר/false (ברירת מחדל ברוב הכלים) ⇐ הכלי הזה *לא* מפעיל את שליפת tasks בכלל
+   * (2026-10-14, lazy loading — ר' docstring מעל ensureTasksLoaded).
+   */
+  needsTasks?: boolean;
 }
 
 /**
@@ -625,7 +631,33 @@ export async function runOpsChat(
   // כמו actions), ונכתב ל-DB פעם אחת בסוף ע"י server/index.ts (ר' OpsChatResult.perf).
   const toolCallRecords: PerfStepRecord[] = [];
   const prepStepRecords: PerfStepRecord[] = [];
-  let tasks = await timedPrepStep("fetch_user_ops_tasks", () => fetchUserOpsTasks(user.mondayUserId!), prepStepRecords);
+  // Lazy loading (2026-10-14, audit "בקשה פשוטה") — fetchUserOpsTasks לא רץ יותר עיוורת בתחילת
+  // כל בקשה. tasks מתחיל ריק; ensureTasksLoaded() נקרא רק מתוך כלי שבאמת תלוי ב-tasks
+  // (get_today_tasks/find_task, ו-SHARED_TOOL_UI_EFFECT's needsTasks למטה) — לא לפני. tasksPromise
+  // הוא promise *משותף*: כלי שני שצריך tasks באותו סבב מקבל את אותה הבטחה, לא fetch כפול. אין כאן
+  // בכלל סיכון מקביליות על ה-promise הזה — agentLoop.ts מריץ tool calls ברצף (for..of+await, לא
+  // Promise.all), אז אין שני awaits חופפים על ensureTasksLoaded באותו רגע. הודעה פשוטה בלי כלים
+  // (או כלי שלא צריך tasks בכלל) — fetchUserOpsTasks לא נקרא, תקופה: לא Monday, לא זמן.
+  //
+  // ניטור (audit): timedPrepStep עדיין רושם את זה כ-prepStep ("fetch_user_ops_tasks") כדי שזמן
+  // השליפה האמיתי יימדד נכון (ר' דרישה "הניטור מודד נכון את זמן השליפה"), אבל מרגע ש-הטעינה
+  // *lazy* — היא יכולה לקרות *בתוך* חלון הזמן של כלי (get_today_tasks/find_task/mark_done וכו',
+  // ר' needsTasks) ולא לפניו. כלומר: בבקשה שבה ה-trigger הראשון ל-tasks הוא כלי, chat_perf_steps
+  // יראה גם prep וגם tool שחופפים חלקית בזמן — זה *לא* כשל מדידה (המספר של כל אחד נכון בפני עצמו),
+  // רק שסכימה נאיבית של prep+tool לא תשחזר יותר את server_total_ms באופן מדויק לבקשות כאלה (היה
+  // תמיד נכון לפני lazy loading, כש-ה-fetch קרה רק לפני הלולאה). לא שינוי בקוד הניטור עצמו.
+  let tasks: OpsTask[] = [];
+  let tasksPromise: Promise<void> | null = null;
+  function ensureTasksLoaded(): Promise<void> {
+    if (!tasksPromise) {
+      tasksPromise = timedPrepStep("fetch_user_ops_tasks", () => fetchUserOpsTasks(user.mondayUserId!), prepStepRecords).then(
+        (t) => {
+          tasks = t;
+        },
+      );
+    }
+    return tasksPromise;
+  }
   const actions: string[] = [];
   // התדריך של "בוקר טוב" מוגש מילה במילה — מודלים נוטים לקצר/לנסח מחדש, וכאן חשוב שהמבנה
   // (פרויקט → 'עכשיו:') יישאר בדיוק כמו שבנינו אותו.
@@ -639,33 +671,44 @@ export async function runOpsChat(
   const liveAttendanceConfirmation: { current: { tool: string; message: string } | null } = { current: null };
 
   const refresh = async () => {
-    tasks = await fetchUserOpsTasks(user.mondayUserId!);
+    // רענון מפורש אחרי כתיבה — fetch טרי תמיד (לא "רק אם עדיין לא נטען"), ומחליף את tasksPromise
+    // כך ש-ensureTasksLoaded הבא (אם כלי נוסף באותו סבב יצטרך tasks) יראה את הגרסה המעודכנת,
+    // לא promise ישן/stale מלפני הכתיבה.
+    tasksPromise = fetchUserOpsTasks(user.mondayUserId!).then((t) => {
+      tasks = t;
+    });
+    await tasksPromise;
   };
 
   const findTask = (itemId: string): OpsTask | undefined => tasks.find((t) => t.itemId === itemId);
 
-  // שלב 3F.5B: ההודעות של mark_done/set_status/add_note/report_blocker תלויות ב-findTask (לשם
-  // התצוגה) — בדיוק כמו ב-run() wrapper הישן, שקרא findTask *לפני* execute. כאן (בתוך ה-dispatcher,
-  // ר' buildLoop למטה) ה-uiEffect.message נקרא *אחרי* tool.execute אבל *לפני* refresh() — tasks
-  // (ה-cache ש-findTask קורא ממנו) לא משתנה בין שתי הנקודות האלה (רק refresh() מרענן אותו, וזה
-  // קורה אחרי), אז זו אותה תוצאה בדיוק כמו קריאה מוקדמת יותר. ר' audit 3F.5B להוכחת ה-ordering הזו.
+  // שלב 3F.5B (עודכן 2026-10-14, lazy loading): ההודעות של mark_done/set_status/add_note/
+  // report_blocker תלויות ב-findTask (לשם התצוגה) — needsTasks:true אומר ל-onExecuted (ר' buildLoop
+  // למטה) לקרוא await ensureTasksLoaded() *לפני* uiEffect.message, כך ש-tasks מובטח טעון בדיוק
+  // ברגע שצריך אותו, לא לפני (שאר הכלים כאן בכלל לא קוראים ל-tasks — needsTasks נעדר מהם בכוונה,
+  // כדי שלא יפעילו את השליפה). tasks לא משתנה בין tool.execute להודעה ל-refresh() (שקורה אחרי,
+  // ומרענן) — ר' audit 3F.5B המקורי להוכחת ה-ordering.
   const SHARED_TOOL_UI_EFFECT: Record<string, SharedToolUiEffect> = {
     create_lead: { message: (r) => `🆕 ${(r as { message: string }).message}` },
     create_task: { message: (r) => `🆕 ${(r as { message: string }).message}`, refresh: true },
     mark_done: {
       message: (_r, input) => `✅ ${findTask(String(input.itemId))?.name ?? input.itemId} — בוצע`,
       refresh: true,
+      needsTasks: true,
     },
     set_status: {
       message: (_r, input) => `↻ ${findTask(String(input.itemId))?.name ?? input.itemId} — ${input.status}`,
       refresh: true,
+      needsTasks: true,
     },
     add_note: {
       message: (_r, input) => `✎ ${findTask(String(input.itemId))?.name ?? input.itemId} — הערה`,
+      needsTasks: true,
     },
     report_blocker: {
       message: (_r, input) => `🚧 ${findTask(String(input.itemId))?.name ?? input.itemId} — תקוע`,
       refresh: true,
+      needsTasks: true,
     },
     add_update: {
       message: (_r, input) => `✎ הערה נוספה${input.label ? `: ${input.label}` : ""}`,
@@ -691,6 +734,8 @@ export async function runOpsChat(
         "כשמבקשים 'מה יש לי היום', 'מה המשימות שלי', 'מה יש לי לבצע' — בלי לצרף תדריך ישן נוסף.",
       input_schema: { type: "object", properties: {} },
       run: async () => {
+        // lazy loading (2026-10-14) — זה הכלי שבגללו tasks בכלל נדרש; נטען כאן, לא לפני.
+        await ensureTasksLoaded();
         // v (needsAttention/waitingOnMe) נשאר מחושב — לא נגעתי במנגנון השליפה/הבקרה הישן — אבל
         // אינו חלק מהתשובה הנראית למשתמש יותר (ר' docstring מעל buildTodayBriefing). משמש רק
         // את ה-JSON הפנימי, למקרה שיתבקש במפורש בהמשך השיחה.
@@ -735,6 +780,7 @@ export async function runOpsChat(
         required: ["query"],
       },
       run: async (input) => {
+        await ensureTasksLoaded(); // lazy loading (2026-10-14) — זה הכלי שבגללו tasks נדרש
         const q = String(input.query ?? "");
         const ranked = tasks
           .map((t) => ({ t, score: matchScore(t, q) }))
@@ -1177,6 +1223,25 @@ export async function runOpsChat(
               }
               const uiEffect = SHARED_TOOL_UI_EFFECT[call.name];
               if (uiEffect) {
+                // lazy loading (2026-10-14) — רק כלים עם needsTasks:true (findTask בהודעה) מפעילים
+                // את השליפה, ורק *כאן*, ממש לפני שבאמת צריך אותה. try/catch מקומי — dispatchToolDefinition
+                // (dispatcher.ts) עוטף את כל onExecuted באותו try/catch כמו tool.execute עצמו, אז
+                // בלי ההגנה הזו, כשל-Monday בשליפת tasks *לצורך תצוגה בלבד* היה מדווח כ-sideEffect:false
+                // (= "הכלי נכשל") גם כש-tool.execute (הכתיבה האמיתית ל-Monday) *כבר הצליחה* — זו
+                // תקלה חדשה שהרפקטור הזה היה עלול להכניס (לפני ה-lazy loading, tasks נטען לפני
+                // שכל כלי רץ, אז הכשל הזה היה קורה — אם בכלל — לפני הכתיבה, לא אחריה). findTask
+                // מחזיר undefined על tasks ריק, וההודעות כולן כבר נופלות ל-input.itemId בלי שם —
+                // אין צורך בטיפול נוסף, רק למנוע מהחריגה לברוח ל-catch של הדיספצ'ר.
+                if (uiEffect.needsTasks) {
+                  try {
+                    await ensureTasksLoaded();
+                  } catch (err) {
+                    logger.warn(
+                      { err, tool: call.name, user: user.key },
+                      "lazy loading של tasks נכשל — ההודעה תציג מזהה פריט גולמי במקום שם המשימה (הכתיבה עצמה הצליחה)",
+                    );
+                  }
+                }
                 actions.push(uiEffect.message(out, inp));
                 if (uiEffect.refresh) await refresh();
               }

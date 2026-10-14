@@ -70,6 +70,7 @@ const SAFE_TESTS = [
   "tests/integration/attendancePilotReadiness.test.ts",
   "tests/integration/chatPerfMetrics.test.ts",
   "tests/integration/chatPerfSteps.test.ts",
+  "tests/integration/lazyTasksLoading.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
 ];

@@ -75,7 +75,11 @@ const byRequestStmt = db.prepare(`
   SELECT kind, name, duration_ms, ok, created_at FROM chat_perf_steps WHERE request_id = ? ORDER BY id ASC
 `);
 
-/** כל השלבים (prep+tool) של בקשה ספציפית, לפי סדר ריצה — מאפשר לנתח בקשה איטית אחת לפי request_id. */
+/**
+ * כל השלבים (prep+tool) של בקשה ספציפית, לפי סדר ריצה — מאפשר לנתח בקשה איטית אחת לפי request_id.
+ * ⚠️ prep ו-tool יכולים לחפוף בזמן (lazy loading, 2026-10-14) — אל תסכמו duration_ms של שניהם
+ * בהנחה שהם בלתי-חופפים. ר' הסבר מלא ב-schema.sql's chat_perf_steps.
+ */
 export function getChatPerfStepsForRequest(requestId: string): ChatPerfStepRow[] {
   const rows = byRequestStmt.all(requestId) as unknown as StepRow[];
   return rows.map((r) => ({

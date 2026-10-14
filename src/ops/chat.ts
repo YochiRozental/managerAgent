@@ -29,6 +29,7 @@ import { logger } from "../utils/logger.js";
 import { runCentralAgent } from "../ai/routedAgent.js";
 import type { RunModelFn } from "../ai/agentLoop.js";
 import type { AiConfig } from "../ai/tierConfig.js";
+import type { ModelTier } from "../ai/models.js";
 import { buildSystemPrompt } from "../ai/prompt.js";
 import type { ToolDefinition } from "../ai/toolRegistry.js";
 import { dispatchToolDefinition } from "../ai/dispatcher.js";
@@ -339,10 +340,28 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface OpsChatPerf {
+  aiTimeMs: number;
+  aiCallCount: number;
+  toolTimeMs: number;
+  toolCallCount: number;
+  /** כמה פעמים הורץ runCentralAgent בפועל — fallback FAST→SMART נספר *בתוך* קריאה אחת (ר'
+   *  RoutedAgentPerf.attempts); זה סופר ניסיונות runAttempt חוצי-קריאה (רק retry אישור הנוכחות). */
+  attempts: number;
+  tier: ModelTier;
+  fallbackUsed: boolean;
+}
+
 export interface OpsChatResult {
   reply: string;
   /** תיאור קצר של כל עדכון שבוצע ב-Monday בסבב הזה — לרענון הרשימה ולתצוגה */
   actions: string[];
+  /**
+   * ניטור ביצועים (2026-10-14) — undefined כשלא רצה AI כלל בסבב הזה (למשל תשובת approval
+   * שנענית בלי לעבור דרך runCentralAgent, או משתמש בלי mondayUserId). ר' agentLoop.ts/
+   * routedAgent.ts — אין כאן תוכן, רק משכי זמן.
+   */
+  perf?: OpsChatPerf;
 }
 
 /**
@@ -1168,6 +1187,13 @@ export async function runOpsChat(
 
   let routed = await runAttempt();
   let finalText = routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?";
+  // ניטור ביצועים (2026-10-14) — מצטבר מהניסיון הראשון; אם יתווסף ניסיון חיצוני נוסף (retry אישור
+  // נוכחות, למטה) הוא מצטרף. זה *מעבר* ל-fallback FAST→SMART הפנימי שכבר מצטבר בתוך routed.perf.
+  let perfAiTimeMs = routed.perf.aiTimeMs;
+  let perfAiCallCount = routed.perf.aiCallCount;
+  let perfToolTimeMs = routed.perf.toolTimeMs;
+  let perfToolCallCount = routed.perf.toolCallCount;
+  let perfAttempts = routed.perf.attempts;
 
   // audit שלב ז/ח (2026-10-13) — נתיב דטרמיניסטי: אם כלי נוכחות אמיתי רץ בהצלחה בסבב הזה, תשובת
   // המשתמש היא *בדיוק* ה-message שהוא החזיר — לא ניסוח חופשי של המודל (גם אם המודל כתב משהו
@@ -1191,6 +1217,11 @@ export async function runOpsChat(
       logger.warn({ user: user.key, userRequestedAction }, "חשד לאישור נוכחות בלי tool_use מאומת — מנסה שוב (SMART) לפני הצגה למשתמש");
       routed = await runAttempt("smart");
       finalText = routed.outcome.text ?? "סליחה, הסתבכתי. אפשר לנסח שוב בקצרה?";
+      perfAiTimeMs += routed.perf.aiTimeMs;
+      perfAiCallCount += routed.perf.aiCallCount;
+      perfToolTimeMs += routed.perf.toolTimeMs;
+      perfToolCallCount += routed.perf.toolCallCount;
+      perfAttempts += routed.perf.attempts;
       const confirmed2 = liveAttendanceConfirmation.current;
       if (confirmed2) {
         finalText = confirmed2.message;
@@ -1201,5 +1232,17 @@ export async function runOpsChat(
     }
   }
 
-  return { reply: attendanceBanner ? `${attendanceBanner}\n\n${finalText}` : finalText, actions };
+  return {
+    reply: attendanceBanner ? `${attendanceBanner}\n\n${finalText}` : finalText,
+    actions,
+    perf: {
+      aiTimeMs: perfAiTimeMs,
+      aiCallCount: perfAiCallCount,
+      toolTimeMs: perfToolTimeMs,
+      toolCallCount: perfToolCallCount,
+      attempts: perfAttempts,
+      tier: routed.tier,
+      fallbackUsed: routed.fallbackUsed,
+    },
+  };
 }

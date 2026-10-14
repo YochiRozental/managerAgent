@@ -47,6 +47,15 @@ export interface RoutedAgentParams {
   _runModel?: RunModelFn;
 }
 
+export interface RoutedAgentPerf {
+  aiTimeMs: number;
+  aiCallCount: number;
+  toolTimeMs: number;
+  toolCallCount: number;
+  /** כמה ניסיונות הורצו בפועל (1, או 2 אם היה fallback FAST→SMART) */
+  attempts: number;
+}
+
 export interface RoutedAgentResult {
   outcome: AgentLoopResult;
   tier: ModelTier;
@@ -54,6 +63,8 @@ export interface RoutedAgentResult {
   model: string;
   fallbackUsed: boolean;
   routeReason: string;
+  /** ניטור ביצועים (2026-10-14) — סכום על כל הניסיונות שהורצו בפועל בקריאה הזו (ר' agentLoop.ts). */
+  perf: RoutedAgentPerf;
 }
 
 export async function runRoutedAgent(p: RoutedAgentParams): Promise<RoutedAgentResult> {
@@ -86,6 +97,14 @@ export async function runRoutedAgent(p: RoutedAgentParams): Promise<RoutedAgentR
     routeReason: route.reason,
   });
 
+  // ניטור ביצועים (2026-10-14) — מצטבר מה-outcome הראשון; אם יהיה fallback ל-SMART, הניסיון השני
+  // מצטרף למטה. outcome עצמו מוחלף (לא ממוזג) — זה ה-RoutedAgentResult.outcome שה-caller רואה.
+  let aiTimeMs = outcome.aiTimeMs;
+  let aiCallCount = outcome.aiCallCount;
+  let toolTimeMs = outcome.toolTimeMs;
+  let toolCallCount = outcome.toolCallCount;
+  let attempts = 1;
+
   let fallbackUsed = false;
   if (!outcome.halted) {
     const emptyText = !outcome.text || outcome.text.trim() === "";
@@ -95,6 +114,11 @@ export async function runRoutedAgent(p: RoutedAgentParams): Promise<RoutedAgentR
       tier = "smart";
       fallbackUsed = true;
       outcome = await runTier(tier);
+      aiTimeMs += outcome.aiTimeMs;
+      aiCallCount += outcome.aiCallCount;
+      toolTimeMs += outcome.toolTimeMs;
+      toolCallCount += outcome.toolCallCount;
+      attempts += 1;
       logAiCall({
         useCase: p.useCase,
         tier,
@@ -115,6 +139,7 @@ export async function runRoutedAgent(p: RoutedAgentParams): Promise<RoutedAgentR
     model: cfg[tier].model,
     fallbackUsed,
     routeReason: route.reason,
+    perf: { aiTimeMs, aiCallCount, toolTimeMs, toolCallCount, attempts },
   };
 }
 

@@ -11,6 +11,7 @@
  *    (ה-fallback ל-SMART הוא באחריות ה-call-site, עם shouldEscalateToSmart.)
  */
 
+import { performance } from "node:perf_hooks";
 import { logger } from "../utils/logger.js";
 import { addUsage, newUsageAcc, type UsageAcc } from "./models.js";
 import { runModel } from "./providers/index.js";
@@ -74,6 +75,15 @@ export interface AgentLoopResult {
   exhausted: boolean;
   errored: boolean;
   usage: UsageAcc;
+  /**
+   * ניטור ביצועים (2026-10-14) — שעון מונוטוני (performance.now(), לא Date.now()). אין קריאת
+   * AI/תוכן נוסף כאן, רק עיטוף זמן מסביב לקריאות שכבר קורות. aiTimeMs/aiCallCount נספרים גם
+   * בכשל (קריאה שנכשלה היא עדיין קריאה שלקחה זמן) — toolTimeMs מסביב ל-executeToolCall עצמו,
+   * בנפרד מזמן המודל.
+   */
+  aiTimeMs: number;
+  aiCallCount: number;
+  toolTimeMs: number;
 }
 
 function cloneMessage(m: NormMessage): NormMessage {
@@ -87,11 +97,15 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
   let toolCallCount = 0;
   let sideEffects = 0;
   let turns = 0;
+  let aiTimeMs = 0;
+  let aiCallCount = 0;
+  let toolTimeMs = 0;
 
   for (let i = 0; i < p.maxTurns; i++) {
     turns = i + 1;
 
     let result;
+    const aiStart = performance.now();
     try {
       result = await callModel({
         provider: p.provider,
@@ -102,9 +116,13 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
         maxTokens: p.maxTokens,
       });
     } catch (err) {
+      aiTimeMs += performance.now() - aiStart;
+      aiCallCount += 1;
       logger.warn({ err: (err as Error).message }, "agentLoop: קריאת מודל נכשלה");
-      return { text: null, halted: null, toolCallCount, sideEffects, turns, exhausted: false, errored: true, usage };
+      return { text: null, halted: null, toolCallCount, sideEffects, turns, exhausted: false, errored: true, usage, aiTimeMs, aiCallCount, toolTimeMs };
     }
+    aiTimeMs += performance.now() - aiStart;
+    aiCallCount += 1;
     addUsage(usage, result.usage);
 
     if (result.toolCalls.length === 0) {
@@ -118,12 +136,15 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
         exhausted: false,
         errored: false,
         usage,
+        aiTimeMs,
+        aiCallCount,
+        toolTimeMs,
       };
     }
 
     const halt = p.screenToolCalls?.(result.toolCalls) ?? null;
     if (halt) {
-      return { text: null, halted: halt, toolCallCount, sideEffects, turns, exhausted: false, errored: false, usage };
+      return { text: null, halted: halt, toolCallCount, sideEffects, turns, exhausted: false, errored: false, usage, aiTimeMs, aiCallCount, toolTimeMs };
     }
 
     messages.push({ role: "assistant", content: result.assistantContent });
@@ -131,11 +152,13 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
     const resultBlocks: NormContentBlock[] = [];
     for (const call of result.toolCalls) {
       let outcome: ToolCallOutcome;
+      const toolStart = performance.now();
       try {
         outcome = await p.executeToolCall(call);
       } catch (err) {
         outcome = { content: `שגיאה: ${(err as Error).message}`, sideEffect: false };
       }
+      toolTimeMs += performance.now() - toolStart;
       toolCallCount += 1;
       if (outcome.sideEffect) sideEffects += 1;
       resultBlocks.push({ type: "tool_result", toolUseId: call.id, content: outcome.content });
@@ -143,5 +166,5 @@ export async function runAgentLoop(p: AgentLoopParams): Promise<AgentLoopResult>
     messages.push({ role: "user", content: resultBlocks });
   }
 
-  return { text: null, halted: null, toolCallCount, sideEffects, turns, exhausted: true, errored: false, usage };
+  return { text: null, halted: null, toolCallCount, sideEffects, turns, exhausted: true, errored: false, usage, aiTimeMs, aiCallCount, toolTimeMs };
 }

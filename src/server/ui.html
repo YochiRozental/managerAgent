@@ -645,6 +645,11 @@ async function sendMessage(text) {
   $("#chat").appendChild(typing);
   scrollDown();
 
+  // ניטור ביצועים (2026-10-14): שעון מונוטוני של הדפדפן (performance.now(), לא Date.now()/שעון
+  // השרת) — מודד מרגע השליחה ועד שהתשובה מוצגת על המסך. נשלח לשרת בנפרד, לא ממתינים לו (לא
+  // משפיע על חוויית המשתמש) — ר' /api/perf/client ב-server/index.ts.
+  const perfSendStart = performance.now();
+
   try {
     const ctx = [...activeContext()];
     // רק פנייה שהמשתמש בחר במפורש לטפל בה (activeNudge) נשלחת כ-about — לא "הפנייה
@@ -664,7 +669,7 @@ async function sendMessage(text) {
       catch (e) { lastErr = e; }
     }
     if (!data) throw lastErr;
-    const { reply, actions, session } = data;
+    const { reply, actions, session, requestId } = data;
     state.session = session;
     typing.remove();
     if (actions && actions.length) {
@@ -674,6 +679,11 @@ async function sendMessage(text) {
     }
     bubble("assistant", reply);
     state.thread.push({ role: "assistant", content: reply, actions: actions || [] });
+    // דיווח ביצועים — fire-and-forget, אחרי שהתשובה כבר על המסך; כשל בדיווח לא אמור להפריע למשתמש.
+    if (requestId) {
+      const clientTotalMs = performance.now() - perfSendStart;
+      api("/api/perf/client", { method: "POST", body: JSON.stringify({ requestId, clientTotalMs }) }).catch(() => {});
+    }
     // הפנייה הפעילה אולי נפתרה בשרת (תשובה סגרה את ה-finding) — מרעננים ובודקים אם היא
     // עדיין ברשימת הפתוחות; אם לא, מסירים אותה מהשיחה (state.activeNudge בלבד, לא נמחקת בשרת).
     if (state.activeNudge) {
@@ -707,16 +717,38 @@ $("#oversightBtn").onclick = async () => {
   const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען… (כמה שניות)</p>";
   try {
     const jobs = state.user.canOversee
-      ? [api("/api/control"), api("/api/oversight"), api("/api/crm"), api("/api/commitments")]
-      : [Promise.resolve(null), Promise.resolve(null), api("/api/crm"), api("/api/commitments")];
-    const [scan, over, crm, comm] = await Promise.all(jobs);
+      ? [api("/api/control"), api("/api/oversight"), api("/api/crm"), api("/api/commitments"), api("/api/perf/summary")]
+      : [Promise.resolve(null), Promise.resolve(null), api("/api/crm"), api("/api/commitments"), Promise.resolve(null)];
+    const [scan, over, crm, comm, perf] = await Promise.all(jobs);
     body.innerHTML = "";
     if (scan) renderControl(scan);
     if (comm && comm.commitments.length) renderCommitments(comm.commitments);
     if (crm) renderCrm(crm);
     if (over) renderOversight(over);
+    if (perf) renderPerf(perf);
   } catch (e) { body.innerHTML = ""; body.appendChild(el("p", "err", e.message)); }
 };
+
+/* ניטור ביצועים (2026-10-14) — תצוגת P50/P95 בסיסית, קריאה בלבד, למוטי/יוכי. */
+function renderPerf(p) {
+  const b = $("#ovBody");
+  b.appendChild(el("div", "sec-title", `ביצועי צ'אט — ${p.sinceHours} שעות אחרונות`));
+  if (p.totalRequests === 0) {
+    b.appendChild(el("p", "empty", "אין עדיין נתוני ביצועים בחלון הזה"));
+    return;
+  }
+  b.appendChild(el("p", "role",
+    `${p.totalRequests} בקשות · ${p.errorCount} שגיאות · ${p.cachedCount} מה-cache · ${p.avgAiCallCount ?? "?"} קריאות AI בממוצע`));
+  const row = (label, m, unit = "ms") => {
+    const line = el("div", "proj-sub",
+      m.count ? `${label}: חצי ${m.avg}${unit} · P50 ${m.p50}${unit} · P95 ${m.p95}${unit} (n=${m.count})` : `${label}: אין נתונים`);
+    b.appendChild(line);
+  };
+  row("שרת", p.server);
+  row("AI", p.aiTime);
+  row("כלים", p.toolTime);
+  row("דפדפן (קצה-לקצה)", p.clientTotal);
+}
 $("#ovClose").onclick = () => { $("#oversight").hidden = true; };
 
 const SEV = { critical:"🔴", high:"🟠", normal:"⚪" };

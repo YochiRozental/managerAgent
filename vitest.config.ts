@@ -33,6 +33,9 @@ const SAFE_TESTS = [
   "tests/unit/webSharedToolDefinition.test.ts",
   "tests/unit/whatsappAgentTools.test.ts",
   "tests/unit/sourceCalls.test.ts",
+  "tests/unit/agentLoopPerf.test.ts",
+  "tests/unit/routedAgentPerf.test.ts",
+  "tests/unit/chatPerfMetrics.test.ts",
   // integration — DB זמני מבודד בלבד
   "tests/integration/loop.test.ts",
   "tests/integration/approvals.test.ts",
@@ -64,6 +67,7 @@ const SAFE_TESTS = [
   "tests/integration/whatsappReplyLoop.test.ts",
   "tests/integration/leadContact.test.ts",
   "tests/integration/attendancePilotReadiness.test.ts",
+  "tests/integration/chatPerfMetrics.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
 ];

@@ -285,3 +285,30 @@ CREATE TABLE IF NOT EXISTS payroll_month_locks (
   reopened_by TEXT,
   reopened_at TEXT
 );
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- ניטור ביצועים ל-Web Chat (2026-10-14) — נמדד בכל בקשת /api/chat כדי לאתר צווארי בקבוק *לפני*
+-- אופטימיזציה, לא כדי לשנות התנהגות. בכוונה אין כאן שום עמודת תוכן: לא טקסט הודעה, לא פרומפט, לא
+-- פרטי לקוח, לא טוקן/מפתח — רק משכי זמן ומטא-דאטה תפעולי (tier/status/ספירות). retention מוגבל
+-- (pruneChatPerfMetrics, נקרא מהסבב היומי של המתזמן — ר' scheduler.ts) — לא נשמר לצמיתות.
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS chat_perf_metrics (
+  request_id TEXT PRIMARY KEY,          -- נוצר בשרת per HTTP request (לא clientMessageId — זה idempotency, לא מדידה)
+  user_key TEXT NOT NULL,
+  session_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL,                 -- ok | error
+  error_code TEXT,                      -- קוד קצר בלבד (למשל client_message_id_conflict) — לעולם לא הודעת שגיאה מלאה
+  cached INTEGER NOT NULL DEFAULT 0,    -- 1 = תוצאת dedup (לא רץ עיבוד AI/כלים חדש בבקשה הזו)
+  tier TEXT,                            -- fast | smart — ה-tier האחרון שהורץ בפועל בבקשה הזו
+  fallback_used INTEGER NOT NULL DEFAULT 0,
+  queue_wait_ms INTEGER,                -- המתנה ל-dedup claim (לפני שהעיבוד בפועל התחיל) — לא זמן עיבוד בפועל
+  server_total_ms INTEGER,              -- מרגע קבלת הבקשה ועד לפני כתיבת התשובה (שעון מונוטוני בשרת)
+  ai_time_ms INTEGER,                   -- סכום זמן קריאות המודל (כל ה-tiers/fallback שהורצו בבקשה הזו)
+  ai_call_count INTEGER,
+  tool_time_ms INTEGER,                 -- סכום זמן הרצת כלים, בנפרד מזמן המודל
+  tool_call_count INTEGER,
+  client_total_ms INTEGER,              -- מדווח בנפרד ע"י הדפדפן (שעון מונוטוני משלו, לא מסונכרן עם השרת) — עשוי להגיע מעט אחרי השורה עצמה
+  client_reported_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_perf_created ON chat_perf_metrics (created_at);

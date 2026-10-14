@@ -9,6 +9,7 @@
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { networkInterfaces } from "node:os";
+import { performance } from "node:perf_hooks";
 import {
   resolveUserByEmail,
   resolveUserByKey,
@@ -39,7 +40,12 @@ import { listFollowups, recoverStuckFollowups } from "../db/repositories/control
 import { recordHeartbeat } from "../db/repositories/systemHealth.js";
 import { recoverStuckChatMessageClaims } from "../db/repositories/chatMessageDedup.js";
 import { runDedupedChatTurn, ChatMessageConflictError, ChatMessageStillProcessingError } from "./chatDedup.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  recordChatPerfMetricSafe,
+  recordClientTimingSafe,
+  getChatPerfSummarySafe,
+} from "../db/repositories/chatPerfMetrics.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
 import type { LoopContext } from "../ops/loopReply.js";
@@ -186,6 +192,11 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/chat") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
+      // ניטור ביצועים (2026-10-14) — requestId נפרד מ-clientMessageId: הוא per-HTTP-attempt (גם
+      // retry מהדפדפן מקבל requestId חדש), בזמן ש-clientMessageId הוא idempotency per-שליחה-אמיתית.
+      // serverStart הוא שעון מונוטוני (performance.now()) — לא Date.now(), לא מניח סנכרון עם הדפדפן.
+      const requestId = randomUUID();
+      const serverStart = performance.now();
       const body = await readJsonBody(req);
       const raw = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
       // מגבילים היסטוריה כדי לשמור על עלות/מהירות; שומרים את הזוגות האחרונים.
@@ -232,8 +243,12 @@ const server = createServer(async (req, res) => {
       const lastUserMessage = messages[messages.length - 1]!.content;
       const contentHash = hashChatContent(lastUserMessage, about);
 
+      // ניטור ביצועים: מתי run() בפועל התחיל (אחרי המתנה אפשרית ל-dedup claim) — ההפרש מ-serverStart
+      // הוא queueWaitMs. נשאר 0 אם run() מעולם לא רץ (dedup החזיר תוצאה cached בלי לקרוא לו).
+      let runStartedAt = 0;
       try {
-        const { result } = await runDedupedChatTurn(user.key, clientMessageId, session, contentHash, async () => {
+        const { result, cached } = await runDedupedChatTurn(user.key, clientMessageId, session, contentHash, async () => {
+          runStartedAt = performance.now();
           const r = await runOpsChat(user, messages, { ...(about ? { about } : {}), session, clientMessageId });
           if (r.actions.length) {
             logger.info({ user: user.key, actions: r.actions }, "עדכוני משימה מהצ'אט");
@@ -241,12 +256,78 @@ const server = createServer(async (req, res) => {
           appendChatTurn(user.key, session, lastUserMessage, r.reply, r.actions);
           return { ...r, session };
         });
-        return send(res, 200, result);
+        const serverTotalMs = performance.now() - serverStart;
+        recordChatPerfMetricSafe({
+          requestId,
+          userKey: user.key,
+          sessionId: result.session ?? session,
+          status: "ok",
+          cached,
+          tier: result.perf?.tier ?? null,
+          fallbackUsed: result.perf?.fallbackUsed ?? false,
+          queueWaitMs: runStartedAt ? runStartedAt - serverStart : null,
+          serverTotalMs,
+          aiTimeMs: result.perf?.aiTimeMs ?? null,
+          aiCallCount: result.perf?.aiCallCount ?? null,
+          toolTimeMs: result.perf?.toolTimeMs ?? null,
+          toolCallCount: result.perf?.toolCallCount ?? null,
+        });
+        return send(res, 200, { ...result, requestId });
       } catch (err) {
-        if (err instanceof ChatMessageConflictError) return send(res, 409, { error: err.message, code: err.code });
-        if (err instanceof ChatMessageStillProcessingError) return send(res, 409, { error: err.message, code: err.code });
+        const serverTotalMs = performance.now() - serverStart;
+        // קוד קצר בלבד (לעולם לא err.message המלא) — ר' chat_perf_metrics.error_code ב-schema.sql.
+        const errorCode =
+          err instanceof ChatMessageConflictError || err instanceof ChatMessageStillProcessingError
+            ? err.code
+            : (err as Error).name || "error";
+        recordChatPerfMetricSafe({
+          requestId,
+          userKey: user.key,
+          sessionId: session,
+          status: "error",
+          errorCode,
+          cached: false,
+          fallbackUsed: false,
+          queueWaitMs: runStartedAt ? runStartedAt - serverStart : null,
+          serverTotalMs,
+        });
+        if (err instanceof ChatMessageConflictError) return send(res, 409, { error: err.message, code: err.code, requestId });
+        if (err instanceof ChatMessageStillProcessingError) return send(res, 409, { error: err.message, code: err.code, requestId });
         throw err;
       }
+    }
+
+    // ניטור ביצועים: הדפדפן מדווח בנפרד (fire-and-forget, אחרי שהתשובה כבר הוצגה) את הזמן הכולל
+    // שהוא מדד בשעון המונוטוני שלו (performance.now() בלקוח) — לא מניחים סנכרון עם שעון השרת, רק
+    // שומרים את שני הזמנים זה לצד זה לפי requestId. לא AI, לא תוכן — רק מספר אחד.
+    if (req.method === "POST" && path === "/api/perf/client") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const body = await readJsonBody(req);
+      const requestId = typeof body.requestId === "string" ? body.requestId : "";
+      const clientTotalMs = Number(body.clientTotalMs);
+      // ולידציה בסיסית (לא קריפטוגרפית) — רק הגנה מפני ערכים מופרכים (לשונית שנשארה פתוחה
+      // דקות ארוכות בין שליחה לתשובה) שיזהמו את ה-percentiles.
+      if (!requestId || !Number.isFinite(clientTotalMs) || clientTotalMs < 0 || clientTotalMs > 10 * 60_000) {
+        return send(res, 400, { error: "קלט לא תקין" });
+      }
+      // *Safe (ר' chatPerfMetrics.ts) — swallow על כשל, אין try/catch כאן: זה כבר fire-and-forget
+      // מהדפדפן (ר' ui.html), אין טעם גם לזרוק וגם לבלוע באותו endpoint.
+      recordClientTimingSafe(requestId, user.key, clientTotalMs);
+      return send(res, 200, { ok: true });
+    }
+
+    // ניטור ביצועים: סיכום P50/P95 לחלון הזמן האחרון — למוטי/יוכי בלבד (כמו /api/control).
+    if (req.method === "GET" && path === "/api/perf/summary") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (!user.permissions.includes("view:all_work")) {
+        return send(res, 403, { error: "סטטיסטיקות ביצועים — למוטי בלבד" });
+      }
+      const hoursParam = Number(url.searchParams.get("hours"));
+      const sinceHours = Number.isFinite(hoursParam) && hoursParam > 0 && hoursParam <= 24 * 30 ? hoursParam : 24;
+      // *Safe — מחזיר summary ריק (200) במקום לזרוק אם השליפה נכשלת.
+      return send(res, 200, getChatPerfSummarySafe(sinceHours));
     }
 
     if (req.method === "GET" && path === "/api/chat/sessions") {

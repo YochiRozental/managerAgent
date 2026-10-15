@@ -15,21 +15,32 @@ export interface ModelPrice {
   /** USD ל-1M output tokens */
   outputPerMTok: number;
   /**
-   * מחירי Prompt Caching (Anthropic) — אומתו מול platform.claude.com/docs, 2026-10-14, ל-Haiku 4.5
-   * בלבד (ניסוי ה-cache, ר' ops/chat.ts's PROMPT_CACHING_EXPERIMENT_ENABLED). אופציונליים
-   * בכוונה: מודל בלי השדות האלה ממשיך לחשב cache-read/write כ-input מלא (הערכה שמרנית, בדיוק
-   * ההתנהגות הקיימת לפני היום — estimateCostUsd למטה). cacheWrite5mPerMTok הוא TTL ברירת המחדל
-   * (5 דק') — הניסוי לא משתמש ב-1h, אז אין צורך גם במחיר הזה כרגע.
+   * מחירי Prompt Caching (Anthropic) — אומתו מול platform.claude.com/docs/en/about-claude/pricing,
+   * 2026-10-14 ל-Haiku 4.5, 2026-10-15 ל-Sonnet 5 (ניסוי ה-cache, ר' ops/chat.ts's
+   * PROMPT_CACHING_EXPERIMENT_ENABLED — Sonnet 5 הוא ה-SMART tier model בפרודקשן, ר'
+   * AI_SMART_MODEL). אופציונליים בכוונה: מודל בלי השדות האלה ממשיך לחשב cache-read/write כ-input
+   * מלא (הערכה שמרנית, בדיוק ההתנהגות הקיימת לפני היום — estimateCostUsd למטה). cacheWrite5mPerMTok
+   * הוא TTL ברירת המחדל (5 דק') — הניסוי לא משתמש ב-1h, אז אין צורך גם במחיר הזה כרגע.
+   *
+   * המכפילים התקניים של Anthropic (מתועדים במפורש בדף התמחור): 5m cache write = ×1.25 מה-input
+   * הבסיסי, cache read (hit) = ×0.1 מה-input הבסיסי — **אחידים על פני כל הדגמים חוץ מרשימת חריגים
+   * מפורשת** (Fable 5.1/Mythos 5.1 ב-×0.025 ל-read; Opus 5.5/Sonnet 5.5 ב-×0.05 ל-read). Sonnet 5
+   * (לא 5.5!) *לא* ברשימת החריגים — המחיר המדויק שלו מהטבלה: $2.50/MTok write-5m, $0.20/MTok
+   * read (=×1.25/×0.1 מ-$2 ה-input הבסיסי, תואם למכפיל התקני בדיוק). לא ניחוש — מספרים ישירות
+   * מהטבלה הרשמית.
    */
   cacheReadPerMTok?: number;
   cacheWrite5mPerMTok?: number;
 }
 
 export const MODEL_PRICING: Record<string, ModelPrice> = {
-  // ── Anthropic (אומת 2026-09-08; מחירי cache אומתו בנפרד מול platform.claude.com/docs 2026-10-14) ──
+  // ── Anthropic (אומת 2026-09-08; מחירי cache אומתו בנפרד מול platform.claude.com/docs — Haiku
+  //    4.5 ב-2026-10-14, Sonnet 5 ב-2026-10-15) ──
   "claude-haiku-4-5-20251001": { inputPerMTok: 1, outputPerMTok: 5, cacheReadPerMTok: 0.1, cacheWrite5mPerMTok: 1.25 },
-  // Sonnet 5: מחיר ה"מבוא" $2/$10 הפך למחיר הקבוע (העלאה ל-$3/$15 בוטלה).
-  "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10 },
+  // Sonnet 5: מחיר ה"מבוא" $2/$10 הפך למחיר הקבוע (העלאה ל-$3/$15 בוטלה). מחירי cache: $0.20/MTok
+  // read, $2.50/MTok write-5m — מהטבלה הרשמית (ר' docstring מעל ModelPrice), לא מהמכפיל "הכללי"
+  // המוסק-בעין — Sonnet 5.5 (דגם אחר!) חסום מההנחה הזו ב-×0.05 ל-read, לא ×0.1.
+  "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.2, cacheWrite5mPerMTok: 2.5 },
   // Opus 5: $5/$25 (המחיר הישן $15/$75 שייך ל-Opus 4.1 שיצא משימוש).
   "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25 },
 

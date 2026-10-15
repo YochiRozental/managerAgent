@@ -15,6 +15,7 @@ import { buildWebPromptCacheSplit } from "../../src/ai/prompt.js";
 import { systemPrompt as webSystemPrompt } from "../../src/ops/chat.js";
 import { resolveUserByKey, type IdentifiedUser } from "../../src/identity/index.js";
 import type { LoopContext } from "../../src/ops/loopReply.js";
+import { applyPromptCaching } from "../../src/ai/providers/anthropic.js";
 
 function normalizeTimestamps(s: string): string {
   return s
@@ -97,5 +98,33 @@ describe("buildWebPromptCacheSplit — שקילות מלאה ל-systemPrompt (ל
     const dov = resolveUserByKey("dov")!;
     expect(buildWebPromptCacheSplit(moti).cacheable).toContain("ראייה על כל המשרד");
     expect(buildWebPromptCacheSplit(dov).cacheable).not.toContain("ראייה על כל המשרד");
+  });
+
+  /**
+   * audit (2026-10-15): הבדיקות למעלה מוכיחות ש-buildWebPromptCacheSplit's שני השדות, כשמשוחזרים
+   * ע"י reconstructInOriginalOrder (helper מקומי שמחזיר ידנית את dateLine למיקומו), שווים ל-
+   * systemPrompt המלא. זה **לא** מה ש-Anthropic בפועל מקבלת — applyPromptCaching (anthropic.ts)
+   * מצרפת cacheable+volatile *בסדר הזה* (לא בחזרה למיקום המקורי) ו*בלי* מפריד משלה. הבדיקה הזו
+   * בודקת את ה-wire format האמיתי: שום הוראה לא אבדה (כל השורות הקבועות מופיעות), התאריך מופיע
+   * פעם אחת, ואין הדבקה-תו-בתו בין סוף ההוראות לתחילת התאריך (ר' התיקון ב-anthropic.ts).
+   */
+  it("wire format אמיתי (buildWebPromptCacheSplit → applyPromptCaching, בלי מרכיב-בדיקה שמתקן בעצמו): ההוראות נשמרות, התאריך מופרד", () => {
+    const user = resolveUserByKey("dov")!;
+    const split = buildWebPromptCacheSplit(user);
+    const { system } = applyPromptCaching("לא בשימוש", undefined, {
+      cacheableSystem: split.cacheable,
+      volatileSystemSuffix: split.volatile,
+    });
+    const blocks = system as { text: string }[];
+    const wireText = blocks.map((b) => b.text).join("");
+
+    // כל שורה קבועה (לא ריקה) מההוראות המקוריות מופיעה ב-wire text — אין אובדן תוכן.
+    const originalLines = split.cacheable.split("\n").filter((l) => l.trim().length > 0);
+    for (const line of originalLines) {
+      expect(wireText).toContain(line);
+    }
+    // התאריך מופיע, בדיוק פעם אחת, ולא דבוק לתו שלפניו (יש "\n\n" ממש לפניו).
+    expect(wireText.split(split.volatile)).toHaveLength(2);
+    expect(wireText).toContain(`\n\n${split.volatile}`);
   });
 });

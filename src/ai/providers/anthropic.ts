@@ -82,6 +82,19 @@ export function fromAnthropicResponse(res: Anthropic.Message): RunModelResult {
  * המשתנה) ומסמן את הכלי האחרון ב-tools, לפי סדר ה-prefix של Anthropic (tools→system→messages —
  * מאומת מול התיעוד הרשמי, 2026-10-14). משתמש ב-TTL ברירת המחדל (5 דק') — לא 1h, לא בניסוי הזה.
  * מחזיר tools כ-undefined אם אין כלים כלל (כמו ההתנהגות הקיימת — tools לא נשלח אם ריק).
+ *
+ * תיקון (2026-10-15, audit לפני הפעלה): Anthropic מחברת כמה בלוקי-טקסט של system *בלי* מפריד
+ * משלהם — ה-text של כל בלוק מצורף כמו שהוא. בלי "\n\n" כאן, שורת התאריך (הבלוק השני) הייתה
+ * מתחברת תו-בתו לסוף המשפט האחרון של ההוראות הקבועות (למשל "...ותציע צעד הבא.היום יום חמישי...").
+ * ה-"\n\n" נוסף כאן, בשכבת ה-wire-format ל-Anthropic — לא ב-prompt.ts's buildWebPromptCacheSplit,
+ * ש-volatile שלה נשאר התאריך הגולמי (צרכן אחר, promptCachingExperiment.test.ts, בודק אותו ישירות).
+ *
+ * זו גם פשרה מכוונת, לא רק באג: שורת התאריך יושבת *בסוף* כל ה-system (לא במיקומה המקורי, שורה
+ * שנייה בתחילת ה-prompt, כמו ב-buildWebPrompt הרגיל בלי caching) — כי cache_control מבוסס על
+ * prefix matching לפי סדר הבלוקים; אם תוכן משתנה-כל-דקה (התאריך) היה *לפני* הבלוק הקבוע, כל
+ * בקשה הייתה מקבלת hash-prefix אחר ואף פעם לא היה נוצר cache hit. ה-"\n\n" מתקן את ההפרדה
+ * החזותית/סמנטית (לא "דבוק" למשפט הקודם) בלי לנסות להחזיר את התאריך למיקומו המקורי — זה היה
+ * מבטל את כל יתרון ה-caching, שינוי התנהגות גדול בהרבה מהתיקון הנקודתי הזה.
  */
 export function applyPromptCaching(
   system: string,
@@ -90,7 +103,7 @@ export function applyPromptCaching(
 ): { system: string | Anthropic.TextBlockParam[]; tools: Anthropic.Tool[] | undefined } {
   const systemBlocks: Anthropic.TextBlockParam[] = [
     { type: "text", text: promptCaching.cacheableSystem, cache_control: { type: "ephemeral" } },
-    { type: "text", text: promptCaching.volatileSystemSuffix },
+    { type: "text", text: `\n\n${promptCaching.volatileSystemSuffix}` },
   ];
   if (tools && tools.length > 0) {
     const markedTools = tools.slice();

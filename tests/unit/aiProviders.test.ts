@@ -152,8 +152,8 @@ describe("עלות", () => {
     it("hasCachePricing: Haiku 4.5 — מדויק (אומת מול platform.claude.com/docs)", () => {
       expect(hasCachePricing("claude-haiku-4-5-20251001")).toBe(true);
     });
-    it("hasCachePricing: Sonnet 5 — עדיין לא אומת, לא מדויק", () => {
-      expect(hasCachePricing("claude-sonnet-5")).toBe(false);
+    it("hasCachePricing: Sonnet 5 — מדויק (אומת מול platform.claude.com/docs/en/about-claude/pricing, 2026-10-15)", () => {
+      expect(hasCachePricing("claude-sonnet-5")).toBe(true);
     });
     it("hasCachePricing: מודל לא ידוע — false", () => {
       expect(hasCachePricing("מודל-דמיוני")).toBe(false);
@@ -177,9 +177,29 @@ describe("עלות", () => {
       // $1 (input) + $5 (output) + $0.10 (cache read) + $1.25 (cache write) = $7.35
       expect(cost).toBeCloseTo(7.35, 5);
     });
-    it("מודל בלי מחירי cache מדויקים (Sonnet 5) — cache read/write נופל ל-input מלא (הערכה שמרנית, ללא שינוי)", () => {
+    // ═══ Sonnet 5 — מחירי cache אומתו 2026-10-15 (ר' pricing.ts) — זה ה-SMART tier model בפרודקשן ═══
+    it("Sonnet 5: cache read 1M טוקנים = $0.20 (לא $2 — לא מחיר input מלא; ×0.1 מה-input הבסיסי)", () => {
       const cost = estimateCostUsd("claude-sonnet-5", { inputTokens: 0, outputTokens: 0, cachedInputTokens: 1_000_000 });
-      expect(cost).toBeCloseTo(2, 5); // $2/MTok inputPerMTok של sonnet-5, לא $0.1-משהו
+      expect(cost).toBeCloseTo(0.2, 5);
+    });
+    it("Sonnet 5: cache write (5 דק') 1M טוקנים = $2.50 (×1.25 מה-input הבסיסי)", () => {
+      const cost = estimateCostUsd("claude-sonnet-5", { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(2.5, 5);
+    });
+    it("Sonnet 5: input+output+cache-read+cache-write משולבים, מחושב במחיר המדויק של כל אחד", () => {
+      const cost = estimateCostUsd("claude-sonnet-5", {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cachedInputTokens: 1_000_000,
+        cacheCreationInputTokens: 1_000_000,
+      });
+      // $2 (input) + $10 (output) + $0.20 (cache read) + $2.50 (cache write) = $14.70
+      expect(cost).toBeCloseTo(14.7, 5);
+    });
+    it("מודל בלי מחירי cache מדויקים (Opus 5) — cache read/write נופל ל-input מלא (הערכה שמרנית, ללא שינוי)", () => {
+      const cost = estimateCostUsd("claude-opus-5", { inputTokens: 0, outputTokens: 0, cachedInputTokens: 1_000_000 });
+      expect(cost).toBeCloseTo(5, 5); // $5/MTok inputPerMTok של opus-5, לא מחיר cache (לא מוגדר לדגם הזה)
+      expect(hasCachePricing("claude-opus-5")).toBe(false);
     });
     it("בלי שום טוקן cache (כמו כל קריאה היום) — העלות זהה למה שהייתה לפני ההרחבה", () => {
       const cost = estimateCostUsd("claude-haiku-4-5-20251001", { inputTokens: 1_000_000, outputTokens: 1_000_000 });
@@ -258,23 +278,38 @@ describe("תרגום schema / messages", () => {
     expect(r.usage.cacheCreationInputTokens).toBe(0);
   });
 
-  describe("applyPromptCaching (ניסוי 2026-10-14) — מבנה הבקשה", () => {
+  describe("applyPromptCaching (ניסוי 2026-10-14, תיקון הפרדה 2026-10-15) — מבנה הבקשה", () => {
     const promptCaching = { cacheableSystem: "הוראות קבועות", volatileSystemSuffix: "היום יום שלישי" };
 
-    it("system הופך למערך 2 בלוקים: cache_control על הראשון בלבד", () => {
+    it("system הופך למערך 2 בלוקים: cache_control על הראשון בלבד, השני מתחיל ב-שני ירידות שורה", () => {
       const { system } = applyPromptCaching("לא בשימוש", undefined, promptCaching);
       expect(Array.isArray(system)).toBe(true);
       const blocks = system as { type: string; text: string; cache_control?: unknown }[];
       expect(blocks).toHaveLength(2);
       expect(blocks[0]).toMatchObject({ type: "text", text: "הוראות קבועות", cache_control: { type: "ephemeral" } });
-      expect(blocks[1]).toMatchObject({ type: "text", text: "היום יום שלישי" });
+      expect(blocks[1]).toMatchObject({ type: "text", text: "\n\nהיום יום שלישי" });
       expect(blocks[1]!.cache_control).toBeUndefined();
     });
 
-    it("תוכן שני הבלוקים יחד = התוכן המקורי, בלי אובדן/שינוי טקסט", () => {
+    /**
+     * תיקון (2026-10-15): Anthropic מצרפת את הבלוקים *בלי* מפריד משלה — bb.map(b=>b.text).join("")
+     * הוא התוכן המדויק שהמודל מקבל בפועל, לא join("\n") (זה האחרון היה ה-bug: הוא הוסיף מפריד
+     * שלא קיים בפועל ב-wire format, והסתיר שהתאריך היה מתחבר תו-בתו למשפט האחרון).
+     */
+    it("צירוף גולמי (כמו ש-Anthropic בפועל מצרפת, בלי מפריד משלה) — התאריך מופרד בבירור, לא דבוק", () => {
       const { system } = applyPromptCaching("", undefined, promptCaching);
       const blocks = system as { text: string }[];
-      expect(blocks.map((b) => b.text).join("\n")).toBe("הוראות קבועות\nהיום יום שלישי");
+      const wireText = blocks.map((b) => b.text).join("");
+      expect(wireText).toBe("הוראות קבועות\n\nהיום יום שלישי");
+      expect(wireText).not.toMatch(/קבועותהיום/); // הבאג שתוקן: בלי "\n\n" השורות היו מתחברות תו-בתו
+    });
+
+    it("אין אובדן/שינוי טקסט — כל התוכן המקורי (cacheableSystem + volatileSystemSuffix) נשמר, רק עם הפרדה", () => {
+      const { system } = applyPromptCaching("", undefined, promptCaching);
+      const blocks = system as { text: string }[];
+      const wireText = blocks.map((b) => b.text).join("");
+      expect(wireText).toContain(promptCaching.cacheableSystem);
+      expect(wireText).toContain(promptCaching.volatileSystemSuffix);
     });
 
     it("tools: cache_control רק על הכלי האחרון במערך, לא על האחרים", () => {

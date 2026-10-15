@@ -180,7 +180,7 @@ async function fetchGeneralTasks(
   }>(
     `query {
       boards(ids: [${BOARD_GENERAL_TASKS}]) {
-        items_page(limit: 200, query_params: { rules: [${rule}] }) {
+        items_page(limit: 500, query_params: { rules: [${rule}] }) {
           cursor
           items { ${selection} }
         }
@@ -197,7 +197,7 @@ async function fetchGeneralTasks(
       next_items_page: { cursor: string | null; items: RawItem[] };
     }>(
       `query ($cursor: String!) {
-        next_items_page(cursor: $cursor, limit: 200) { cursor items { ${selection} } }
+        next_items_page(cursor: $cursor, limit: 500) { cursor items { ${selection} } }
       }`,
       { cursor },
     );
@@ -258,7 +258,7 @@ export async function fetchProjectStageTasks(mondayUserId: string, meta?: UserTa
   }>(
     `query {
       boards(ids: [${BOARD_PROJECT_STAGE_TASKS}]) {
-        items_page(limit: 200, query_params: { rules: [${rule}] }) {
+        items_page(limit: 500, query_params: { rules: [${rule}] }) {
           cursor
           items { ${selection} }
         }
@@ -275,7 +275,7 @@ export async function fetchProjectStageTasks(mondayUserId: string, meta?: UserTa
       next_items_page: { cursor: string | null; items: RawItem[] };
     }>(
       `query ($cursor: String!) {
-        next_items_page(cursor: $cursor, limit: 200) { cursor items { ${selection} } }
+        next_items_page(cursor: $cursor, limit: 500) { cursor items { ${selection} } }
       }`,
       { cursor },
     );

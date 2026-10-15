@@ -84,4 +84,42 @@ describe("getUserTasksFetchDiagnostics", () => {
     expect(steps).toHaveLength(4); // 2 חברים × 2 מקורות
     expect(new Set(steps.map((s) => s.teamIndex))).toEqual(new Set([0, 1]));
   });
+
+  // ───────────────────────── limit: 200→500 (2026-10-15) ─────────────────────────
+
+  it("items_page ו-next_items_page משתמשות ב-limit:500 (לא 200) — בשני המקורות", async () => {
+    mondayRequestMock.mockImplementation(async (query: string) => {
+      if (query.includes("boards(ids:")) {
+        // cursor לא-null מאלץ קריאה גם ל-next_items_page, כדי לבדוק את שתי הצורות
+        return { boards: [{ items_page: { cursor: "cur1", items: [] } }] };
+      }
+      return { next_items_page: { cursor: null, items: [] } };
+    });
+    await fetchUserOpsTasks("555555", { generation: 601, teamIndex: 0 });
+    const queries = mondayRequestMock.mock.calls.map(([q]: [string]) => q);
+    expect(queries).toHaveLength(4); // (items_page + next_items_page) × 2 מקורות
+    for (const q of queries) {
+      expect(q).toContain("limit: 500");
+      expect(q).not.toContain("limit: 200");
+    }
+  });
+
+  it("יותר מ-500 פריטים בעמוד הראשון — pagination ממשיכה כצפוי: cursor מכבד, items מצטברים נכון, pages=2", async () => {
+    const generation = 602;
+    mondayRequestMock.mockImplementation(async (query: string) => {
+      if (query.includes("boards(ids:")) {
+        const items = Array.from({ length: 500 }, (_, i) => mkRawItem(`p1-${i}`));
+        return { boards: [{ items_page: { cursor: "cur-page-2", items } }] };
+      }
+      const items = Array.from({ length: 40 }, (_, i) => mkRawItem(`p2-${i}`));
+      return { next_items_page: { cursor: null, items } };
+    });
+    await fetchUserOpsTasks("666666", { generation, teamIndex: 1 });
+    const steps = getUserTasksFetchDiagnostics(generation);
+    expect(steps).toHaveLength(2);
+    for (const s of steps) {
+      expect(s.pages).toBe(2);
+      expect(s.items).toBe(540); // 500 (עמוד 1, בדיוק במכסה החדשה) + 40 (עמוד 2)
+    }
+  });
 });

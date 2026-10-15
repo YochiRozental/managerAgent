@@ -13,6 +13,8 @@
  */
 
 import { performance } from "node:perf_hooks";
+import { env } from "../../config/env.js";
+import { logger } from "../../utils/logger.js";
 import { mondayRequest } from "./client.js";
 
 const MONDAY_HOST = "https://gottlieb-league.monday.com";
@@ -239,10 +241,82 @@ export async function fetchOwnedNewGeneralTasks(mondayUserId: string): Promise<O
   return fetchGeneralTasks(mondayUserId, { groupId: GENERAL_TASKS_GROUP_NEW });
 }
 
-/** משימות בתוך שלבי פרויקט של המשתמש (תת-פריטים, בורד 1550734556). */
-export async function fetchProjectStageTasks(mondayUserId: string, meta?: UserTasksFetchMeta): Promise<OpsTask[]> {
-  const fetchStart = performance.now();
-  const rule = `{ column_id: "person", compare_value: ["person-${mondayUserId}"], operator: any_of }`;
+// ---------------------------------------------------------------------------
+// סינון סטטוסים סגורים בצד Monday ל-fetchProjectStageTasks בלבד (2026-10-16, feature flag —
+// STAGE_STATUS_SERVER_FILTER_ENABLED, כבוי כברירת מחדל). מטרה: לקצר pagination לחברי צוות עם
+// נפח היסטורי גבוה (נבדק חי: איתן — 1028 פריטים גולמיים/6 עמודים → 108 פתוחים/1 עמוד, התאמה
+// מלאה למזהים מול הסינון הקיים בלקוח).
+//
+// לא קובעים IDs בקוד ולא מסתמכים על is_done (נבדק: "לא רלוונטי" בבורד הזה is_done=false, בניגוד
+// ל"הושלם") — ה-IDs נגזרים בכל פעם מ-settings_str של color85__1 מול הטקסטים המדויקים שב-
+// STAGE_TASK_DONE (מקור האמת היחיד — לא מוכפל כאן). ר' src/integrations/monday/tasks.ts's
+// statusColumn ו-opsWrite.ts's getColumnLabels — אותו דפוס parsing מדויק, כבר קיים ומוכח בקוד הזה.
+// ---------------------------------------------------------------------------
+
+interface StageDoneLabelResolution {
+  ok: boolean;
+  /** מזהי התוויות הסגורות (ל-not_any_of) — ריק/לא רלוונטי כש-ok=false */
+  doneIds: number[];
+}
+
+let stageDoneLabelsCache: { at: number; result: StageDoneLabelResolution } | null = null;
+let stageDoneLabelsInFlight: Promise<StageDoneLabelResolution> | null = null;
+const STAGE_DONE_LABELS_TTL_MS = 5 * 60_000;
+
+async function fetchStageDoneLabelResolution(): Promise<StageDoneLabelResolution> {
+  try {
+    const res = await mondayRequest<{ boards: { columns: { id: string; settings_str: string }[] }[] }>(
+      `query {
+        boards(ids: [${BOARD_PROJECT_STAGE_TASKS}]) { columns(ids: ["color85__1"]) { id settings_str } }
+      }`,
+    );
+    const col = res.boards[0]?.columns[0];
+    if (!col) return { ok: false, doneIds: [] };
+    const settings = JSON.parse(col.settings_str) as { labels?: Record<string, string> };
+    const labelsMap = settings.labels ?? {};
+    const doneIds: number[] = [];
+    for (const doneText of STAGE_TASK_DONE) {
+      // התאמה מדויקת לטקסט — חייבת להיות תווית אחת בדיוק; אפס או כמה = לא חד-משמעי, לא אמין.
+      const matches = Object.entries(labelsMap).filter(([, text]) => text === doneText);
+      if (matches.length !== 1) return { ok: false, doneIds: [] };
+      doneIds.push(Number(matches[0]![0]));
+    }
+    if (doneIds.some((id) => !Number.isFinite(id))) return { ok: false, doneIds: [] };
+    return { ok: true, doneIds };
+  } catch (err) {
+    logger.warn({ err }, "סינון סטטוס בשרת (project_stage): שליפת/פענוח הגדרות העמודה נכשל — ממשיך בלי סינון שרת");
+    return { ok: false, doneIds: [] };
+  }
+}
+
+/**
+ * single-flight + cache (5 דק', גם לכישלון — ר' docstring מעל) כדי שכל חברי הצוות המקבילים
+ * (mapPool ב-officeState.ts) יחלקו שליפת-מטא-דאטה אחת, לא שליפה פר-חבר. אותו דפוס בדיוק כמו
+ * getOfficeState/getReverseDependencyMap — ההבדל היחיד: אין כאן generation, כי אין race אפשרי
+ * בין "ישן" ל"חדש" (כל קריאה בתוך ה-TTL מקבלת את *אותה* תוצאה, לא נתון שמתעדכן תוך כדי).
+ */
+async function getStageDoneLabelResolution(): Promise<StageDoneLabelResolution> {
+  if (stageDoneLabelsCache && Date.now() - stageDoneLabelsCache.at < STAGE_DONE_LABELS_TTL_MS) {
+    return stageDoneLabelsCache.result;
+  }
+  if (stageDoneLabelsInFlight) return stageDoneLabelsInFlight;
+
+  const promise = fetchStageDoneLabelResolution().then((result) => {
+    stageDoneLabelsCache = { at: Date.now(), result };
+    if (stageDoneLabelsInFlight === promise) stageDoneLabelsInFlight = null;
+    return result;
+  });
+
+  stageDoneLabelsInFlight = promise;
+  return promise;
+}
+
+type ProjectStageTasksPage = { items: RawItem[]; pages: number };
+
+/** שליפה + pagination מלאה (ללא שינוי מהמנגנון הקיים) — `doneIds` מוסיפה rule סטטוס כש-לא-null. */
+async function runProjectStageTasksQuery(mondayUserId: string, doneIds: number[] | null): Promise<ProjectStageTasksPage> {
+  const statusRule = doneIds ? `, { column_id: "color85__1", compare_value: [${doneIds.join(",")}], operator: not_any_of }` : "";
+  const rule = `{ column_id: "person", compare_value: ["person-${mondayUserId}"], operator: any_of }${statusRule}`;
   const selection = `
     id
     name
@@ -283,6 +357,33 @@ export async function fetchProjectStageTasks(mondayUserId: string, meta?: UserTa
     cursor = next.next_items_page.cursor;
     pages++;
   }
+
+  return { items, pages };
+}
+
+/** משימות בתוך שלבי פרויקט של המשתמש (תת-פריטים, בורד 1550734556). */
+export async function fetchProjectStageTasks(mondayUserId: string, meta?: UserTasksFetchMeta): Promise<OpsTask[]> {
+  const fetchStart = performance.now();
+
+  let doneIds: number[] | null = null;
+  if (env.STAGE_STATUS_SERVER_FILTER_ENABLED) {
+    const resolution = await getStageDoneLabelResolution();
+    if (resolution.ok) doneIds = resolution.doneIds;
+  }
+
+  let result: ProjectStageTasksPage;
+  if (doneIds) {
+    try {
+      result = await runProjectStageTasksQuery(mondayUserId, doneIds);
+    } catch (err) {
+      // fallback מבוקר לשאילתה המקורית — אם היא *גם* נכשלת, השגיאה שלה ממשיכה הלאה (לא נבלעת).
+      logger.warn({ err }, "סינון סטטוס בשרת (project_stage): השאילתה המסוננת נכשלה — fallback לשאילתה המקורית");
+      result = await runProjectStageTasksQuery(mondayUserId, null);
+    }
+  } else {
+    result = await runProjectStageTasksQuery(mondayUserId, null);
+  }
+  const { items, pages } = result;
 
   recordUserTasksStep(meta, { source: "project_stage", pages, items: items.length, durationMs: performance.now() - fetchStart });
 

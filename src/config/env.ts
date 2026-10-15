@@ -29,6 +29,13 @@ const schema = z.object({
     .string()
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
+  // סינון סטטוסים סגורים בצד Monday ל-fetchProjectStageTasks בלבד (2026-10-16) — כבוי כברירת
+  // מחדל. כש-false: אפס שינוי התנהגות/קריאות Monday — הקוד החדש (opsRead.ts's
+  // getStageDoneLabelResolution) לא נקרא בכלל. ר' CLAUDE.md לרקע המלא ולבדיקת ההיתכנות החיה.
+  STAGE_STATUS_SERVER_FILTER_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
 });
 
 const parsed = schema.safeParse(process.env);

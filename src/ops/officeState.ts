@@ -118,7 +118,7 @@ async function fetchOfficeState(generation: number): Promise<OfficeState> {
   ]);
 
   const userTasksStart = performance.now();
-  const perPerson = await mapPool(members, 3, async (m) => {
+  const perPerson = await mapPool(members, 5, async (m) => {
     const tasks = await fetchUserOpsTasks(m.mondayUserId!);
     return { member: m, tasks: enrichTasks(tasks, now, reverseDeps) };
   });

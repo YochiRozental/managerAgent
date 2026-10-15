@@ -12,6 +12,7 @@
  * הפורמט שעובד הוא compare_value: ["person-<id>"] עם operator any_of (נבדק מול ה-API).
  */
 
+import { performance } from "node:perf_hooks";
 import { mondayRequest } from "./client.js";
 
 const MONDAY_HOST = "https://gottlieb-league.monday.com";
@@ -280,6 +281,28 @@ let reverseDepInFlight: Promise<Map<string, DependentRef[]>> | null = null;
 /** מונה מונוטוני — ר' הסבר תואם ב-src/ops/officeState.ts (nextGeneration): Date.now() לא מספיק. */
 let reverseDepNextGeneration = 0;
 
+/**
+ * ניטור ביצועים פנימי (2026-10-14) — אותו עיקרון בדיוק כמו src/ops/officeState.ts's
+ * OfficeStateDiagnostics: ספירות hit/joined/fetched מצטברות + משך הסריקה האחרונה בפועל
+ * (ה-pagination הסדרתי על בורד תת-המשימות — ר' fetchReverseDependencyMap). in-memory, בלי
+ * Monday/DB/AI נוספים, בלי שם עובד/פרויקט/משימה.
+ */
+export interface ReverseDependencyMapDiagnostics {
+  hits: number;
+  joinedInFlight: number;
+  fetched: number;
+  /** משך הסריקה האחרונה שבוצעה בפועל (ms), או null אם עדיין לא בוצעה סריקה מאז עליית התהליך */
+  lastFetchMs: number | null;
+}
+let rdHits = 0;
+let rdJoined = 0;
+let rdFetched = 0;
+let rdLastFetchMs: number | null = null;
+
+export function getReverseDependencyMapDiagnostics(): ReverseDependencyMapDiagnostics {
+  return { hits: rdHits, joinedInFlight: rdJoined, fetched: rdFetched, lastFetchMs: rdLastFetchMs };
+}
+
 async function fetchReverseDependencyMap(): Promise<Map<string, DependentRef[]>> {
   const selection = `
     id
@@ -347,13 +370,20 @@ async function fetchReverseDependencyMap(): Promise<Map<string, DependentRef[]>>
 
 export async function getReverseDependencyMap(): Promise<Map<string, DependentRef[]>> {
   if (reverseDepCache && Date.now() - reverseDepCache.at < REVERSE_DEP_TTL_MS) {
+    rdHits++;
     return reverseDepCache.map;
   }
-  if (reverseDepInFlight) return reverseDepInFlight;
+  if (reverseDepInFlight) {
+    rdJoined++;
+    return reverseDepInFlight;
+  }
 
   const generation = ++reverseDepNextGeneration; // סינכרוני — לא תלוי ברזולוציית Date.now()
+  const fetchStart = performance.now();
   const promise: Promise<Map<string, DependentRef[]>> = fetchReverseDependencyMap().then(
     (map) => {
+      rdLastFetchMs = performance.now() - fetchStart;
+      rdFetched++;
       // ראו הסבר תואם ב-src/ops/officeState.ts: לא לדרוס תוצאה שהתחילה מאוחר יותר ולכן עדכנית ממנה.
       if (!reverseDepCache || generation >= reverseDepCache.generation) {
         reverseDepCache = { at: Date.now(), generation, map };

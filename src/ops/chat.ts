@@ -18,8 +18,10 @@ import { userCan, type IdentifiedUser } from "../identity/index.js";
 import {
   fetchUserOpsTasks,
   getProjectNextAction,
+  getReverseDependencyMapDiagnostics,
   matchProjectsByQuery,
   type OpsTask,
+  type ReverseDependencyMapDiagnostics,
 } from "../integrations/monday/opsRead.js";
 import {
   addCommitment,
@@ -61,7 +63,7 @@ import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
 import { runCrmScan } from "./crmScan.js";
 import { buildDashboardViews, type DashboardTask } from "./dashboard.js";
-import { getOfficeState } from "./officeState.js";
+import { getOfficeState, getOfficeStateDiagnostics, type OfficeStateDiagnostics } from "./officeState.js";
 import { getOversightReport } from "./oversight.js";
 import { getEmployeeFeed, formatEmployeeFeedText, formatEmployeeFeedBriefing, employeeFeedCounts } from "./employeeFeed.js";
 import { attendanceEnabledForUser, checkAttendanceDayStart } from "./attendance.js";
@@ -565,6 +567,83 @@ async function timedPrepStep<T>(name: string, fn: () => Promise<T>, sink: PerfSt
   }
 }
 
+/** כמה קריאות ל-getOfficeState() הכלי office_overview אמור לגרום בעצמו — ר' docstring מעל computeOfficeOverviewPerfRecords. */
+export const EXPECTED_OFFICE_STATE_CALLS = 2;
+
+export interface OfficeOverviewDiagnosticSnapshot {
+  before: OfficeStateDiagnostics;
+  after: OfficeStateDiagnostics;
+  beforeRd: ReverseDependencyMapDiagnostics;
+  afterRd: ReverseDependencyMapDiagnostics;
+}
+
+/**
+ * פונקציה טהורה (לבדיקה בלי Monday/AI) — מחשבת את רשומות ה-chat_perf_steps שנובעות מריצת
+ * office_overview, מתוך snapshot לפני/אחרי של ה-diagnostics הגלובליים.
+ *
+ * ⚠️ אמינות (2026-10-14, audit): ה-counters/lastFetch ב-OfficeStateDiagnostics/
+ * ReverseDependencyMapDiagnostics הם גלובליים לכל התהליך — כל קריאה מקבילה אחרת ל-getOfficeState()
+ * (runControlScan/getOversightReport של בקשה אחרת, person_status/project_status, runDailyControlCycle/
+ * buildWeeklyReport של המתזמן) *או* ל-getReverseDependencyMap() בנפרד (dashboard.ts's
+ * getEmployeeDashboard, שלא עובר דרך getOfficeState בכלל) באותו חלון זמן בדיוק — תוסיף ל-delta
+ * ותזהם את lastFetch. שיוך מדויק פר-בקשה היה דורש להעביר sink עד ל-officeState.ts/opsRead.ts דרך
+ * controlScan.ts/oversight.ts (שינוי חתימות לא-מינימלי) — לכן במקום זאת: אנחנו *יודעים* בדיוק כמה
+ * קריאות אמורות לנבוע מאיתנו (EXPECTED_OFFICE_STATE_CALLS — 2, כי runControlScan+getOversightReport
+ * קוראות ל-getOfficeState() פעם אחת בדיוק כל אחת; runCrmScan לא נוגע ב-officeState כלל). אם ה-delta
+ * הכולל (hits+joined+fetched) לא תואם בדיוק — זו הוכחה ניצחת שמישהו אחר נגע ב-cache באותו חלון
+ * (ולא פחות מהצפוי — קריאותינו שלנו תמיד תורמות בדיוק 2, זה לא יכול "לרדת"). דומה לגבי
+ * getReverseDependencyMap: ההצפוי שלו הוא officeFetched עצמו (0 או 1 — רק אם getOfficeState ביצע
+ * שליפה *חדשה* בחלון הזה הוא קורא ל-getReverseDependencyMap בתוכו).
+ *
+ * כש-"unreliable" — לא דוחפים את lastFetch/breakdown (עלול להיות שגוי), רק את עובדת חוסר-האמינות
+ * והמונה שנצפה בפועל. לעולם לא מציגים מספר מדויק-למראה שעלול להיות שגוי כמדויק.
+ */
+export function computeOfficeOverviewPerfRecords(s: OfficeOverviewDiagnosticSnapshot): PerfStepRecord[] {
+  const records: PerfStepRecord[] = [];
+  const officeHits = s.after.hits - s.before.hits;
+  const officeJoined = s.after.joinedInFlight - s.before.joinedInFlight;
+  const officeFetched = s.after.fetched - s.before.fetched;
+  const officeTotal = officeHits + officeJoined + officeFetched;
+  const officeReliable = officeTotal === EXPECTED_OFFICE_STATE_CALLS;
+
+  if (!officeReliable) {
+    records.push({
+      name: `office_state_cache:unreliable(total=${officeTotal},expected=${EXPECTED_OFFICE_STATE_CALLS})`,
+      durationMs: 0,
+      ok: true,
+    });
+    return records; // אם שכבת officeState לא אמינה, גם reverse_dep_map לא ניתן לשיוך — לא מדווחים בכלל
+  }
+
+  records.push({ name: `office_state_cache:hits=${officeHits},joined=${officeJoined},fetched=${officeFetched}`, durationMs: 0, ok: true });
+  // reverse_deps_wait ו-active_projects נמדדים במקביל זה לזה (אותו Promise.all ב-fetchOfficeState) —
+  // זמן המתנה אמיתי של כל אחד בנפרד, אבל **אסור לסכום** את השניים (או אותם + user_tasks/
+  // run_control_scan/run_crm_scan/get_oversight_report) ולצפות לקבל את זמן הכלי הכולל — בדיוק כמו
+  // אזהרת ה-overlap הקיימת ב-schema.sql's chat_perf_steps (prep/tool).
+  if (officeFetched > 0 && s.after.lastFetch) {
+    records.push({ name: "office_state_fetch:reverse_deps_wait", durationMs: s.after.lastFetch.reverseDepsMs, ok: true });
+    records.push({ name: "office_state_fetch:active_projects", durationMs: s.after.lastFetch.activeProjectsMs, ok: true });
+    records.push({ name: "office_state_fetch:user_tasks", durationMs: s.after.lastFetch.userTasksMs, ok: true });
+  }
+
+  const rdHits = s.afterRd.hits - s.beforeRd.hits;
+  const rdJoined = s.afterRd.joinedInFlight - s.beforeRd.joinedInFlight;
+  const rdFetched = s.afterRd.fetched - s.beforeRd.fetched;
+  const rdTotal = rdHits + rdJoined + rdFetched;
+  const rdReliable = rdTotal === officeFetched;
+
+  if (!rdReliable) {
+    records.push({ name: `reverse_dep_map_cache:unreliable(total=${rdTotal},expected=${officeFetched})`, durationMs: 0, ok: true });
+  } else {
+    records.push({
+      name: `reverse_dep_map_cache:hits=${rdHits},joined=${rdJoined},fetched=${rdFetched}`,
+      durationMs: rdFetched > 0 ? (s.afterRd.lastFetchMs ?? 0) : 0,
+      ok: true,
+    });
+  }
+  return records;
+}
+
 export interface OpsChatOptions {
   /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
   about?: LoopContext;
@@ -1063,7 +1142,30 @@ export async function runOpsChat(
         description: "תמונת מצב כללית של כל המשרד: מספרי משימות פתוחות/באיחור/תקועות, פרויקטים בסיכון, וממצאי מכירות וגבייה. לשאלות כמו 'מה המצב הכללי' / 'מה דורש אותי'.",
         input_schema: { type: "object", properties: {} },
         run: async () => {
-          const [ctrl, crm, over] = await Promise.all([runControlScan(), runCrmScan(), getOversightReport(user)]);
+          // ניטור ביצועים פנימי (2026-10-14) — מפרק את זמן הכלי לשלושת המקורות + את זמן השליפה
+          // המשרדית המשותפת (getOfficeState/getReverseDependencyMap) לשלבים, בלי לשנות את ה-
+          // Promise.all/המקביליות. timedPrepStep (קיים, ר' מעלה) דוחף ל-prepStepRecords הקיים —
+          // יוצא ל-chat_perf_steps (kind='prep') בלי שינוי סכמה ובלי לוג debug. אין כאן שם
+          // עובד/פרויקט/משימה — רק מספרים ומונים. חישוב האמינות (audit 2026-10-14) מופרד לפונקציה
+          // טהורה — computeOfficeOverviewPerfRecords — שנבדקת ישירות ביחידה, ר' docstring שם.
+          const beforeOffice = getOfficeStateDiagnostics();
+          const beforeRd = getReverseDependencyMapDiagnostics();
+
+          const [ctrl, crm, over] = await Promise.all([
+            timedPrepStep("run_control_scan", () => runControlScan(), prepStepRecords),
+            timedPrepStep("run_crm_scan", () => runCrmScan(), prepStepRecords),
+            timedPrepStep("get_oversight_report", () => getOversightReport(user), prepStepRecords),
+          ]);
+
+          prepStepRecords.push(
+            ...computeOfficeOverviewPerfRecords({
+              before: beforeOffice,
+              after: getOfficeStateDiagnostics(),
+              beforeRd,
+              afterRd: getReverseDependencyMapDiagnostics(),
+            }),
+          );
+
           return {
             tasks: { open: over.totals.openTasks, overdue: over.totals.overdue, stuck: over.totals.stuck },
             projectsFlagged: over.totals.projectsFlagged,

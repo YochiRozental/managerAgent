@@ -6,6 +6,7 @@
  */
 
 import { DateTime } from "luxon";
+import { performance } from "node:perf_hooks";
 import { env } from "../config/env.js";
 import { TEAM_DIRECTORY, type TeamMember } from "../identity/index.js";
 import {
@@ -43,6 +44,41 @@ let inFlight: Promise<OfficeState> | null = null;
  */
 let nextGeneration = 0;
 
+/**
+ * ניטור ביצועים פנימי (2026-10-14) — ספירות hit/joined/fetched מצטברות מאז עליית התהליך, ופירוק
+ * זמן השליפה הכבדה האחרונה לשלבים (reverseDeps/activeProjects/userTasks). in-memory בלבד, בלי
+ * Monday/DB/AI — נועד להיקרא אחרי Promise.all (ר' chat.ts's office_overview) ולהידחף ל-
+ * chat_perf_steps דרך timedPrepStep הקיים. בכוונה *בלי* שם עובד/פרויקט/משימה — רק מספרים ומונים.
+ * מצטבר יחיד פר-תהליך (לא פר-בקשה) — אם שני כלים/משתמשים קוראים ל-getOfficeState במקביל ממש
+ * (נדיר בחלונית פנים-משרדית), lastFetch עלול לשקף איזו מהן התבצעה בפועל; הקורא משווה delta
+ * לפני/אחרי כדי לדעת מה קרה *בחלון* הקריאה שלו, ר' docstring ב-getOfficeStateDiagnostics.
+ */
+export interface OfficeStateDiagnostics {
+  hits: number;
+  joinedInFlight: number;
+  fetched: number;
+  /** פירוט השליפה הכבדה האחרונה שבוצעה בפועל (null אם עדיין לא בוצעה שליפה מאז עליית התהליך) */
+  lastFetch: {
+    reverseDepsMs: number;
+    activeProjectsMs: number;
+    userTasksMs: number;
+    totalMs: number;
+    generation: number;
+  } | null;
+}
+let diagHits = 0;
+let diagJoined = 0;
+let diagFetched = 0;
+let diagLastFetch: OfficeStateDiagnostics["lastFetch"] = null;
+
+/**
+ * תמונת מצב של הניטור — לקריאה מיידית בפרודקשן בלי debug logging ובלי restart (הקורא משווה שתי
+ * קריאות, לפני ואחרי פעולה, ומחשב delta — ר' chat.ts's office_overview).
+ */
+export function getOfficeStateDiagnostics(): OfficeStateDiagnostics {
+  return { hits: diagHits, joinedInFlight: diagJoined, fetched: diagFetched, lastFetch: diagLastFetch };
+}
+
 /** מקבילות מוגבלת — מהיר יותר מטור, בלי להטיס את תקרת המורכבות של Monday (mondayRequest עושה retry). */
 async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -58,19 +94,35 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise
   return out;
 }
 
-async function fetchOfficeState(): Promise<OfficeState> {
+async function fetchOfficeState(generation: number): Promise<OfficeState> {
+  const fetchStart = performance.now();
   const now = DateTime.now().setZone(env.TIMEZONE);
   const members = TEAM_DIRECTORY.filter((m) => m.mondayUserId);
 
+  // שני ה-.finally() לא חוסמים זה את זה — Promise.all עדיין מריץ אותם במקביל, רק נמדד כל אחד בנפרד.
+  let reverseDepsMs = 0;
+  let activeProjectsMs = 0;
+  const revDepStart = performance.now();
+  const activeProjStart = performance.now();
   const [reverseDeps, projects] = await Promise.all([
-    getReverseDependencyMap().catch(() => new Map<string, DependentRef[]>()),
-    fetchActiveProjects().catch(() => [] as ProjectMeta[]),
+    getReverseDependencyMap()
+      .catch(() => new Map<string, DependentRef[]>())
+      .finally(() => {
+        reverseDepsMs = performance.now() - revDepStart;
+      }),
+    fetchActiveProjects()
+      .catch(() => [] as ProjectMeta[])
+      .finally(() => {
+        activeProjectsMs = performance.now() - activeProjStart;
+      }),
   ]);
 
+  const userTasksStart = performance.now();
   const perPerson = await mapPool(members, 3, async (m) => {
     const tasks = await fetchUserOpsTasks(m.mondayUserId!);
     return { member: m, tasks: enrichTasks(tasks, now, reverseDeps) };
   });
+  const userTasksMs = performance.now() - userTasksStart;
 
   const seen = new Set<string>();
   const allTasks: DashboardTask[] = [];
@@ -81,6 +133,9 @@ async function fetchOfficeState(): Promise<OfficeState> {
       allTasks.push(t);
     }
   }
+
+  diagLastFetch = { reverseDepsMs, activeProjectsMs, userTasksMs, totalMs: performance.now() - fetchStart, generation };
+  diagFetched++;
 
   return {
     now,
@@ -94,12 +149,18 @@ async function fetchOfficeState(): Promise<OfficeState> {
 
 export async function getOfficeState(force = false): Promise<OfficeState> {
   if (!force) {
-    if (cache && Date.now() - cache.at < TTL_MS) return cache.state;
-    if (inFlight) return inFlight;
+    if (cache && Date.now() - cache.at < TTL_MS) {
+      diagHits++;
+      return cache.state;
+    }
+    if (inFlight) {
+      diagJoined++;
+      return inFlight;
+    }
   }
 
   const generation = ++nextGeneration; // סינכרוני — לא יכול להתנגש גם כש-Date.now() זהה בין שתי קריאות
-  const promise: Promise<OfficeState> = fetchOfficeState().then(
+  const promise: Promise<OfficeState> = fetchOfficeState(generation).then(
     (state) => {
       // משווים לפי מי התחיל מאוחר יותר (generation) — שליפה שהתחילה לפני cache.generation (למשל
       // force מקביל שכבר הספיק לכתוב) לא דורסת תוצאה שהתחילה מאוחר יותר ולכן עדכנית ממנה.

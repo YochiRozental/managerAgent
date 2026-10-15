@@ -488,7 +488,7 @@ async function fetchReverseDependencyMap(): Promise<Map<string, DependentRef[]>>
     `query {
       boards(ids: [${BOARD_PROJECT_STAGE_TASKS}]) {
         items_page(
-          limit: 200
+          limit: 500
           query_params: { rules: [{ column_id: "dependency__1", compare_value: [""], operator: is_not_empty }] }
         ) {
           cursor
@@ -506,7 +506,7 @@ async function fetchReverseDependencyMap(): Promise<Map<string, DependentRef[]>>
       next_items_page: { cursor: string | null; items: RawItem[] };
     }>(
       `query ($cursor: String!) {
-        next_items_page(cursor: $cursor, limit: 200) { cursor items { ${selection} } }
+        next_items_page(cursor: $cursor, limit: 500) { cursor items { ${selection} } }
       }`,
       { cursor },
     );

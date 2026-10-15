@@ -76,3 +76,75 @@ describe("single-flight — getReverseDependencyMap", () => {
   // single-flight מונע race אמיתי כאן *במבנה* — ההגנה "startedAt >= cache.sourceStartedAt" קיימת
   // לסימטריה עם officeState.ts (ששם force כן פותח race אמיתי — ר' officeStateSingleFlight.test.ts).
 });
+
+// ───────────────────────── limit: 200→500 (2026-10-15) ─────────────────────────
+// מראה עבור fetchReverseDependencyMap את שתי הבדיקות שנוספו בעבר ל-fetchGeneralTasks/
+// fetchProjectStageTasks (tests/unit/userTasksFetchDiagnostics.test.ts): (1) הערך בפועל
+// בשתי צורות ה-pagination, (2) ש-pagination אמיתי מעבר לעמוד אחד עדיין מצטבר/ממפה נכון —
+// כולל ששמירת STAGE_TASK_DONE (סינון לקוח) ממשיכה לעבוד נכון גם כשהתוצאה מגיעה מכמה עמודים.
+function mkItem(
+  id: string,
+  opts: { status?: string; blockerIds?: string[]; assignees?: string; project?: string } = {},
+): Record<string, unknown> {
+  return {
+    id,
+    name: `item-${id}`,
+    column_values: [
+      { id: "dependency__1", text: null, linked_item_ids: opts.blockerIds ?? [] },
+      { id: "color85__1", text: opts.status ?? "בעבודה" },
+      { id: "person", text: opts.assignees ?? "" },
+    ],
+    parent_item: opts.project
+      ? { column_values: [{ id: "connect_boards4__1", text: null, display_value: opts.project }] }
+      : null,
+  };
+}
+
+describe("fetchReverseDependencyMap — limit: 200→500", () => {
+  it("items_page ו-next_items_page משתמשות ב-limit:500 (לא 200)", async () => {
+    mondayRequestMock.mockImplementation(async (query: string) => {
+      if (query.includes("boards(ids:")) {
+        return { boards: [{ items_page: { cursor: "cur1", items: [] } }] };
+      }
+      return { next_items_page: { cursor: null, items: [] } };
+    });
+    const getReverseDependencyMap = await freshGetReverseDependencyMap();
+    await getReverseDependencyMap();
+
+    const queries = mondayRequestMock.mock.calls.map(([q]: [string]) => q);
+    expect(queries).toHaveLength(2);
+    for (const q of queries) {
+      expect(q).toContain("limit: 500");
+      expect(q).not.toContain("limit: 200");
+    }
+  });
+
+  it("יותר מ-500 פריטים (עמוד שני) — pagination ממשיכה כצפוי, אותה מפת תלויות נבנית נכון", async () => {
+    // עמוד 1 (500, בדיוק במכסה החדשה): 498 מילוי בלי תלות, 1 "הושלם" עם תלות (צריך להיות מסונן
+    // בלקוח כמו קודם), 1 תקין עם תלות ל-blocker1.
+    const fillers = Array.from({ length: 498 }, (_, i) => mkItem(`filler-${i}`));
+    const doneWithDep = mkItem("done-with-dep", { status: "הושלם", blockerIds: ["blocker1"] });
+    const depA = mkItem("dep-A", { status: "בעבודה", blockerIds: ["blocker1"], assignees: "דוב", project: "פרויקט X" });
+    const page1Items = [...fillers, doneWithDep, depA];
+    expect(page1Items).toHaveLength(500);
+
+    const depB = mkItem("dep-B", { status: "תקוע", blockerIds: ["blocker2"], assignees: "איתן" });
+
+    mondayRequestMock.mockImplementation(async (query: string) => {
+      if (query.includes("boards(ids:")) {
+        return { boards: [{ items_page: { cursor: "cur-page-2", items: page1Items } }] };
+      }
+      return { next_items_page: { cursor: null, items: [depB] } };
+    });
+
+    const getReverseDependencyMap = await freshGetReverseDependencyMap();
+    const map = await getReverseDependencyMap();
+
+    expect(mondayRequestMock).toHaveBeenCalledTimes(2); // עמוד 1 + עמוד 2, לא יותר
+    expect(map.size).toBe(2); // blocker1 (מעמוד 1), blocker2 (מעמוד 2)
+    expect(map.get("blocker1")).toEqual([
+      { itemId: "dep-A", name: "item-dep-A", assignees: "דוב", project: "פרויקט X" },
+    ]); // "done-with-dep" מסונן — STAGE_TASK_DONE ממשיך לעבוד נכון גם לאורך כמה עמודים
+    expect(map.get("blocker2")).toEqual([{ itemId: "dep-B", name: "item-dep-B", assignees: "איתן", project: "" }]);
+  });
+});

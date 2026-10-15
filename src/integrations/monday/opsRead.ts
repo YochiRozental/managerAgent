@@ -101,12 +101,70 @@ function linkedIds(values: RawColumnValue[], id: string): string[] {
   return values.find((c) => c.id === id)?.linked_item_ids ?? [];
 }
 
+// ---------------------------------------------------------------------------
+// ניטור ביצועים פנימי (2026-10-15) — fetchGeneralTasks/fetchProjectStageTasks, פר-חבר-צוות
+//
+// מטרה: לבדוק אם pagination (עמוד שני+) הוא הגורם ל-user_tasks האיטי (~13 שניות), בלי לשנות
+// שאילתה/סינון/pagination/single-flight. `meta` הוא פרמטר אופציונלי נוסף — כש-undefined (כל
+// הקריאות הקיימות שלא מהתהליך של office_overview: chat.ts's ensureTasksLoaded, dashboard.ts's
+// getEmployeeDashboard) שום דבר לא נמדד ולא נרשם, אפס שינוי התנהגות.
+//
+// שיוך בטוח למחזור הנכון: המדידות נשמרות ב-Map לפי `generation` (אותו מונה מונוטוני שכבר קיים
+// ב-officeState.ts/getOfficeState) — לא counter גלובלי יחיד. שתי שליפות חופפות (generation שונה)
+// נופלות לדליים שונים במבנה, לא יכולות להתערבב זו בזו. "teamIndex" הוא רק המיקום של החבר במערך
+// (0-4) — לא שם, לא מזהה Monday, לא תוכן משימה.
+// ---------------------------------------------------------------------------
+
+export interface UserTasksFetchStep {
+  teamIndex: number;
+  source: "general" | "project_stage";
+  pages: number;
+  items: number;
+  durationMs: number;
+}
+
+/** meta מועבר רק מ-officeState.ts's mapPool — קריאות בודדות (chat.ts/dashboard.ts) לא מעבירות אותו. */
+export interface UserTasksFetchMeta {
+  generation: number;
+  teamIndex: number;
+}
+
+const userTasksStepsByGeneration = new Map<number, UserTasksFetchStep[]>();
+/** חוסם גדילה בלתי מוגבלת של הזיכרון — שומר רק את כמה המחזורים האחרונים, לא את כל ההיסטוריה. */
+const MAX_TRACKED_GENERATIONS = 4;
+
+function recordUserTasksStep(meta: UserTasksFetchMeta | undefined, step: Omit<UserTasksFetchStep, "teamIndex">): void {
+  if (!meta) return;
+  let arr = userTasksStepsByGeneration.get(meta.generation);
+  if (!arr) {
+    arr = [];
+    userTasksStepsByGeneration.set(meta.generation, arr);
+    if (userTasksStepsByGeneration.size > MAX_TRACKED_GENERATIONS) {
+      userTasksStepsByGeneration.delete(Math.min(...userTasksStepsByGeneration.keys()));
+    }
+  }
+  arr.push({ ...step, teamIndex: meta.teamIndex });
+}
+
+/**
+ * כל שלבי ה-fetch שנרשמו למחזור (generation) נתון — ריק אם המחזור לא קיים/נוקה. הקורא (chat.ts)
+ * משווה את האורך למספר הצפוי (חברי צוות × 2 מקורות) כדי לדעת אם לסמן "unreliable".
+ */
+export function getUserTasksFetchDiagnostics(generation: number): UserTasksFetchStep[] {
+  return userTasksStepsByGeneration.get(generation) ?? [];
+}
+
 /**
  * משימות משרד כלליות של המשתמש (בורד 1550734526). `opts.groupId` מוסיף סינון group בצד השרת
  * (לא נבדק כברירת מחדל — fetchUserOpsTasks/controlScan צריכים את כל המשימות הפתוחות בכל הקבוצות,
  * לא רק "משימות חדשות"). ר' fetchOwnedNewGeneralTasks למטה לשימוש עם groupId.
  */
-async function fetchGeneralTasks(mondayUserId: string, opts: { groupId?: string } = {}): Promise<OpsTask[]> {
+async function fetchGeneralTasks(
+  mondayUserId: string,
+  opts: { groupId?: string } = {},
+  meta?: UserTasksFetchMeta,
+): Promise<OpsTask[]> {
+  const fetchStart = performance.now();
   const groupRule = opts.groupId
     ? `, { column_id: "group", compare_value: ["${opts.groupId}"], operator: any_of }`
     : "";
@@ -133,6 +191,7 @@ async function fetchGeneralTasks(mondayUserId: string, opts: { groupId?: string 
   const page = first.boards[0]?.items_page;
   const items: RawItem[] = page ? [...page.items] : [];
   let cursor = page?.cursor ?? null;
+  let pages = 1;
   while (cursor) {
     const next = await mondayRequest<{
       next_items_page: { cursor: string | null; items: RawItem[] };
@@ -144,7 +203,10 @@ async function fetchGeneralTasks(mondayUserId: string, opts: { groupId?: string 
     );
     items.push(...next.next_items_page.items);
     cursor = next.next_items_page.cursor;
+    pages++;
   }
+
+  recordUserTasksStep(meta, { source: "general", pages, items: items.length, durationMs: performance.now() - fetchStart });
 
   const out: OpsTask[] = [];
   for (const item of items) {
@@ -178,7 +240,8 @@ export async function fetchOwnedNewGeneralTasks(mondayUserId: string): Promise<O
 }
 
 /** משימות בתוך שלבי פרויקט של המשתמש (תת-פריטים, בורד 1550734556). */
-export async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsTask[]> {
+export async function fetchProjectStageTasks(mondayUserId: string, meta?: UserTasksFetchMeta): Promise<OpsTask[]> {
+  const fetchStart = performance.now();
   const rule = `{ column_id: "person", compare_value: ["person-${mondayUserId}"], operator: any_of }`;
   const selection = `
     id
@@ -206,6 +269,7 @@ export async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsT
   const page = first.boards[0]?.items_page;
   const items: RawItem[] = page ? [...page.items] : [];
   let cursor = page?.cursor ?? null;
+  let pages = 1;
   while (cursor) {
     const next = await mondayRequest<{
       next_items_page: { cursor: string | null; items: RawItem[] };
@@ -217,7 +281,10 @@ export async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsT
     );
     items.push(...next.next_items_page.items);
     cursor = next.next_items_page.cursor;
+    pages++;
   }
+
+  recordUserTasksStep(meta, { source: "project_stage", pages, items: items.length, durationMs: performance.now() - fetchStart });
 
   const out: OpsTask[] = [];
   for (const item of items) {
@@ -248,11 +315,11 @@ export async function fetchProjectStageTasks(mondayUserId: string): Promise<OpsT
  * שגיאה באחד המקורות נזרקת החוצה במכוון — עדיף שהחלונית תציג "לא הצלחתי לטעון" מאשר רשימה
  * ריקה שגורמת לעובד לחשוב שאין לו כלום.
  */
-export async function fetchUserOpsTasks(mondayUserId: string): Promise<OpsTask[]> {
+export async function fetchUserOpsTasks(mondayUserId: string, meta?: UserTasksFetchMeta): Promise<OpsTask[]> {
   assertNumericId(mondayUserId);
   const [general, stages] = await Promise.all([
-    fetchGeneralTasks(mondayUserId),
-    fetchProjectStageTasks(mondayUserId),
+    fetchGeneralTasks(mondayUserId, {}, meta),
+    fetchProjectStageTasks(mondayUserId, meta),
   ]);
   const all = [...general, ...stages];
   all.sort((a, b) => (a.dueDate ?? "9999-99-99").localeCompare(b.dueDate ?? "9999-99-99"));

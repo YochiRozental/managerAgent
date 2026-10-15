@@ -19,9 +19,11 @@ import {
   fetchUserOpsTasks,
   getProjectNextAction,
   getReverseDependencyMapDiagnostics,
+  getUserTasksFetchDiagnostics,
   matchProjectsByQuery,
   type OpsTask,
   type ReverseDependencyMapDiagnostics,
+  type UserTasksFetchStep,
 } from "../integrations/monday/opsRead.js";
 import {
   addCommitment,
@@ -575,6 +577,8 @@ export interface OfficeOverviewDiagnosticSnapshot {
   after: OfficeStateDiagnostics;
   beforeRd: ReverseDependencyMapDiagnostics;
   afterRd: ReverseDependencyMapDiagnostics;
+  /** שלבי fetchGeneralTasks/fetchProjectStageTasks פר-חבר-צוות למחזור הזה (ר' getUserTasksFetchDiagnostics) — [] אם לא רלוונטי. */
+  userTasksSteps: UserTasksFetchStep[];
 }
 
 /**
@@ -597,6 +601,12 @@ export interface OfficeOverviewDiagnosticSnapshot {
  *
  * כש-"unreliable" — לא דוחפים את lastFetch/breakdown (עלול להיות שגוי), רק את עובדת חוסר-האמינות
  * והמונה שנצפה בפועל. לעולם לא מציגים מספר מדויק-למראה שעלול להיות שגוי כמדויק.
+ *
+ * `userTasksSteps` (2026-10-15, בדיקת היתכנות pagination): פירוט fetchGeneralTasks/
+ * fetchProjectStageTasks פר-חבר-צוות למחזור הזה — ר' getUserTasksFetchDiagnostics ב-opsRead.ts.
+ * בניגוד ל-office/rd (counters גלובליים עם delta), כאן השיוך בטוח *במבנה* — כל שלב נרשם תחת
+ * מפתח generation ייחודי, לא counter משותף — ולכן מספיק לבדוק שהגיע *כל* מה שצפוי
+ * (memberCount × 2 מקורות); אם לא — unreliable.
  */
 export function computeOfficeOverviewPerfRecords(s: OfficeOverviewDiagnosticSnapshot): PerfStepRecord[] {
   const records: PerfStepRecord[] = [];
@@ -624,6 +634,27 @@ export function computeOfficeOverviewPerfRecords(s: OfficeOverviewDiagnosticSnap
     records.push({ name: "office_state_fetch:reverse_deps_wait", durationMs: s.after.lastFetch.reverseDepsMs, ok: true });
     records.push({ name: "office_state_fetch:active_projects", durationMs: s.after.lastFetch.activeProjectsMs, ok: true });
     records.push({ name: "office_state_fetch:user_tasks", durationMs: s.after.lastFetch.userTasksMs, ok: true });
+
+    // פירוט פר-חבר-צוות/מקור (audit 2026-10-15, בדיקת היתכנות pagination) — שיוך בטוח-במבנה: כל
+    // שלב נרשם ב-opsRead.ts תחת מפתח generation ייחודי (לא counter גלובלי), אז קריאה מקבילה אחרת
+    // נופלת לדלי אחר ולא יכולה להתערבב. בודקים בכל זאת שהגיע *כל* מה שצפוי (חברי-צוות × 2 מקורות) —
+    // אם לא (באג/evict נדיר), מסמנים unreliable במקום לדווח פירוק חלקי כאילו הוא מלא.
+    const expectedUserTasksSteps = s.after.lastFetch.memberCount * 2;
+    if (s.userTasksSteps.length !== expectedUserTasksSteps) {
+      records.push({
+        name: `user_tasks_fetch:unreliable(count=${s.userTasksSteps.length},expected=${expectedUserTasksSteps})`,
+        durationMs: 0,
+        ok: true,
+      });
+    } else {
+      for (const step of s.userTasksSteps) {
+        records.push({
+          name: `user_tasks_fetch:idx=${step.teamIndex},source=${step.source},pages=${step.pages},items=${step.items}`,
+          durationMs: step.durationMs,
+          ok: true,
+        });
+      }
+    }
   }
 
   const rdHits = s.afterRd.hits - s.beforeRd.hits;
@@ -1157,12 +1188,16 @@ export async function runOpsChat(
             timedPrepStep("get_oversight_report", () => getOversightReport(user), prepStepRecords),
           ]);
 
+          const afterOffice = getOfficeStateDiagnostics();
+          const userTasksSteps = afterOffice.lastFetch ? getUserTasksFetchDiagnostics(afterOffice.lastFetch.generation) : [];
+
           prepStepRecords.push(
             ...computeOfficeOverviewPerfRecords({
               before: beforeOffice,
-              after: getOfficeStateDiagnostics(),
+              after: afterOffice,
               beforeRd,
               afterRd: getReverseDependencyMapDiagnostics(),
+              userTasksSteps,
             }),
           );
 

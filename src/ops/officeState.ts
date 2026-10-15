@@ -64,6 +64,8 @@ export interface OfficeStateDiagnostics {
     userTasksMs: number;
     totalMs: number;
     generation: number;
+    /** כמה חברי צוות נכללו במחזור הזה — לשחזור הציפייה הנכונה בבדיקת האמינות של user_tasks (ר' chat.ts). */
+    memberCount: number;
   } | null;
 }
 let diagHits = 0;
@@ -79,15 +81,19 @@ export function getOfficeStateDiagnostics(): OfficeStateDiagnostics {
   return { hits: diagHits, joinedInFlight: diagJoined, fetched: diagFetched, lastFetch: diagLastFetch };
 }
 
-/** מקבילות מוגבלת — מהיר יותר מטור, בלי להטיס את תקרת המורכבות של Monday (mondayRequest עושה retry). */
-async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+/**
+ * מקבילות מוגבלת — מהיר יותר מטור, בלי להטיס את תקרת המורכבות של Monday (mondayRequest עושה retry).
+ * `fn` מקבל גם את ה-idx (מיקום במערך) — משמש ל"אינדקס צוות" במדידת user_tasks (ר' fetchOfficeState),
+ * לא משנה שום לוגיקת הרצה.
+ */
+async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, async () => {
       while (i < items.length) {
         const idx = i++;
-        out[idx] = await fn(items[idx]!);
+        out[idx] = await fn(items[idx]!, idx);
       }
     }),
   );
@@ -118,8 +124,8 @@ async function fetchOfficeState(generation: number): Promise<OfficeState> {
   ]);
 
   const userTasksStart = performance.now();
-  const perPerson = await mapPool(members, 5, async (m) => {
-    const tasks = await fetchUserOpsTasks(m.mondayUserId!);
+  const perPerson = await mapPool(members, 5, async (m, idx) => {
+    const tasks = await fetchUserOpsTasks(m.mondayUserId!, { generation, teamIndex: idx });
     return { member: m, tasks: enrichTasks(tasks, now, reverseDeps) };
   });
   const userTasksMs = performance.now() - userTasksStart;
@@ -134,7 +140,14 @@ async function fetchOfficeState(generation: number): Promise<OfficeState> {
     }
   }
 
-  diagLastFetch = { reverseDepsMs, activeProjectsMs, userTasksMs, totalMs: performance.now() - fetchStart, generation };
+  diagLastFetch = {
+    reverseDepsMs,
+    activeProjectsMs,
+    userTasksMs,
+    totalMs: performance.now() - fetchStart,
+    generation,
+    memberCount: members.length,
+  };
   diagFetched++;
 
   return {

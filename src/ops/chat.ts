@@ -605,10 +605,62 @@ export function buildPersonProjectBreakdown(tasks: DashboardTask[]): PersonTaskB
  * מפרויקט אחר" אוסר. עכשיו: שני באקטים עם שם זהה אבל projectId שונה הם *שתי* התאמות נפרדות (לא
  * אחת) → נכנסים ל-branch של "יותר מדי התאמות" ונשאלים, לא ממוזגים בשקט.
  */
+/**
+ * נרמול רווחים (2026-10-18, audit בקשות-המשך) — מכווץ כל רצף whitespace למרווח בודד ו-trim,
+ * משני הצדדים (גם query וגם p.project — קודם היה רק query). **לא** fuzzy matching: לא סולח על
+ * שגיאות כתיב (למשל "המשבה" מול "המושבה", מקרה אמיתי שנצפה) — רק על הבדלי-רווח. כוונה מפורשת
+ * (דרישה 3): fuzzy-matching אמיתי (מרחק-ערוך) מסוכן כאן — יכול "לקרב" בטעות שני פרויקטים שונים.
+ */
+function normalizeForMatch(s: string): string {
+  return s.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 export function matchPersonProjects(byProject: PersonProjectBreakdown[], query: string): PersonProjectBreakdown[] {
-  const q = query.trim().toLowerCase();
+  const q = normalizeForMatch(query);
   if (!q) return [];
-  return byProject.filter((p) => p.project.toLowerCase().includes(q));
+  return byProject.filter((p) => normalizeForMatch(p.project).includes(q));
+}
+
+export interface ProjectIndexResolution {
+  ok: boolean;
+  project?: PersonProjectBreakdown;
+  reason?: "out_of_range" | "ambiguous_order";
+  /** כש-reason="ambiguous_order": כל הפרויקטים שמתחרים על אותו מיקום (אותו overdue/stuck/open). */
+  candidates?: PersonProjectBreakdown[];
+}
+
+/** מפתח-המיון של buildPersonProjectBreakdown, כמחרוזת להשוואת-שוויון. */
+function sortTieKey(p: PersonProjectBreakdown): string {
+  return `${p.overdue}|${p.stuck}|${p.open}`;
+}
+
+/**
+ * פותר "הפרויקט הראשון/השני/האחרון ברשימה" (2026-10-18, audit בקשות-המשך) — דטרמיניסטי, בלי
+ * תלות בכך שהמודל משחזר נכון שם טקסטואלי מהתשובה הקודמת (ר' docstring מעל buildPersonProjectBreakdown
+ * על למה זה שבור: ההיסטוריה ששומרת chatHistory.ts היא פרוזה חופשית, לא ה-JSON המדויק).
+ *
+ * index1Based: 1=ראשון, 2=שני... שלילי סופר מהסוף (-1=אחרון, -2=לפני-אחרון...), תואם למה שהמשתמש
+ * אומר ("האחרון ברשימה") בלי שהמודל יצטרך לדעת/לזכור את totalProjects המדויק.
+ *
+ * דרישה 1 ("אם אי אפשר להבטיח — אל תנחש, החזר הבהרה"): byProject ממוין דטרמיניסטית לפי ערכים
+ * (overdue/stuck/open), אז כל עוד הערכים האלה לא השתנו בין שתי הקריאות (נכון כל עוד שתיהן נופלות
+ * באותו cache window של getOfficeState, 3 דק') — הסדר היחסי בין פרויקטים עם ערכים *שונים* משוחזר
+ * באופן זהה, תלוי-ערך בלבד. אבל שני פרויקטים עם *אותם* overdue/stuck/open יכולים להחליף מקום
+ * ביניהם בין fetch-ים שונים (סדר ה-items מ-Monday לא מובטח) — Array.sort יציב רק *בתוך* אותה
+ * קריאת sort, לא בין שתי קריאות fetch נפרדות. לכן: אם המיקום המבוקש מעורב ב-tie כזה (קבוצה שלמה
+ * של buckets עם אותו מפתח — ר' sortTieKey, יציב/רציף בזכות המיון), מחזירים ambiguous_order ולא
+ * מנחשים — המודל מתבקש לשאול/לבקש לפי שם.
+ */
+export function resolveProjectByIndex(byProject: PersonProjectBreakdown[], index1Based: number): ProjectIndexResolution {
+  if (!Number.isInteger(index1Based) || index1Based === 0) return { ok: false, reason: "out_of_range" };
+  const i = index1Based > 0 ? index1Based - 1 : byProject.length + index1Based;
+  if (i < 0 || i >= byProject.length) return { ok: false, reason: "out_of_range" };
+
+  const target = byProject[i]!;
+  const key = sortTieKey(target);
+  const tiedGroup = byProject.filter((p) => sortTieKey(p) === key);
+  if (tiedGroup.length > 1) return { ok: false, reason: "ambiguous_order", candidates: tiedGroup };
+  return { ok: true, project: target };
 }
 
 export interface PersonProjectTaskDetail {
@@ -663,6 +715,67 @@ export function buildPersonProjectDrilldown(tasks: DashboardTask[], target: Pers
     })),
     totalMatching: matching.length,
     truncated: matching.length > limited.length,
+  };
+}
+
+export interface PersonProjectWithTasks extends PersonProjectBreakdown {
+  tasks: PersonProjectTaskDetail[];
+  /** true ⇐ לפרויקט הזה עצמו יש יותר משימות מ-PERSON_BYPROJECT_CAP (40) — נחתך גם בתוך ה-detail הזה. */
+  taskListTruncated: boolean;
+}
+export interface PersonFullDetail {
+  /** ממוין overdue→stuck→open יורד (אותו סדר כמו byProject) — הפרויקטים הכי-חשובים ראשונים, כך
+   *  שאם יש חיתוך-כולל, הוא חותך את הכי-פחות-חשובים, לא באקראי. */
+  projects: PersonProjectWithTasks[];
+  /** כמה פרויקטים הוצגו עם פירוט מלא, מתוך כמה יש בסה"כ. */
+  projectsShown: number;
+  totalProjects: number;
+  /** כמה משימות הוצגו בפועל (סכום על פני projects[].tasks), מתוך הכלל (סכום counts.open). */
+  tasksShown: number;
+  tasksTotal: number;
+  /** true ⇐ לא כל הפרויקטים/המשימות הוצגו — דרישה 2: לעולם לא "זו הרשימה המלאה" כש-היא לא. */
+  truncated: boolean;
+}
+
+/** סף נפרד (לא PERSON_BYPROJECT_CAP) — זה מצב "תן לי הכול" מכוון (detail=true), לא ברירת המחדל,
+ *  אז מתירים יותר: 150 מכסה בנוחות כל חבר צוות קיים (הגבוה ביותר שנצפה: ~109 משימות פתוחות) גם
+ *  אם הן מפוזרות על כמה פרויקטים, בלי להתנפח לאינסוף אם המשרד יגדל בהרבה בעתיד. */
+export const PERSON_FULL_DETAIL_CAP = 150;
+
+/**
+ * פירוט מלא (לא רק counts) של *כל* הפרויקטים של העובד בבת אחת — דרישה 2 ("תפרק לי את כל המשימות
+ * שלו לפי פרויקטים"). בונה על buildPersonProjectDrilldown הקיים פר-פרויקט (אותו מפתח projectId??
+ * context, אותה בדיקת בידוד) — לא לוגיקת-סינון נפרדת. חותך בגבולות-פרויקט (לא בתוך פרויקט) לפי
+ * סדר byProject (הכי-חשוב קודם), כדי שלעולם לא יוצג פרויקט "חצי" בלי האזהרה המתאימה.
+ */
+export function buildPersonFullDetail(tasks: DashboardTask[], byProject: PersonProjectBreakdown[]): PersonFullDetail {
+  const projects: PersonProjectWithTasks[] = [];
+  let tasksShown = 0;
+  let truncated = false;
+
+  for (const bucket of byProject) {
+    if (tasksShown >= PERSON_FULL_DETAIL_CAP) {
+      truncated = true;
+      break;
+    }
+    const drill = buildPersonProjectDrilldown(tasks, bucket);
+    if (projects.length > 0 && tasksShown + drill.tasks.length > PERSON_FULL_DETAIL_CAP) {
+      truncated = true;
+      break;
+    }
+    projects.push({ ...bucket, tasks: drill.tasks, taskListTruncated: drill.truncated });
+    tasksShown += drill.tasks.length;
+    if (drill.truncated) truncated = true;
+  }
+
+  const tasksTotal = byProject.reduce((s, p) => s + p.open, 0);
+  return {
+    projects,
+    projectsShown: projects.length,
+    totalProjects: byProject.length,
+    tasksShown,
+    tasksTotal,
+    truncated: truncated || projects.length < byProject.length,
   };
 }
 
@@ -1371,11 +1484,16 @@ export async function runOpsChat(
       {
         name: "person_status",
         description:
-          "מצב העבודה של איש צוות מסוים. בלי project: כמה משימות פתוחות/באיחור/תקועות/חוסמות/להיום יש לו, " +
-          "ופירוק **מלא** (byProject + withoutProject, סכומם שווה ל-counts) של כל הפרויקטים שלו — זו התשובה " +
-          "המלאה ל'תפרק לפי פרויקטים', לא findings (findings הן רק highlights נבחרים, לא הרשימה המלאה). " +
-          "עם project: פירוט המשימות בפועל (שם/שלב/תאריך/סטטוס) רק באותו פרויקט אחד של אותו עובד — " +
-          "לשאלות כמו 'מה חוסם באויירבך אצל איתן' אחרי ששמו של העובד כבר ידוע מההקשר.",
+          "מצב העבודה של איש צוות מסוים. בלי פרמטרים נוספים: כמה משימות פתוחות/באיחור/תקועות/חוסמות/להיום " +
+          "יש לו, ופירוק **מלא** (byProject + withoutProject, סכומם שווה ל-counts) של כל הפרויקטים שלו — זו " +
+          "התשובה המלאה ל'תפרק לפי פרויקטים' (ספירות בלבד; findings הן רק highlights נבחרים, לא הרשימה המלאה). " +
+          "עם project: פירוט המשימות בפועל (שם/שלב/תאריך/סטטוס) רק באותו פרויקט אחד של אותו עובד. " +
+          "עם projectIndex: אותו פירוט, אבל לפי **מיקום** ברשימה שהוצגה בתשובה הקודמת (1=ראשון, 2=שני, " +
+          "-1=אחרון, -2=לפני-אחרון) — להמשך-בקשה כמו 'תראה לי את הפרויקט הראשון/האחרון ברשימה', כש-אתה " +
+          "לא בטוח בשם המדויק שהוצג (אל תמציא/תשחזר שם מהזיכרון, זה מה שגרם לכשל). " +
+          "עם detail=true (בלי project/projectIndex): פירוט משימות אמיתי (לא רק ספירות) על פני **כל** " +
+          "הפרויקטים של העובד בבת אחת — לבקשות כמו 'תפרק לי את כל המשימות שלו לפי פרויקטים' (המילה " +
+          "'משימות'/'רשימה' מבדילה מ-'תפרק לפי פרויקטים' הסתמי, שמחזיר רק ספירות).",
         input_schema: {
           type: "object",
           properties: {
@@ -1384,12 +1502,24 @@ export async function runOpsChat(
               type: "string",
               description: "אופציונלי — שם פרויקט (או חלק ממנו) מבין הפרויקטים של העובד הזה, לפירוט המשימות בו בפועל",
             },
+            projectIndex: {
+              type: "number",
+              description:
+                "אופציונלי — מיקום הפרויקט ברשימה שהוצגה בתשובה הקודמת (1=ראשון, 2=שני, -1=אחרון). " +
+                "השתמש בזה כש-המשתמש מתייחס למיקום ('הראשון/השני/האחרון ברשימה'), לא בשם — אל תנחש שם מהזיכרון.",
+            },
+            detail: {
+              type: "boolean",
+              description: "true כש-המשתמש מבקש את כל המשימות בפועל (לא רק ספירות) עבור כל הפרויקטים של העובד יחד",
+            },
           },
           required: ["name"],
         },
         run: async (input) => {
           const q = String(input.name ?? "").trim();
           const projectQuery = typeof input.project === "string" ? input.project.trim() : "";
+          const projectIndex = typeof input.projectIndex === "number" ? input.projectIndex : undefined;
+          const wantDetail = input.detail === true;
           // getOfficeState() בלבד — אותו מטמון (3 דק') ש-getOversightReport/controlScan כבר משתמשים
           // בו, בלי לעבור דרך oversight.ts: כך ש-counts/byProject/withoutProject כולם נספרים *פעם
           // אחת* מתוך אותו tasks[] (ר' buildPersonProjectBreakdown) — לא שני חישובים נפרדים שעלולים
@@ -1404,11 +1534,31 @@ export async function runOpsChat(
             };
           }
           const { member, tasks } = match;
+          const breakdown = buildPersonProjectBreakdown(tasks);
+
+          // בקשת-המשך לפי מיקום ("הראשון/האחרון ברשימה") — דטרמיניסטי, לא תלוי בזיכרון-שם של המודל.
+          // ר' resolveProjectByIndex: אם המיקום לא חד-משמעי (tie בערכים) — מחזיר הבהרה, לא מנחש.
+          if (projectIndex !== undefined) {
+            const resolution = resolveProjectByIndex(breakdown.byProject, projectIndex);
+            if (!resolution.ok) {
+              if (resolution.reason === "out_of_range") {
+                return {
+                  error: `אין פרויקט במיקום ${projectIndex} — יש ${breakdown.totalProjects} פרויקטים ל-${member.name}.`,
+                  totalProjects: breakdown.totalProjects,
+                };
+              }
+              return {
+                hint: `המיקום הזה לא חד-משמעי — כמה פרויקטים עם עומס זהה מתחרים עליו. אפשר לבקש לפי שם?`,
+                candidates: resolution.candidates!.map((c) => c.project),
+              };
+            }
+            const drilldown = buildPersonProjectDrilldown(tasks, resolution.project!);
+            return { name: member.name, ...drilldown };
+          }
 
           if (projectQuery) {
             // matchPersonProjects מחפש בין ה-buckets המחושבים (לא tasks גולמיים) — ר' docstring
             // שם: שני פרויקטים עם שם זהה אבל projectId שונה הם שתי התאמות נפרדות, לא אחת.
-            const breakdown = buildPersonProjectBreakdown(tasks);
             const matches = matchPersonProjects(breakdown.byProject, projectQuery);
             if (matches.length === 0) {
               return {
@@ -1423,8 +1573,12 @@ export async function runOpsChat(
             return { name: member.name, ...drilldown };
           }
 
+          if (wantDetail) {
+            const full = buildPersonFullDetail(tasks, breakdown.byProject);
+            return { name: member.name, ...full, withoutProject: breakdown.withoutProject };
+          }
+
           const overdueSorted = tasks.filter((t) => t.flags.overdue).sort((a, b) => b.flags.daysOverdue - a.flags.daysOverdue);
-          const breakdown = buildPersonProjectBreakdown(tasks);
           return {
             name: member.name,
             counts: {

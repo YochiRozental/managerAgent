@@ -9,10 +9,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildPersonFullDetail,
   buildPersonProjectBreakdown,
   buildPersonProjectDrilldown,
   matchPersonProjects,
   PERSON_BYPROJECT_CAP,
+  PERSON_FULL_DETAIL_CAP,
+  resolveProjectByIndex,
+  type PersonProjectBreakdown,
 } from "../../src/ops/chat.js";
 import type { DashboardTask, TaskFlags } from "../../src/ops/dashboard.js";
 
@@ -208,6 +212,164 @@ describe("matchPersonProjects — חיפוש בין buckets מחושבים (לא
     const matches = matchPersonProjects(collidingByProject, "כפול");
     expect(matches).toHaveLength(2);
     expect(new Set(matches.map((m) => m.projectId))).toEqual(new Set(["real-p1", "real-p2"]));
+  });
+
+  /**
+   * audit בקשות-המשך (2026-10-18) — נרמול רווחים (דרישה 3): שם הפרויקט ב-Monday עצמו יכול לכלול
+   * רווח כפול (דאטה אמיתי), או שהמודל מקליד שאילתה עם רווח יחיד/כפול שלא תואם בדיוק. **לא**
+   * fuzzy-matching — רק רצפי-whitespace, לא שגיאות-כתיב (ר' הבדיקה הבאה).
+   */
+  it("רווח כפול בשם הפרויקט עצמו (ב-Monday) — עדיין נמצא עם שאילתה ברווח יחיד", () => {
+    const withDoubleSpace = buildPersonProjectBreakdown([
+      task({ projectId: "p9", context: "אויירבך  משה מגרש 302" }), // רווח כפול בין "אויירבך" ל-"משה"
+    ]).byProject;
+    expect(matchPersonProjects(withDoubleSpace, "אויירבך משה")).toHaveLength(1);
+  });
+
+  it("רווח כפול בשאילתה — עדיין נמצא כש-שם הפרויקט ברווח יחיד", () => {
+    expect(matchPersonProjects(byProject, "אויירבך  משה")).toEqual(
+      matchPersonProjects(byProject, "אויירבך משה"),
+    );
+  });
+
+  it("שגיאת-כתיב אמיתית (לא רווח) — לא נמצא, בכוונה: אין fuzzy-matching שעלול לערבב פרויקטים", () => {
+    const withTypo = buildPersonProjectBreakdown([task({ projectId: "p9", context: "אויירבך משה מגרש 302 המשבה" })]).byProject;
+    expect(matchPersonProjects(withTypo, "המושבה")).toEqual([]); // "המשבה" (בדאטה) != "המושבה" (בשאילתה) — זה תקין, לא באג
+  });
+});
+
+describe("resolveProjectByIndex — בקשת-המשך לפי מיקום ('הראשון/השני/האחרון ברשימה')", () => {
+  const ordered: PersonProjectBreakdown[] = [
+    { project: "פרויקט א", projectId: "a", open: 5, overdue: 3, stuck: 1, blocking: 0, dueToday: 0 },
+    { project: "פרויקט ב", projectId: "b", open: 4, overdue: 2, stuck: 0, blocking: 0, dueToday: 0 },
+    { project: "פרויקט ג", projectId: "c", open: 2, overdue: 1, stuck: 0, blocking: 0, dueToday: 0 },
+  ];
+
+  it("1 → הראשון ברשימה", () => {
+    const r = resolveProjectByIndex(ordered, 1);
+    expect(r).toMatchObject({ ok: true, project: { projectId: "a" } });
+  });
+  it("2 → השני", () => {
+    expect(resolveProjectByIndex(ordered, 2)).toMatchObject({ ok: true, project: { projectId: "b" } });
+  });
+  it("-1 → האחרון ברשימה (סופר מהסוף, בלי שהמודל יצטרך לדעת totalProjects)", () => {
+    expect(resolveProjectByIndex(ordered, -1)).toMatchObject({ ok: true, project: { projectId: "c" } });
+  });
+  it("-2 → לפני-אחרון", () => {
+    expect(resolveProjectByIndex(ordered, -2)).toMatchObject({ ok: true, project: { projectId: "b" } });
+  });
+  it("0 → out_of_range (אין מיקום 0, לא 1-based ולא תקין)", () => {
+    expect(resolveProjectByIndex(ordered, 0)).toMatchObject({ ok: false, reason: "out_of_range" });
+  });
+  it("מיקום גדול מהרשימה → out_of_range", () => {
+    expect(resolveProjectByIndex(ordered, 99)).toMatchObject({ ok: false, reason: "out_of_range" });
+  });
+  it("מיקום שלילי גדול מהרשימה (לפני ההתחלה) → out_of_range", () => {
+    expect(resolveProjectByIndex(ordered, -99)).toMatchObject({ ok: false, reason: "out_of_range" });
+  });
+  it("אינדקס לא שלם (לדוגמה 1.5) → out_of_range, לא מתעגל בשקט", () => {
+    expect(resolveProjectByIndex(ordered, 1.5)).toMatchObject({ ok: false, reason: "out_of_range" });
+  });
+  it("רשימה ריקה → out_of_range לכל מיקום", () => {
+    expect(resolveProjectByIndex([], 1)).toMatchObject({ ok: false, reason: "out_of_range" });
+  });
+
+  /**
+   * ההוכחה המרכזית לדרישה 1 ("אם אי אפשר להבטיח — אל תנחש, החזר הבהרה"): שני פרויקטים עם ערכי
+   * (overdue,stuck,open) זהים — הסדר היחסי ביניהם לא מובטח-לפי-ערך בין שתי קריאות fetch נפרדות
+   * (תלוי בסדר ה-items מ-Monday). resolveProjectByIndex מזהה את זה ומסרב לנחש.
+   */
+  it("tie בערכים (overdue/stuck/open זהים) במיקום המבוקש → ambiguous_order, לא ניחוש", () => {
+    const tied: PersonProjectBreakdown[] = [
+      { project: "פרויקט X", projectId: "x", open: 3, overdue: 1, stuck: 0, blocking: 0, dueToday: 0 },
+      { project: "פרויקט Y", projectId: "y", open: 3, overdue: 1, stuck: 0, blocking: 0, dueToday: 0 },
+    ];
+    const r = resolveProjectByIndex(tied, 1);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("ambiguous_order");
+    expect(new Set(r.candidates!.map((c) => c.projectId))).toEqual(new Set(["x", "y"]));
+  });
+
+  it("tie קיים ברשימה אבל לא במיקום המבוקש — עדיין פותר דטרמיניסטית (ה-tie לא רלוונטי לשאלה)", () => {
+    const mixedTies: PersonProjectBreakdown[] = [
+      { project: "יחיד בראש", projectId: "solo", open: 9, overdue: 5, stuck: 0, blocking: 0, dueToday: 0 },
+      { project: "תיקו 1", projectId: "t1", open: 1, overdue: 0, stuck: 0, blocking: 0, dueToday: 0 },
+      { project: "תיקו 2", projectId: "t2", open: 1, overdue: 0, stuck: 0, blocking: 0, dueToday: 0 },
+    ];
+    expect(resolveProjectByIndex(mixedTies, 1)).toMatchObject({ ok: true, project: { projectId: "solo" } });
+    expect(resolveProjectByIndex(mixedTies, 2)).toMatchObject({ ok: false, reason: "ambiguous_order" });
+  });
+});
+
+describe("buildPersonFullDetail — פירוט משימות אמיתי לכל הפרויקטים בבת אחת ('תפרק לי את כל המשימות שלו')", () => {
+  it("מחזיר משימות בפועל (לא רק counts) לכל פרויקט, בסדר byProject (הכי-חשוב קודם)", () => {
+    const tasks = [
+      task({ projectId: "p1", context: "פרויקט דחוף", name: "משימה א", flags: { overdue: true, daysOverdue: 5 } }),
+      task({ projectId: "p2", context: "פרויקט רגיל", name: "משימה ב" }),
+    ];
+    const breakdown = buildPersonProjectBreakdown(tasks);
+    const full = buildPersonFullDetail(tasks, breakdown.byProject);
+    expect(full.projects).toHaveLength(2);
+    expect(full.projects[0]!.project).toBe("פרויקט דחוף"); // overdue קודם — אותו סדר כמו byProject
+    expect(full.projects[0]!.tasks).toHaveLength(1);
+    expect(full.projects[0]!.tasks[0]).toMatchObject({ name: "משימה א" });
+    expect(full.truncated).toBe(false);
+  });
+
+  it("totalProjects/tasksTotal תמיד מדויקים, גם בלי חיתוך", () => {
+    const tasks = [task({ projectId: "p1" }), task({ projectId: "p1" }), task({ projectId: "p2" })];
+    const breakdown = buildPersonProjectBreakdown(tasks);
+    const full = buildPersonFullDetail(tasks, breakdown.byProject);
+    expect(full.totalProjects).toBe(2);
+    expect(full.tasksTotal).toBe(3);
+    expect(full.tasksShown).toBe(3);
+    expect(full.projectsShown).toBe(2);
+  });
+
+  it("רשימה ריקה — לא קורס, הכל אפסים, לא truncated", () => {
+    const full = buildPersonFullDetail([], []);
+    expect(full.projects).toEqual([]);
+    expect(full.totalProjects).toBe(0);
+    expect(full.tasksTotal).toBe(0);
+    expect(full.truncated).toBe(false);
+  });
+
+  /**
+   * דרישה 2: חיתוך-כולל חייב להיות מפורש (truncated=true + tasksShown/tasksTotal מדויקים),
+   * לא "סיכום שקט" — בדיוק התקלה שהביאה לכל התיקון הזה. החיתוך בגבולות-פרויקט (לא מפרק פרויקט
+   * לשניים), כדי שלא יוצג פרויקט "חצי" בלי האזהרה המתאימה.
+   */
+  it("חיתוך מפורש כש-סכום המשימות על פני כל הפרויקטים עובר את PERSON_FULL_DETAIL_CAP", () => {
+    // כל פרויקט עם 30 משימות (מתחת לתקרת ה-40 של drilldown עצמו) — 6 פרויקטים = 180 > 150 (ה-cap)
+    const perProject = 30;
+    const projectCount = Math.ceil((PERSON_FULL_DETAIL_CAP + 10) / perProject);
+    const tasks = Array.from({ length: projectCount }, (_, p) =>
+      Array.from({ length: perProject }, () => task({ projectId: `p${p}`, context: `פרויקט ${p}` })),
+    ).flat();
+    const breakdown = buildPersonProjectBreakdown(tasks);
+    const full = buildPersonFullDetail(tasks, breakdown.byProject);
+
+    expect(full.truncated).toBe(true);
+    expect(full.totalProjects).toBe(projectCount); // מדויק גם כש-truncated
+    expect(full.tasksTotal).toBe(projectCount * perProject); // מדויק גם כש-truncated
+    expect(full.tasksShown).toBeLessThanOrEqual(PERSON_FULL_DETAIL_CAP);
+    expect(full.projectsShown).toBeLessThan(full.totalProjects); // לא כל הפרויקטים הוצגו
+    // אין פרויקט "חצי" — כל פרויקט שהוצג, הוצג עם כל 30 המשימות שלו (מתחת לתקרת ה-drilldown)
+    for (const p of full.projects) {
+      expect(p.tasks.length).toBe(perProject);
+      expect(p.taskListTruncated).toBe(false);
+    }
+  });
+
+  it("פרויקט בודד שעובר את PERSON_BYPROJECT_CAP (40) שלו — taskListTruncated=true על אותו פרויקט", () => {
+    const n = PERSON_BYPROJECT_CAP + 5;
+    const tasks = Array.from({ length: n }, () => task({ projectId: "p1", context: "פרויקט גדול" }));
+    const breakdown = buildPersonProjectBreakdown(tasks);
+    const full = buildPersonFullDetail(tasks, breakdown.byProject);
+    expect(full.projects).toHaveLength(1);
+    expect(full.projects[0]!.taskListTruncated).toBe(true);
+    expect(full.projects[0]!.tasks.length).toBe(PERSON_BYPROJECT_CAP);
+    expect(full.truncated).toBe(true);
   });
 });
 

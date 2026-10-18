@@ -2,182 +2,387 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>העוזר התפעולי — גוטליב אדריכלים</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ManagerAgent — גוטליב אדריכלים</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Heebo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap">
 <style>
+/* ===== Design tokens (Minimal Professional) ===== */
+:root{
+  --font-family:'Heebo',system-ui,sans-serif;
+  --font-size-base:15px; --font-size-sm:14px; --font-size-xs:13px; --font-size-2xs:12px;
+  --line-height:1.6; --line-height-mobile:1.55;
+
+  --color-bg:#FBFBFA; --color-surface:#FFFFFF; --color-surface-muted:#F6F6F4;
+  --color-sidebar-bg:#F3F3F1; --color-nav-active:#E5E5E1; --color-search-bg:#EAEAE7;
+  --color-avatar-bg:#DCDCD7; --color-user-bubble:#EFEFEC; --color-skeleton:#EDEDEA;
+
+  --color-text:#1C1D1F; --color-text-secondary:#3C4043; --color-text-muted:#5F6368;
+  --color-text-subtle:#6B6F74; --color-text-inverse:#FBFBFA; --color-link:#1F4FA3;
+
+  --color-border:#E6E6E3; --color-border-soft:#EDEDEA; --color-border-input:#DCDCD8;
+  --color-border-sidebar-footer:#E2E2DE;
+
+  --color-primary:#1C1D1F; --color-on-primary:#FFFFFF;
+
+  --status-progress-fg:#1F4FA3; --status-progress-dot:#2F66C9;
+  --status-waiting-fg:#7A4F00;  --status-waiting-dot:#D49B2B;
+  --status-done-fg:#24683F;     --status-done-dot:#3A9A60;
+  --status-late-fg:#A8231A;     --status-late-dot:#D33A2C;
+  --status-todo-fg:#5F6368;     --status-todo-dot:#A0A4A8;
+  --status-online-dot:#3A9A60;
+
+  --approval-border:#D5DBE8; --approval-head-bg:#F2F5FB; --approval-head-fg:#1F3F82;
+
+  --success-bg:#EEF6F0; --success-border:#CFE5D6; --success-icon:#24683F; --success-title:#1D5634; --success-text:#2F4A39;
+  --error-bg:#FCF1EF; --error-border:#F0D2CD; --error-icon:#A8231A; --error-title:#8E1D15; --error-text:#5A2E29; --error-btn-border:#E2B8B1;
+
+  --radius-sm:8px; --radius-md:10px; --radius-lg:12px; --radius-xl:16px; --radius-bubble:18px; --radius-pill-mobile:24px;
+  --sidebar-width:240px; --thread-max-width:780px; --header-height:56px; --touch-target:44px;
+  --shadow-composer:0 1px 2px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.05);
+}
+@media (prefers-color-scheme:dark){
   :root{
-    --paper:#F5F7F9; --surface:#FFFFFF; --surface-alt:#EEF2F5;
-    --ink:#18242F; --ink-soft:#566673; --ink-faint:#8A98A3;
-    --line:#D5DCE3; --line-strong:#A9B4BF;
-    --accent:#2E6AAF; --accent-ink:#fff; --accent-soft:#e7eef7;
-    --bubble-me:#2E6AAF; --bubble-bot:#FFFFFF;
-    --overdue:#B23A3A; --overdue-soft:#f6e5e5;
-    --warn:#A96A11; --warn-soft:#f5ecdd; --ok:#2C7A68;
-    --shadow:0 1px 2px rgba(24,36,47,.05),0 8px 24px rgba(24,36,47,.06);
+    --color-bg:#14161A; --color-surface:#1C1F24; --color-surface-muted:#20242A;
+    --color-sidebar-bg:#191B20; --color-nav-active:#2A2D33; --color-search-bg:#242730;
+    --color-avatar-bg:#343840; --color-user-bubble:#2A2D33; --color-skeleton:#2A2D33;
+
+    --color-text:#EDEEF0; --color-text-secondary:#C7CAD0; --color-text-muted:#9AA0A8;
+    --color-text-subtle:#767C85; --color-text-inverse:#14161A; --color-link:#6FA3E0;
+
+    --color-border:#2C2F36; --color-border-soft:#262930; --color-border-input:#3A3E46;
+    --color-border-sidebar-footer:#2C2F36;
+
+    --color-primary:#EDEEF0; --color-on-primary:#14161A;
+
+    --status-progress-fg:#7FB0EE; --status-progress-dot:#5B93DD;
+    --status-waiting-fg:#E0AE5C;  --status-waiting-dot:#D49B2B;
+    --status-done-fg:#6FCB90;     --status-done-dot:#3A9A60;
+    --status-late-fg:#EB7A70;     --status-late-dot:#D33A2C;
+    --status-todo-fg:#9AA0A8;     --status-todo-dot:#6B7078;
+    --status-online-dot:#5DB6A0;
+
+    --approval-border:#38405A; --approval-head-bg:#1E2638; --approval-head-fg:#9CC0F5;
+
+    --success-bg:#17261D; --success-border:#2B4A36; --success-icon:#6FCB90; --success-title:#8FE0AC; --success-text:#B9E6C6;
+    --error-bg:#2A1917; --error-border:#4A2B27; --error-icon:#EB7A70; --error-title:#F29A91; --error-text:#E8BDB8; --error-btn-border:#5A3530;
+
+    --shadow-composer:0 1px 2px rgba(0,0,0,0.4), 0 6px 20px rgba(0,0,0,0.45);
   }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --paper:#0D141C; --surface:#151F29; --surface-alt:#1B2833;
-      --ink:#E3E9EE; --ink-soft:#94A3AF; --ink-faint:#6C7B87;
-      --line:#29373F; --line-strong:#3C4C55;
-      --accent:#6FA8DD; --accent-ink:#0D141C; --accent-soft:#1c2c3c;
-      --bubble-me:#2E6AAF; --bubble-bot:#1B2833;
-      --overdue:#E4736B; --overdue-soft:#3a2422;
-      --warn:#DBA654; --warn-soft:#332a1b; --ok:#5DB6A0;
-      --shadow:0 1px 2px rgba(0,0,0,.25),0 10px 30px rgba(0,0,0,.3);
-    }
-  }
-  *{box-sizing:border-box}
-  html,body{height:100%}
-  body{margin:0;background:var(--paper);color:var(--ink);font-family:"Heebo","Assistant",system-ui,sans-serif;line-height:1.6;display:flex;flex-direction:column}
-  a{color:var(--accent)}
-  [hidden]{display:none!important}
-  button.link{background:none;border:none;color:var(--accent);cursor:pointer;font:inherit;font-size:.82rem;padding:0}
+}
 
-  /* ---------- login ---------- */
-  .login{max-width:420px;margin:12vh auto 0;padding:0 1.2rem;text-align:center}
-  .brand{font-family:"IBM Plex Mono",monospace;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0}
-  .login h1{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:2rem;margin:.2rem 0 .1rem}
-  .login p{color:var(--ink-soft);margin-top:0}
-  .names{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:1.6rem 0}
-  .name-btn{padding:.8rem;border:1.5px solid var(--line-strong);background:var(--surface);border-radius:4px;cursor:pointer;font:inherit;font-size:1rem;box-shadow:var(--shadow)}
-  .name-btn:hover{border-color:var(--accent);color:var(--accent)}
-  .name-btn small{display:block;color:var(--ink-faint);font-size:.72rem;margin-top:.15rem}
-  .err{color:var(--overdue);font-size:.85rem;min-height:1.2em}
+/* ===== Layout ===== */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:var(--font-family);font-size:var(--font-size-base);line-height:var(--line-height);color:var(--color-text);background:var(--color-bg)}
+button,input,textarea{font:inherit;color:inherit}
+[hidden]{display:none!important}
+a{color:var(--color-link)}
 
-  /* ---------- app shell ---------- */
-  #app{flex:1;display:flex;flex-direction:column;min-height:0;max-width:780px;width:100%;margin:0 auto}
-  header{border-bottom:1.5px solid var(--line-strong);padding:.7rem clamp(.8rem,3vw,1.4rem) .6rem;background:var(--paper)}
-  .h-row{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap}
-  h1{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.25rem;margin:0}
-  .role{color:var(--ink-soft);font-size:.82rem;flex:1 1 100%}
-  .h-actions{display:flex;gap:.9rem;margin-inline-start:auto}
+.app{display:flex;height:100vh;height:100dvh;overflow:hidden}
+.app__sidebar{flex:0 0 var(--sidebar-width);overflow-y:auto}
+.app__main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+.app__scroll{flex:1 1 auto;overflow-y:auto}
+.thread{width:100%;max-width:var(--thread-max-width);margin:0 auto;padding:36px 24px 24px;display:flex;flex-direction:column;gap:36px}
+.only-mobile{display:none!important}
+.sidebar-backdrop{display:none}
 
-  /* ---------- chat ---------- */
-  #chat{flex:1;overflow-y:auto;padding:1rem clamp(.8rem,3vw,1.4rem);display:flex;flex-direction:column;gap:.7rem}
-  .msg{max-width:80%;padding:.55rem .85rem;border-radius:14px;white-space:pre-wrap;word-break:break-word;box-shadow:var(--shadow);font-size:.95rem}
-  .msg.me{align-self:flex-start;background:var(--bubble-me);color:#fff;border-bottom-right-radius:4px}
-  .msg.bot{align-self:flex-end;background:var(--bubble-bot);border:1px solid var(--line);border-bottom-left-radius:4px}
-  .msg.bot.intro{border-style:dashed}
-  /* פנייה יזומה של הבקרה — בולטת, עם פס צד */
-  .msg.bot.nudge{align-self:flex-end;border-right:3px solid var(--accent);background:var(--surface-alt)}
-  .msg.bot.nudge .nudge-tag{display:block;font-size:.7rem;letter-spacing:.04em;color:var(--accent);margin-bottom:.3rem}
-  /* בקשת אישור למוטי — בולטת יותר מנודג' רגיל */
-  .msg.bot.approval{align-self:flex-end;max-width:92%;border-right:3px solid var(--warn);background:var(--warn-soft)}
-  .msg.bot.approval .nudge-tag{color:var(--warn)}
-  .appr-btns{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
-  .appr-btns .chip{background:var(--surface)}
-  .appr-btns .appr-ok{border-color:var(--ok);color:var(--ok)}
-  .appr-btns .appr-no{border-color:var(--overdue);color:var(--overdue)}
-  .appr-instr{display:flex;gap:.4rem;margin-top:.5rem}
-  .appr-instr textarea{flex:1;font:inherit;font-size:.85rem;padding:.4rem .6rem;border:1.5px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--ink);resize:vertical;min-height:2.2rem}
-  .appr-err{color:var(--overdue);font-size:.8rem;margin-top:.4rem}
-  .appr-thread{margin-top:.5rem;padding-top:.4rem;border-top:1px dashed var(--line-strong);display:flex;flex-direction:column;gap:.25rem}
-  .appr-msg{font-size:.85rem}
-  .appr-msg-mgr b{color:var(--warn)}
-  .appr-msg-emp b{color:var(--accent)}
-  #toast{position:fixed;inset-block-start:.8rem;inset-inline:0;margin:auto;width:max-content;max-width:90vw;
-    background:var(--accent);color:#fff;padding:.5rem 1rem;border-radius:999px;font-size:.85rem;box-shadow:var(--shadow);
-    z-index:50;opacity:0;transform:translateY(-8px);transition:opacity .2s,transform .2s;pointer-events:none}
-  #toast.show{opacity:1;transform:translateY(0)}
-  .acts{align-self:flex-end;max-width:80%;display:flex;flex-direction:column;gap:.25rem}
-  .act-note{font-size:.78rem;color:var(--ok);background:var(--surface-alt);border-radius:8px;padding:.2rem .6rem}
-  .typing{align-self:flex-end;color:var(--ink-faint);font-size:.85rem;padding:.3rem .5rem}
-  .brk{align-self:center;font-size:.72rem;color:var(--ink-faint);letter-spacing:.06em;margin:.6rem 0;padding:.1rem .8rem;border-top:1px solid var(--line);border-bottom:1px solid var(--line);width:100%;text-align:center}
-  .chips{display:flex;gap:.4rem;flex-wrap:wrap;align-self:flex-end;margin-top:.2rem}
-  .chip{font:inherit;font-size:.82rem;padding:.25rem .7rem;border:1.5px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);border-radius:999px;cursor:pointer}
-  .chip:hover{border-color:var(--accent);color:var(--accent)}
+/* ===== Icon button ===== */
+.icon-btn{position:relative;width:var(--touch-target);height:var(--touch-target);border:0;background:transparent;border-radius:var(--radius-sm);color:var(--color-text-muted);display:grid;place-items:center;cursor:pointer;padding:0}
+.icon-btn--sm{width:36px;height:36px}
+.icon-btn--strong{color:var(--color-text)}
+.badge{position:absolute;top:4px;inset-inline-end:4px;min-width:16px;height:16px;padding:0 3px;border-radius:999px;background:var(--status-late-dot);color:#fff;font-size:10px;line-height:16px;text-align:center;display:none}
+.icon-btn.has .badge{display:block}
 
-  /* ---------- composer ---------- */
-  form{display:flex;gap:.5rem;padding:.7rem clamp(.8rem,3vw,1.4rem);border-top:1.5px solid var(--line-strong);background:var(--paper)}
-  #input{flex:1;font:inherit;font-size:.95rem;padding:.55rem .8rem;border:1.5px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--ink);resize:none;max-height:6rem}
-  #send{flex:0 0 auto;font:inherit;padding:0 1.1rem;border:none;border-radius:999px;background:var(--accent);color:var(--accent-ink);cursor:pointer;font-weight:600}
-  #send:disabled{opacity:.5;cursor:default}
+/* ===== Sidebar ===== */
+.sidebar{background:var(--color-sidebar-bg);border-left:1px solid var(--color-border);padding:16px 12px;display:flex;flex-direction:column;gap:18px}
+.sidebar__brand-row{display:flex;align-items:center;justify-content:space-between;padding:0 6px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand__mark{width:28px;height:28px;border-radius:8px;background:var(--color-primary);color:var(--color-text-inverse);display:grid;place-items:center;font-weight:700;font-size:14px}
+.brand__name{font-weight:600;font-size:15px}
 
-  /* ---------- oversight overlay ---------- */
-  #oversight,#history,#notifOverlay{position:fixed;inset:0;background:var(--paper);overflow-y:auto;padding:1.2rem clamp(.8rem,4vw,2rem) 3rem;z-index:10}
-  #oversight .close,#history .close,#notifOverlay .close{position:sticky;top:0;margin-inline-start:auto;display:block}
-  .ov-wrap{max-width:860px;margin:0 auto}
-  #histList{display:flex;flex-direction:column;gap:.5rem;margin-top:.8rem}
-  .hist-row{display:flex;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);overflow:hidden}
-  .hist-row:hover{border-color:var(--accent)}
-  .hist-row.current{border-inline-start:3px solid var(--accent)}
-  .hist-main{flex:1;text-align:right;background:none;border:none;font:inherit;cursor:pointer;padding:.7rem .9rem;color:var(--ink)}
-  .hist-del{flex:0 0 auto;background:none;border:none;border-inline-start:1px solid var(--line);color:var(--ink-faint);font:inherit;font-size:.8rem;cursor:pointer;padding:0 .85rem}
-  .hist-del:hover{background:var(--overdue-soft);color:var(--overdue)}
-  .hist-title{font-weight:600;font-size:.95rem;color:var(--ink)}
-  .hist-meta{font-size:.78rem;color:var(--ink-faint);margin-top:.15rem}
-  .sec-title{font-family:"Frank Ruhl Libre",Georgia,serif;font-weight:700;font-size:1.15rem;margin:1.6rem 0 .4rem}
-  .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow)}
-  table{border-collapse:collapse;width:100%;font-size:.88rem}
-  th,td{text-align:right;padding:.5rem .7rem;border-bottom:1px solid var(--line);white-space:nowrap}
-  thead th{background:var(--surface-alt);font-size:.78rem;color:var(--ink-soft);border-bottom:1.5px solid var(--line-strong)}
-  td.num{font-variant-numeric:tabular-nums;text-align:center}
-  td.num.hot{color:var(--overdue);font-weight:700}
-  .proj{background:var(--surface);border:1px solid var(--line);border-inline-start:3px solid var(--warn);border-radius:3px;padding:.6rem .9rem;margin-bottom:.5rem;box-shadow:var(--shadow)}
-  .proj-top{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
-  .proj-sub{font-size:.82rem;color:var(--ink-soft);margin-top:.15rem}
-  .pchips{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}
-  .pchip{font-size:.75rem;padding:.1rem .5rem;border-radius:999px;background:var(--surface-alt);color:var(--ink-soft)}
-  .pchip.hot{background:var(--overdue-soft);color:var(--overdue);font-weight:600}
+.new-chat-btn{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 14px;border:1px solid var(--color-border-input);background:var(--color-surface);border-radius:var(--radius-md);font-size:var(--font-size-sm);font-weight:500;color:var(--color-text);cursor:pointer}
 
-  #notif{margin-top:.8rem;display:flex;flex-direction:column;gap:.5rem}
-  #notifBtn.has{color:var(--overdue);font-weight:700}
-  .nt{background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:.6rem .8rem;font-size:.9rem;white-space:pre-wrap}
-  .nt.briefing{background:var(--accent-soft);border-color:var(--accent)}
-  .nt.eod_summary{background:var(--accent-soft);border-color:var(--accent)}
-  .nt.nudge{background:var(--accent-soft);border-color:var(--accent)}
-  .nt-head{font-weight:700;font-size:.8rem;margin-bottom:.2rem}
-  #notif .dismiss{align-self:flex-start;font:inherit;font-size:.8rem;background:none;border:none;color:var(--accent);cursor:pointer;padding:0}
-  .nt .dismiss{margin-top:.4rem;font-weight:600}
+.search{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 12px;border-radius:var(--radius-md);background:var(--color-search-bg);color:var(--color-text-muted);font-size:var(--font-size-sm)}
+.search__input{border:0;background:transparent;color:var(--color-text);width:100%;outline:none}
+
+.history{display:flex;flex-direction:column;gap:18px;flex:1;overflow-y:auto}
+.history__group{display:flex;flex-direction:column;gap:2px}
+.history__label{font-size:var(--font-size-2xs);font-weight:500;color:var(--color-text-subtle);padding:0 12px 4px}
+.history__row{display:flex;align-items:center;gap:2px}
+.history__item{flex:1;min-width:0;display:block;text-align:right;padding:9px 12px;border:0;border-radius:var(--radius-sm);background:none;color:var(--color-text-secondary);font:inherit;font-size:var(--font-size-sm);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.history__item[aria-current="page"]{background:var(--color-nav-active);color:var(--color-text);font-weight:500}
+.history__del{flex:none;width:28px;height:28px;border:0;background:transparent;color:var(--color-text-subtle);border-radius:var(--radius-sm);cursor:pointer;display:grid;place-items:center;opacity:0;transition:opacity .15s}
+.history__row:hover .history__del,.history__row:focus-within .history__del{opacity:1}
+@media (hover:none){.history__del{opacity:1}}
+.history__empty{padding:6px 12px;font-size:var(--font-size-sm);color:var(--color-text-subtle)}
+
+.user-card{display:flex;align-items:center;gap:10px;padding:10px 8px;border-top:1px solid var(--color-border-sidebar-footer)}
+.user-card__avatar{flex:none;width:32px;height:32px;border-radius:50%;background:var(--color-avatar-bg);display:grid;place-items:center;font-weight:600;font-size:var(--font-size-sm)}
+.user-card__text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.user-card__name{font-size:var(--font-size-sm);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.user-card__org{font-size:var(--font-size-2xs);color:var(--color-text-subtle)}
+.user-card__actions{display:flex;gap:2px;flex:none}
+
+/* ===== Top bar ===== */
+.topbar{flex:none;height:var(--header-height);padding:0 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--color-border-soft)}
+.topbar__title{margin:0;font-size:15px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar__actions{display:flex;align-items:center;gap:4px}
+
+/* ===== Messages ===== */
+.msg-user{align-self:flex-end;max-width:75%;background:var(--color-user-bubble);padding:10px 16px;border-radius:var(--radius-bubble);white-space:pre-wrap;word-break:break-word}
+.msg-agent{display:flex;gap:14px}
+.msg-agent__avatar{flex:none;width:28px;height:28px;border-radius:50%;background:var(--color-primary);color:var(--color-text-inverse);display:grid;place-items:center;font-weight:700;font-size:13px}
+.msg-agent__body{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}
+.msg-agent__text{margin:0;white-space:pre-wrap;word-break:break-word}
+.msg-agent__text a{text-decoration:underline;text-underline-offset:2px}
+
+.action-notes{display:flex;flex-direction:column;gap:4px}
+.action-notes__item{align-self:flex-start;font-size:var(--font-size-xs);color:var(--success-title);background:var(--success-bg);border:1px solid var(--success-border);border-radius:999px;padding:3px 10px}
+
+/* ===== Quick-reply chips ===== */
+.chips{display:flex;flex-wrap:wrap;gap:8px;align-self:flex-end}
+.chip{font:inherit;font-size:var(--font-size-sm);padding:7px 14px;border:1px solid var(--color-border-input);background:var(--color-surface);color:var(--color-text-secondary);border-radius:999px;cursor:pointer}
+.chip:hover{border-color:var(--color-link);color:var(--color-link)}
+
+/* ===== Notice: info / success / error ===== */
+.notice{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:var(--radius-lg);border:1px solid}
+.notice__icon{flex:none;margin-top:2px;display:flex}
+.notice__body{display:flex;flex-direction:column;gap:4px}
+.notice__title{font-weight:600}
+.notice__text{font-size:var(--font-size-sm);white-space:pre-wrap}
+.notice--info{background:var(--approval-head-bg);border-color:var(--approval-border)}
+.notice--info .notice__icon,.notice--info .notice__title{color:var(--approval-head-fg)}
+.notice--info .notice__text{color:var(--color-text-secondary)}
+.notice--success{background:var(--success-bg);border-color:var(--success-border)}
+.notice--success .notice__icon{color:var(--success-icon)}
+.notice--success .notice__title{color:var(--success-title)}
+.notice--success .notice__text{color:var(--success-text)}
+.notice--error{background:var(--error-bg);border-color:var(--error-border)}
+.notice--error .notice__icon{color:var(--error-icon)}
+.notice--error .notice__title{color:var(--error-title)}
+.notice--error .notice__text{color:var(--error-text)}
+
+/* ===== Approval card ===== */
+.approval{border:1px solid var(--approval-border);background:var(--color-surface);border-radius:var(--radius-lg);overflow:hidden}
+.approval__head{display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--approval-head-bg);color:var(--approval-head-fg);font-size:var(--font-size-sm);font-weight:600}
+.approval__list{margin:0;padding:4px 16px;display:flex;flex-direction:column}
+.approval__item{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;padding:12px 0;font-size:var(--font-size-sm)}
+.approval__item+.approval__item{border-top:1px solid var(--color-border-soft)}
+.approval__change{color:var(--color-text-muted)}
+.approval__new{color:var(--color-text);font-weight:700}
+.approval__actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-top:1px solid var(--color-border-soft);background:var(--color-bg)}
+.appr-thread{margin:0;padding:10px 16px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--color-border-soft);font-size:var(--font-size-sm)}
+.appr-msg-mgr b{color:var(--status-waiting-fg)}
+.appr-msg-emp b{color:var(--status-progress-fg)}
+.appr-instr{display:flex;gap:8px;padding:0 16px 12px}
+.appr-instr textarea{flex:1;font:inherit;font-size:var(--font-size-sm);padding:8px 10px;border:1px solid var(--color-border-input);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-text);resize:vertical;min-height:2.2em}
+.appr-err{color:var(--error-title);font-size:var(--font-size-xs);padding:0 16px 10px}
+
+/* ===== Buttons ===== */
+.btn{min-height:40px;padding:0 16px;border-radius:9px;font-size:var(--font-size-sm);cursor:pointer}
+.btn--primary{padding:0 18px;border:0;background:var(--color-primary);color:var(--color-on-primary);font-weight:500}
+.btn--secondary{border:1px solid var(--color-border-input);background:var(--color-surface);color:var(--color-text)}
+.btn--ghost{padding:0 12px;border:0;background:transparent;color:var(--color-text-muted)}
+.btn:disabled{opacity:.5;cursor:default}
+
+/* ===== Loading ===== */
+.loading{flex:1;display:flex;flex-direction:column;gap:10px;padding-top:3px}
+.loading__label{display:flex;align-items:center;gap:10px;font-size:var(--font-size-sm);color:var(--color-text-muted)}
+.loading__dots{display:flex;gap:4px}
+.loading__dots span{width:6px;height:6px;border-radius:50%;background:var(--color-primary);animation:ma-dot 1.2s infinite ease-in-out}
+.loading__dots span:nth-child(2){animation-delay:.2s}
+.loading__dots span:nth-child(3){animation-delay:.4s}
+@keyframes ma-dot{0%,100%{opacity:.2}40%{opacity:1}}
+@media (prefers-reduced-motion:reduce){
+  .loading__dots span{animation:none}
+  .loading__dots span:nth-child(2){opacity:.5}
+  .loading__dots span:nth-child(3){opacity:.2}
+}
+
+/* ===== Composer ===== */
+.composer{flex:none;background:linear-gradient(to top, var(--color-bg) 70%, rgba(0,0,0,0));padding:16px 24px 18px}
+.composer__inner{max-width:var(--thread-max-width);margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.composer__box{display:flex;align-items:flex-end;gap:8px;padding:8px;border:1px solid var(--color-border-input);border-radius:var(--radius-xl);background:var(--color-surface);box-shadow:var(--shadow-composer)}
+.composer__input{flex:1;resize:none;border:0;outline:none;font-size:15px;padding:11px 4px;background:transparent;color:var(--color-text);max-height:200px}
+.composer__send{width:44px;height:44px;border:0;border-radius:12px;background:var(--color-primary);color:var(--color-on-primary);display:grid;place-items:center;cursor:pointer;flex:none}
+.composer__send:disabled{opacity:.4;cursor:default}
+.composer__hint{text-align:center;font-size:var(--font-size-2xs);color:var(--color-text-subtle)}
+
+/* ===== Login ===== */
+.login{max-width:420px;margin:14vh auto 0;padding:0 20px;text-align:center}
+.login__brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:18px}
+.login h1{font-size:1.5rem;font-weight:700;margin:4px 0}
+.login .names{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:28px 0}
+.login .name-btn{min-height:44px;padding:12px;border:1px solid var(--color-border-input);background:var(--color-surface);border-radius:var(--radius-md);cursor:pointer;font:inherit;box-shadow:var(--shadow-composer)}
+.login .name-btn:hover{border-color:var(--color-link);color:var(--color-link)}
+.login .name-btn small{display:block;color:var(--color-text-subtle);font-size:var(--font-size-2xs);margin-top:3px}
+.login__err{color:var(--status-late-fg);font-size:var(--font-size-sm);min-height:1.2em}
+
+/* ===== Toast ===== */
+#toast{position:fixed;top:14px;inset-inline:0;margin:auto;width:max-content;max-width:90vw;background:var(--color-primary);color:var(--color-on-primary);padding:8px 16px;border-radius:999px;font-size:var(--font-size-sm);box-shadow:var(--shadow-composer);z-index:50;opacity:0;transform:translateY(-8px);transition:opacity .2s,transform .2s;pointer-events:none}
+#toast.show{opacity:1;transform:translateY(0)}
+
+/* ===== Overlays (notifications / oversight) ===== */
+#notifOverlay,#oversight{position:fixed;inset:0;background:var(--color-bg);overflow-y:auto;padding:16px clamp(16px,4vw,32px) 48px;z-index:40}
+.overlay-close{margin-inline-start:auto;display:flex}
+.ov-wrap{max-width:860px;margin:0 auto}
+.sec-title{font-weight:700;font-size:1.05rem;margin:24px 0 8px}
+.muted{color:var(--color-text-muted);font-size:var(--font-size-sm)}
+.empty{color:var(--color-text-subtle);font-size:var(--font-size-sm)}
+.err{color:var(--status-late-fg);font-size:var(--font-size-sm)}
+
+.card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:10px 14px;margin-bottom:8px;box-shadow:var(--shadow-composer)}
+.card--flag{border-inline-start:3px solid var(--status-waiting-fg)}
+.card--flag.is-late{border-inline-start-color:var(--status-late-fg)}
+.card__top{display:flex;justify-content:space-between;gap:16px;font-weight:600}
+.card__sub{font-size:var(--font-size-sm);color:var(--color-text-muted);margin-top:4px}
+.card__chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip-tag{font-size:var(--font-size-2xs);padding:2px 10px;border-radius:999px;background:var(--color-surface-muted);color:var(--color-text-muted)}
+.chip-tag.hot{background:var(--error-bg);color:var(--error-title);font-weight:600}
+
+.nt{background:var(--approval-head-bg);border:1px solid var(--approval-border);border-radius:var(--radius-md);padding:10px 14px;font-size:var(--font-size-sm);white-space:pre-wrap;margin-bottom:8px}
+.nt.briefing,.nt.eod_summary{background:var(--color-surface-muted);border-color:var(--color-border)}
+.nt-head{font-weight:700;font-size:var(--font-size-xs);margin-bottom:4px;color:var(--approval-head-fg)}
+.nt.briefing .nt-head,.nt.eod_summary .nt-head{color:var(--color-text-secondary)}
+.nt .dismiss,#notif>.dismiss{margin-top:8px;font:inherit;font-size:var(--font-size-xs);background:none;border:0;color:var(--color-link);cursor:pointer;padding:0;font-weight:600}
+
+.scroll{overflow-x:auto;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md)}
+table{border-collapse:collapse;width:100%;font-size:var(--font-size-sm)}
+th,td{text-align:right;padding:8px 12px;border-bottom:1px solid var(--color-border-soft);white-space:nowrap}
+thead th{background:var(--color-surface-muted);font-size:var(--font-size-xs);color:var(--color-text-muted);border-bottom:1px solid var(--color-border-input)}
+td.num{font-variant-numeric:tabular-nums;text-align:center}
+td.num.hot{color:var(--status-late-fg);font-weight:700}
+
+/* Focus visibility (keyboard) */
+:where(button,a,input,textarea):focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
+
+/* ============ Mobile (≤ 768px) ============ */
+@media (max-width:768px){
+  body{line-height:var(--line-height-mobile)}
+  .only-mobile{display:grid!important}
+  .only-desktop{display:none!important}
+
+  .app__sidebar{position:fixed;top:0;right:0;bottom:0;width:min(300px,85vw);z-index:30;transform:translateX(100%);transition:transform .22s ease;padding-top:calc(16px + env(safe-area-inset-top))}
+  .app.is-sidebar-open .app__sidebar{transform:translateX(0)}
+  .sidebar-backdrop{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.35)}
+  .app.is-sidebar-open .sidebar-backdrop{display:block}
+
+  .thread{padding:20px 16px;gap:20px}
+
+  .topbar{height:calc(var(--header-height) + env(safe-area-inset-top));padding:env(safe-area-inset-top) 6px 0}
+  .topbar__title{flex:1;text-align:center;font-size:15px}
+
+  .msg-user{max-width:80%;padding:9px 14px}
+  .msg-agent{gap:0}
+  .msg-agent__avatar{display:none}
+  .msg-agent__body{gap:12px}
+
+  .composer{background:var(--color-bg);border-top:1px solid var(--color-border-soft);padding:8px 12px calc(28px + env(safe-area-inset-bottom))}
+  .composer__box{align-items:center;gap:6px;padding:5px;border-radius:var(--radius-pill-mobile);box-shadow:none}
+  .composer__send{border-radius:50%}
+  .composer__input{padding:10px 0}
+  .composer__hint{display:none}
+
+  #notifOverlay,#oversight{padding:16px 14px 40px}
+}
 </style>
 </head>
 <body>
 
 <div id="login" class="login" hidden>
-  <p class="brand">גוטליב אדריכלים · סוכן תפעול</p>
-  <h1>העוזר התפעולי</h1>
-  <p>מי את/ה?</p>
-  <div class="names" id="names"></div>
-  <p class="err" id="loginErr"></p>
-</div>
-
-<div id="app" hidden>
-  <header>
-    <div class="h-row">
-      <h1 id="userName">—</h1>
-      <span class="h-actions">
-        <button class="link" id="notifBtn" hidden>התראות</button>
-        <button class="link" id="oversightBtn" hidden>בקרה</button>
-        <button class="link" id="historyBtn">היסטוריית שיחות</button>
-        <button class="link" id="resetBtn">שיחה חדשה</button>
-        <button class="link" id="logoutBtn">יציאה</button>
-      </span>
-      <span class="role" id="userRole"></span>
-    </div>
-  </header>
-
-  <div id="chat"></div>
-
-  <form id="composer">
-    <textarea id="input" rows="1" placeholder="כתוב/י הודעה…" autocomplete="off"></textarea>
-    <button id="send" type="submit">שליחה</button>
-  </form>
-</div>
-
-<div id="history" hidden>
-  <button class="link close" id="histClose">✕ סגירה</button>
-  <div class="ov-wrap">
-    <h2 class="sec-title" style="margin-top:.5rem">היסטוריית שיחות</h2>
-    <div id="histList"></div>
+  <div class="login__brand">
+    <span class="brand__mark" aria-hidden="true">M</span>
+    <span class="brand__name">ManagerAgent</span>
   </div>
+  <h1>העוזר התפעולי</h1>
+  <p class="muted" id="loginSub">מי את/ה?</p>
+  <div class="names" id="names"></div>
+  <p class="login__err" id="loginErr"></p>
+</div>
+
+<div class="app" id="app" hidden>
+  <aside class="app__sidebar sidebar" id="sidebar" aria-label="היסטוריית שיחות">
+    <div class="sidebar__brand-row">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true">M</span>
+        <span class="brand__name">ManagerAgent</span>
+      </div>
+      <button type="button" class="icon-btn" data-action="toggle-sidebar" aria-label="כווץ סרגל צד">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M15 4.5v15"/></svg>
+      </button>
+    </div>
+
+    <button type="button" class="new-chat-btn" data-action="new-chat">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      שיחה חדשה
+    </button>
+
+    <label class="search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></svg>
+      <input type="search" class="search__input" id="historySearch" placeholder="חיפוש בשיחות" aria-label="חיפוש בשיחות">
+    </label>
+
+    <nav class="history" id="historyList" aria-label="שיחות קודמות"></nav>
+
+    <div class="user-card">
+      <span class="user-card__avatar" id="userAvatar" aria-hidden="true"></span>
+      <div class="user-card__text">
+        <span class="user-card__name" id="userName">—</span>
+        <span class="user-card__org" id="userRole"></span>
+      </div>
+      <span class="user-card__actions">
+        <button type="button" class="icon-btn icon-btn--sm" id="oversightBtn" aria-label="בקרה" hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <button type="button" class="icon-btn icon-btn--sm" id="logoutBtn" aria-label="יציאה">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+        </button>
+      </span>
+    </div>
+  </aside>
+  <div class="sidebar-backdrop" data-action="close-sidebar"></div>
+
+  <main class="app__main">
+    <header class="topbar">
+      <button type="button" class="icon-btn icon-btn--strong only-mobile" data-action="toggle-sidebar" aria-label="היסטוריית שיחות" aria-controls="sidebar" aria-expanded="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      </button>
+      <h1 class="topbar__title" id="topbarTitle">ManagerAgent</h1>
+      <span class="topbar__actions">
+        <button type="button" class="icon-btn icon-btn--strong" id="notifBtn" aria-label="התראות" hidden>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8.5a6 6 0 1 0-12 0c0 3.2-1.4 4.8-2 5.7a1 1 0 0 0 .8 1.6h14.4a1 1 0 0 0 .8-1.6c-.6-.9-2-2.5-2-5.7"/><path d="M9.3 19a2.7 2.7 0 0 0 5.4 0"/></svg>
+          <span class="badge" id="notifBadge"></span>
+        </button>
+        <button type="button" class="icon-btn icon-btn--strong only-mobile" data-action="new-chat" aria-label="שיחה חדשה">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>
+        </button>
+      </span>
+    </header>
+
+    <div class="app__scroll" id="scroll">
+      <div class="thread" id="chat" aria-live="polite"></div>
+    </div>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <div class="composer__inner">
+        <div class="composer__box">
+          <textarea class="composer__input" id="input" rows="1" aria-label="הודעה ל-ManagerAgent" placeholder="כתוב/י הודעה, או 'בוקר טוב' להתחלה…" data-placeholder-mobile="כתוב/י הודעה…"></textarea>
+          <button type="submit" class="composer__send" id="send" aria-label="שלח">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+          </button>
+        </div>
+        <span class="composer__hint">Enter לשליחה · Shift+Enter לשורה חדשה</span>
+      </div>
+    </form>
+  </main>
 </div>
 
 <div id="notifOverlay" hidden>
-  <button class="link close" id="notifClose">✕ סגירה</button>
+  <button type="button" class="icon-btn icon-btn--strong overlay-close" id="notifClose" aria-label="סגירה">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+  </button>
   <div class="ov-wrap">
     <h2 class="sec-title" style="margin-top:.5rem">התראות ותזכורות</h2>
     <div id="notif"></div>
@@ -185,13 +390,19 @@
 </div>
 
 <div id="oversight" hidden>
-  <button class="link close" id="ovClose">✕ סגירה</button>
+  <button type="button" class="icon-btn icon-btn--strong overlay-close" id="ovClose" aria-label="סגירה">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+  </button>
   <div class="ov-wrap" id="ovBody"></div>
 </div>
 
 <script>
 const $ = (s, r=document) => r.querySelector(s);
 const el = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const ICON_SHIELD = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M12 9v4M12 16h.01"/></svg>';
+const ICON_ALERT = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>';
+const ICON_X = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>';
+function iconSpan(svg, cls) { const s = document.createElement("span"); if (cls) s.className = cls; s.innerHTML = svg; return s; }
 async function api(path, opts) {
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
   const d = await r.json().catch(() => ({}));
@@ -288,29 +499,46 @@ function addApprovalLive(n) {
   toast("🔔 נדרש אישור חדש");
 }
 function approvalCard(a) {
-  const wrap = el("div", "msg bot approval");
-  wrap.appendChild(el("span", "nudge-tag", "🔔 נדרש אישור"));
+  const wrap = el("article", "approval");
+  wrap.setAttribute("role", "group"); wrap.setAttribute("aria-label", "בקשת אישור");
+
+  const head = el("div", "approval__head");
+  head.appendChild(iconSpan(ICON_SHIELD));
+  head.appendChild(document.createTextNode("נדרש אישור"));
+  wrap.appendChild(head);
+
+  const list = el("div", "approval__list");
   const p = a.payload || {};
   const requester = a.requestedByName || a.requestedBy;
   if (a.kind === "cancellation") {
     // audit 2026-09-17/20: אותו כרטיס, ניסוח נפרד — payload של ביטול הוא {reason,ruleId} בלבד,
     // אין oldDueDate/requestedNewDueDate/priorDeferrals (אלה שדות של דחייה בלבד).
-    wrap.appendChild(document.createTextNode(
-      `${requester} מבקש/ת לבטל / לסמן כלא רלוונטית את המשימה "${a.taskName || a.itemId}".`,
-    ));
+    const row = el("div", "approval__item");
+    row.appendChild(document.createTextNode(`${requester} מבקש/ת לבטל / לסמן כלא רלוונטית את המשימה "${a.taskName || a.itemId}".`));
+    list.appendChild(row);
     if (p.reason) {
-      wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+      const r = el("div", "approval__item");
+      r.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+      list.appendChild(r);
     }
   } else {
-    wrap.appendChild(document.createTextNode(
-      `${requester} מבקש/ת לדחות את המשימה "${a.taskName || a.itemId}" מ-${fmtDate(p.oldDueDate)} ל-${fmtDate(p.requestedNewDueDate)}.`,
-    ));
+    const row = el("div", "approval__item");
+    row.appendChild(document.createTextNode(`${requester} מבקש/ת לדחות את המשימה "${a.taskName || a.itemId}"`));
+    const chg = el("span", "approval__change");
+    chg.innerHTML = `${fmtDate(p.oldDueDate)} ← <strong class="approval__new">${fmtDate(p.requestedNewDueDate)}</strong>`;
+    row.appendChild(chg);
+    list.appendChild(row);
     if (p.reason) {
-      wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+      const r = el("div", "approval__item");
+      r.appendChild(document.createTextNode(`סיבה: ${p.reason}`));
+      list.appendChild(r);
     }
     const priorCount = p.priorDeferrals ? (p.priorDeferrals.beforeOverdue || 0) + (p.priorDeferrals.afterOverdue || 0) : 0;
-    wrap.appendChild(el("br")); wrap.appendChild(document.createTextNode(`דחיות קודמות: ${priorCount}.`));
+    const pr = el("div", "approval__item");
+    pr.appendChild(document.createTextNode(`דחיות קודמות: ${priorCount}.`));
+    list.appendChild(pr);
   }
+  wrap.appendChild(list);
 
   // התכתבות קצרה — שאלה/הנחיה של מוטי ותשובת העובד, לפי הסדר. מוטי לא צריך "לחפש את העובד
   // בצ'אט נפרד" — הכל כאן, בתוך הכרטיס.
@@ -326,16 +554,22 @@ function approvalCard(a) {
     wrap.appendChild(thread);
   }
 
-  const errBox = el("div", "appr-err"); errBox.hidden = true;
-  const showErr = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+  const actions = el("div", "approval__actions");
+  const okBtn = el("button", "btn btn--primary", "✓ אשר"); okBtn.type = "button";
+  const noBtn = el("button", "btn btn--secondary", "✕ לא"); noBtn.type = "button";
+  const moreBtn = el("button", "btn btn--ghost", a.messages && a.messages.length ? "💬 שאל שוב / הנחיה אחרת" : "💬 פרטים / הנחיה אחרת"); moreBtn.type = "button";
+  actions.append(okBtn, noBtn, moreBtn);
+  wrap.appendChild(actions);
 
-  const okBtn = el("button", "chip appr-ok", "✓ אשר");
-  const noBtn = el("button", "chip appr-no", "✕ לא");
-  const moreBtn = el("button", "chip appr-more", a.messages && a.messages.length ? "💬 שאל שוב / הנחיה אחרת" : "💬 פרטים / הנחיה אחרת");
   const instrBox = el("div", "appr-instr"); instrBox.hidden = true;
   const instrInput = document.createElement("textarea"); instrInput.rows = 2; instrInput.placeholder = "מה ההנחיה?";
-  const instrSend = el("button", "chip", "שלח");
+  const instrSend = el("button", "btn btn--secondary", "שלח"); instrSend.type = "button";
   instrBox.append(instrInput, instrSend);
+  wrap.appendChild(instrBox);
+
+  const errBox = el("div", "appr-err"); errBox.hidden = true;
+  const showErr = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+  wrap.appendChild(errBox);
 
   const removeCard = () => { state.approvals = state.approvals.filter(x => x.id !== a.id); renderChat(); };
   const setBusy = (b) => { okBtn.disabled = noBtn.disabled = moreBtn.disabled = b; };
@@ -369,9 +603,6 @@ function approvalCard(a) {
     } catch (e) { showErr(e.message); instrSend.disabled = false; }
   };
 
-  const btns = el("div", "appr-btns");
-  btns.append(okBtn, noBtn, moreBtn);
-  wrap.append(btns, instrBox, errBox);
   return wrap;
 }
 
@@ -396,12 +627,12 @@ async function showLogin() {
     ({ users } = await api("/api/users"));
   } catch (e) {
     // כניסה רק דרך קישור אישי
-    $("#login").querySelector("p:not(.brand)").textContent = "הכניסה למערכת היא דרך קישור אישי.";
+    $("#loginSub").textContent = "הכניסה למערכת היא דרך קישור אישי.";
     $("#loginErr").textContent = "פנה/י ליוכי לקבלת הקישור שלך.";
     return;
   }
   for (const u of users) {
-    const b = el("button", "name-btn");
+    const b = el("button", "name-btn"); b.type = "button";
     b.append(document.createTextNode(u.name), el("small", null, roleHe[u.role] || u.role));
     b.onclick = () => login(u.key);
     box.appendChild(b);
@@ -427,59 +658,132 @@ async function loadSession(id) {
 function activeContext() {
   return state.thread.filter(m => m.role === "user" || m.role === "assistant").slice(-20);
 }
+function setTopbarTitle(t) {
+  $("#topbarTitle").textContent = t && t.trim() ? t : "ManagerAgent";
+}
+
+/* ---------- היסטוריית שיחות (סרגל צד) ---------- */
+function dayLabel(lastAt) {
+  const d = new Date(lastAt.replace(" ", "T") + "Z");
+  const now = new Date();
+  const startOf = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOf(now) - startOf(d)) / 86400000);
+  if (diffDays <= 0) return "היום";
+  if (diffDays === 1) return "אתמול";
+  if (diffDays <= 7) return "השבוע";
+  return "קודם לכן";
+}
+function renderHistoryList(sessions) {
+  const nav = $("#historyList"); nav.innerHTML = "";
+  if (!sessions.length) { nav.appendChild(el("p", "history__empty", "אין שיחות שמורות עדיין")); return; }
+  const order = ["היום", "אתמול", "השבוע", "קודם לכן"];
+  const groups = {};
+  for (const s of sessions) (groups[dayLabel(s.lastAt)] ??= []).push(s);
+  for (const label of order) {
+    const items = groups[label];
+    if (!items || !items.length) continue;
+    const g = el("div", "history__group");
+    g.appendChild(el("span", "history__label", label));
+    for (const s of items) {
+      const row = el("div", "history__row");
+      row.dataset.title = s.title.toLowerCase();
+      const main = el("button", "history__item", s.title); main.type = "button";
+      main.title = s.title;
+      if (s.id === state.session) main.setAttribute("aria-current", "page");
+      main.onclick = async () => {
+        await loadSession(s.id);
+        state.activeNudge = null;
+        setTopbarTitle(s.title);
+        setSidebar(false);
+        renderChat();
+        renderHistoryList(sessions);
+      };
+      const del = el("button", "history__del"); del.type = "button";
+      del.setAttribute("aria-label", "מחיקת שיחה");
+      del.innerHTML = ICON_X;
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`למחוק את השיחה "${s.title}"? אי אפשר לשחזר.`)) return;
+        try {
+          await api("/api/chat/session/delete", { method: "POST", body: JSON.stringify({ id: s.id }) });
+          if (s.id === state.session) { state.session = null; state.thread = []; state.activeNudge = null; setTopbarTitle("שיחה חדשה"); renderChat(); }
+          refreshHistorySidebar();
+        } catch (e) { alert(e.message); }
+      };
+      row.append(main, del);
+      g.appendChild(row);
+    }
+    nav.appendChild(g);
+  }
+  filterHistory($("#historySearch").value);
+}
+async function refreshHistorySidebar() {
+  try { const { sessions } = await api("/api/chat/sessions"); renderHistoryList(sessions || []); }
+  catch { renderHistoryList([]); }
+}
+function filterHistory(q) {
+  q = (q || "").trim().toLowerCase();
+  $("#historyList").querySelectorAll(".history__group").forEach(g => {
+    let any = false;
+    g.querySelectorAll(".history__row").forEach(row => {
+      const match = !q || row.dataset.title.includes(q);
+      row.hidden = !match;
+      if (match) any = true;
+    });
+    g.hidden = !any;
+  });
+}
+$("#historySearch").addEventListener("input", (e) => filterHistory(e.target.value));
+
+/* ---------- סרגל צד נייד ---------- */
+const appEl = $("#app");
+const MOBILE = window.matchMedia("(max-width: 768px)");
+function setSidebar(open) {
+  appEl.classList.toggle("is-sidebar-open", open);
+  document.querySelectorAll('[aria-controls="sidebar"]').forEach(b => b.setAttribute("aria-expanded", String(open)));
+}
+document.addEventListener("click", (e) => {
+  const target = e.target.closest("[data-action]");
+  if (!target) return;
+  const action = target.getAttribute("data-action");
+  if (action === "toggle-sidebar") { if (MOBILE.matches) setSidebar(!appEl.classList.contains("is-sidebar-open")); }
+  else if (action === "close-sidebar") setSidebar(false);
+  else if (action === "new-chat") resetConversation();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") setSidebar(false); });
+function resetConversation() {
+  state.session = null;
+  state.thread = [];
+  state.activeNudge = null;
+  setTopbarTitle("שיחה חדשה");
+  renderChat();
+  setSidebar(false);
+  $("#input").focus();
+}
 
 /* ---------- app ---------- */
 async function startApp() {
   $("#login").hidden = true; $("#app").hidden = false;
+  $("#userAvatar").textContent = state.user.name ? state.user.name[0] : "?";
   $("#userName").textContent = state.user.name;
   $("#userRole").textContent = state.user.roleDescription || "";
   $("#oversightBtn").hidden = !(state.user.canOversee || state.user.canFinance);
+  let sessions = [];
   try {
-    const { latest } = await api("/api/chat/sessions");
-    if (latest) await loadSession(latest);
+    const r = await api("/api/chat/sessions");
+    sessions = r.sessions || [];
+    if (r.latest) {
+      await loadSession(r.latest);
+      const found = sessions.find(s => s.id === r.latest);
+      setTopbarTitle(found ? found.title : "ManagerAgent");
+    }
   } catch {}
+  renderHistoryList(sessions);
   await loadApprovals();
   renderChat();
   loadNotifications(); // טוען גם את הפניות הפתוחות (state.nudges) — לבאדג'/overlay בלבד, לא לגוף השיחה
   openEventStream();
 }
-
-async function renderHistory() {
-  const box = $("#histList"); box.innerHTML = "<p class='role'>טוען…</p>";
-  try {
-    const { sessions } = await api("/api/chat/sessions");
-    box.innerHTML = "";
-    if (!sessions.length) { box.appendChild(el("p", "empty", "אין שיחות שמורות עדיין")); return; }
-    for (const s of sessions) {
-      const row = el("div", "hist-row");
-      if (s.id === state.session) row.classList.add("current");
-      const main = el("button", "hist-main");
-      main.appendChild(el("div", "hist-title", s.title));
-      const d = new Date(s.lastAt.replace(" ", "T") + "Z");
-      main.appendChild(el("div", "hist-meta", d.toLocaleString("he-IL", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" }) + ` · ${s.count} הודעות`));
-      main.onclick = async () => {
-        await loadSession(s.id);
-        state.activeNudge = null;
-        $("#history").hidden = true;
-        renderChat();
-      };
-      const del = el("button", "hist-del", "מחק");
-      del.title = "מחיקת השיחה";
-      del.onclick = async () => {
-        if (!confirm(`למחוק את השיחה "${s.title}"? אי אפשר לשחזר.`)) return;
-        try {
-          await api("/api/chat/session/delete", { method: "POST", body: JSON.stringify({ id: s.id }) });
-          if (s.id === state.session) { state.session = null; state.thread = []; state.activeNudge = null; renderChat(); }
-          renderHistory();
-        } catch (e) { alert(e.message); }
-      };
-      row.append(main, del);
-      box.appendChild(row);
-    }
-  } catch (e) { box.innerHTML = ""; box.appendChild(el("p", "err", e.message)); }
-}
-$("#historyBtn").onclick = () => { $("#history").hidden = false; renderHistory(); };
-$("#histClose").onclick = () => { $("#history").hidden = true; };
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה" };
 // kinds שיכולים לשאת itemId+itemSource+findingKey אמיתיים (לא מומצא) — הכפתור עצמו מותנה בבדיקה
@@ -500,11 +804,11 @@ function notificationToLoopContext(n) {
 /** כרטיס פנייה פתוחה בתוך overlay ה"התראות" — עם כפתור מפורש לפתיחה בשיחה נקייה. הפנייה
  *  עצמה לא נמחקת/נעלמת כאן; היא נשארת "פתוחה" עד שנפתרת בפועל (תשובה בשיחה). */
 function nudgeCard(n) {
-  const d = el("div", "nt nudge");
+  const d = el("div", "nt");
   d.appendChild(el("div", "nt-head", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
   d.appendChild(document.createTextNode(n.body));
   d.appendChild(el("br"));
-  const btn = el("button", "dismiss", "טיפול בשיחה ←");
+  const btn = el("button", "dismiss", "טיפול בשיחה ←"); btn.type = "button";
   btn.onclick = () => openNudgeInChat(n);
   d.appendChild(btn);
   return d;
@@ -515,28 +819,33 @@ function openNudgeInChat(n) {
   state.session = null;
   state.thread = [];
   state.activeNudge = n;
+  setTopbarTitle("שיחה חדשה");
   $("#notifOverlay").hidden = true;
+  setSidebar(false);
   renderChat();
   $("#input").focus();
 }
-// ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות (N)" בכותרת
+// ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות" בכותרת
 // שפותח overlay נפרד (nudgeCard/הכפתור בכרטיס מאפשרים לעבור משם לשיחה במפורש).
 async function loadNotifications() {
   await loadNudges();
   const box = $("#notif"); box.innerHTML = "";
   const btnTop = $("#notifBtn");
+  const badge = $("#notifBadge");
   let list;
   try { ({ notifications: list } = await api("/api/notifications")); }
   catch { list = []; }
   const total = list.length + state.nudges.length;
   if (!total) {
     btnTop.hidden = true;
+    btnTop.classList.remove("has");
+    badge.textContent = "";
     box.appendChild(el("p", "empty", "אין התראות חדשות 👌"));
     return;
   }
   btnTop.hidden = false;
-  btnTop.textContent = `התראות (${total})`;
   btnTop.classList.add("has");
+  badge.textContent = String(total);
   for (const n of state.nudges) box.appendChild(nudgeCard(n));
   for (const n of list) {
     const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : n.kind === "eod_summary" ? " eod_summary" : ""));
@@ -546,13 +855,13 @@ async function loadNotifications() {
     // ר' ACTIONABLE_NOTIF_KINDS למעלה.
     if (ACTIONABLE_NOTIF_KINDS.has(n.kind) && n.itemId && n.itemSource && n.findingKey) {
       d.appendChild(el("br"));
-      const openBtn = el("button", "dismiss", "טיפול בשיחה ←");
+      const openBtn = el("button", "dismiss", "טיפול בשיחה ←"); openBtn.type = "button";
       openBtn.onclick = () => openNudgeInChat(notificationToLoopContext(n));
       d.appendChild(openBtn);
     }
     box.appendChild(d);
   }
-  const btn = el("button", "dismiss", "סמן הכל כנקרא");
+  const btn = el("button", "dismiss", "סמן הכל כנקרא"); btn.type = "button";
   btn.onclick = async () => {
     await api("/api/notifications/seen", { method:"POST" });
     $("#notifOverlay").hidden = true;
@@ -563,69 +872,91 @@ async function loadNotifications() {
 $("#notifBtn").onclick = () => { $("#notifOverlay").hidden = false; };
 $("#notifClose").onclick = () => { $("#notifOverlay").hidden = true; };
 $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST" }); location.reload(); };
-$("#resetBtn").onclick = () => {
-  state.session = null;
-  state.thread = [];
-  state.activeNudge = null;
-  renderChat();
-  $("#input").focus();
-};
 
-function bubble(role, text) {
-  const b = el("div", "msg " + (role === "user" ? "me" : "bot"));
-  if (role === "user") { b.textContent = text; }
-  else {
-    // רינדור מינימלי ובטוח: **מודגש**, ו-[שם](https://...) לקישור לחיץ לפריט ב-Monday (נפתח
-    // בלשונית חדשה). הכול רץ על הטקסט *אחרי* esc() — & < > כבר הומרו ל-entities, אז אין דרך
-    // להזריק HTML גם מתוך שם פריט שמגיע מ-Monday. רק https:// מתקבל כקישור (לא javascript:/data:).
-    const esc = s => s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
-    let html = esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\[([^[\]]+)\]\((https:\/\/[^\s()<>]+)\)/g, (_m, label, url) => {
-      const safeUrl = url.replace(/"/g, "&quot;");
-      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-    });
-    b.innerHTML = html;
-  }
+/* ---------- רינדור השיחה ---------- */
+function renderMarkdown(text) {
+  // רינדור מינימלי ובטוח: **מודגש**, ו-[שם](https://...) לקישור לחיץ לפריט ב-Monday (נפתח
+  // בלשונית חדשה). הכול רץ על הטקסט *אחרי* esc() — & < > כבר הומרו ל-entities, אז אין דרך
+  // להזריק HTML גם מתוך שם פריט שמגיע מ-Monday. רק https:// מתקבל כקישור (לא javascript:/data:).
+  const esc = s => s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+  let html = esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\[([^[\]]+)\]\((https:\/\/[^\s()<>]+)\)/g, (_m, label, url) => {
+    const safeUrl = url.replace(/"/g, "&quot;");
+    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+  return html;
+}
+function userBubble(text) {
+  const b = el("div", "msg-user", text);
   $("#chat").appendChild(b);
   return b;
 }
-function scrollDown() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
+function agentTurn(text, actions) {
+  const art = el("article", "msg-agent");
+  const avatar = el("span", "msg-agent__avatar", "M"); avatar.setAttribute("aria-hidden", "true");
+  art.appendChild(avatar);
+  const body = el("div", "msg-agent__body");
+  if (actions && actions.length) {
+    const notes = el("div", "action-notes");
+    for (const a of actions) notes.appendChild(el("div", "action-notes__item", a));
+    body.appendChild(notes);
+  }
+  const p = el("div", "msg-agent__text");
+  p.innerHTML = renderMarkdown(text);
+  body.appendChild(p);
+  art.appendChild(body);
+  $("#chat").appendChild(art);
+  return art;
+}
+function showTyping() {
+  const art = el("article", "msg-agent"); art.setAttribute("aria-busy", "true");
+  const avatar = el("span", "msg-agent__avatar", "M"); avatar.setAttribute("aria-hidden", "true");
+  art.appendChild(avatar);
+  const loading = el("div", "loading");
+  const label = el("span", "loading__label");
+  const dots = el("span", "loading__dots"); dots.setAttribute("aria-hidden", "true");
+  dots.append(el("span"), el("span"), el("span"));
+  label.appendChild(dots);
+  label.appendChild(document.createTextNode("מקליד…"));
+  loading.appendChild(label);
+  art.appendChild(loading);
+  $("#chat").appendChild(art);
+  return art;
+}
+function scrollDown() { const c = $("#scroll"); c.scrollTop = c.scrollHeight; }
 
 function renderChat() {
   const c = $("#chat"); c.innerHTML = "";
-  const intro = el("div", "msg bot intro",
-    "בוקר טוב 🌤️ אני העוזר התפעולי שלך. תגיד/י לי 'בוקר טוב' ואראה לך מה על הפרק היום, ועדכן/י אותי במהלך היום מה ביצעת — אני אדאג לרשום ב-Monday.");
-  c.appendChild(intro);
+  agentTurn("בוקר טוב 🌤️ אני העוזר התפעולי שלך. תגיד/י לי 'בוקר טוב' ואראה לך מה על הפרק היום, ועדכן/י אותי במהלך היום מה ביצעת — אני אדאג לרשום ב-Monday.");
   for (const m of state.thread) {
-    if (m.actions && m.actions.length && m.role === "assistant") {
-      const box = el("div", "acts");
-      for (const a of m.actions) box.appendChild(el("div", "act-note", a));
-      c.appendChild(box);
-    }
-    bubble(m.role, m.content);
+    if (m.role === "user") userBubble(m.content);
+    else agentTurn(m.content, m.actions);
   }
-  // הפנייה שהמשתמש בחר במפורש לטפל בה (מתוך "התראות") — היחידה שמוצגת כבועת עוזר בשיחה.
+  // הפנייה שהמשתמש בחר במפורש לטפל בה (מתוך "התראות") — היחידה שמוצגת כהודעת-מערכת בשיחה.
   // שאר הפניות הפתוחות לא מוזרקות לכאן בכלל, ר' loadNotifications/nudgeCard.
   if (state.activeNudge) {
     const n = state.activeNudge;
-    const b = el("div", "msg bot nudge");
-    b.appendChild(el("span", "nudge-tag", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
-    b.appendChild(document.createTextNode(n.body));
-    c.appendChild(b);
+    const wrap = el("div", "notice notice--info"); wrap.setAttribute("role", "status");
+    wrap.appendChild(iconSpan(ICON_SHIELD, "notice__icon"));
+    const body = el("div", "notice__body");
+    body.appendChild(el("strong", "notice__title", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
+    body.appendChild(el("span", "notice__text", n.body));
+    wrap.appendChild(body);
+    c.appendChild(wrap);
   }
   // בקשות אישור פתוחות (מוטי בלבד) — כרטיס בולט עם כפתורי הכרעה
   for (const a of state.approvals) c.appendChild(approvalCard(a));
   if (state.thread.length === 0 && !state.activeNudge && state.approvals.length === 0) {
     const chips = el("div", "chips");
     for (const q of ["בוקר טוב", "מה יש לי היום?", "מה דחוף?"]) {
-      const ch = el("button", "chip", q);
+      const ch = el("button", "chip", q); ch.type = "button";
       ch.onclick = () => sendMessage(q);
       chips.appendChild(ch);
     }
     c.appendChild(chips);
   } else if (state.activeNudge) {
     const hint = el("div", "chips");
-    hint.appendChild(el("small", "role", "אפשר לענות כאן: סיימתי · צריך עוד יומיים · מחכה ליועץ · תקוע כי…"));
+    hint.appendChild(el("small", "muted", "אפשר לענות כאן: סיימתי · צריך עוד יומיים · מחכה ליועץ · תקוע כי…"));
     c.appendChild(hint);
   }
   scrollDown();
@@ -637,12 +968,12 @@ async function sendMessage(text) {
   state.busy = true;
   $("#send").disabled = true;
   $("#input").value = "";
+  $("#input").style.height = "auto";
   $("#chat").querySelector(".chips")?.remove();
 
   state.thread.push({ role: "user", content: text });
-  bubble("user", text);
-  const typing = el("div", "typing", "מקליד…");
-  $("#chat").appendChild(typing);
+  userBubble(text);
+  const typing = showTyping();
   scrollDown();
 
   // ניטור ביצועים (2026-10-14): שעון מונוטוני של הדפדפן (performance.now(), לא Date.now()/שעון
@@ -672,13 +1003,11 @@ async function sendMessage(text) {
     const { reply, actions, session, requestId } = data;
     state.session = session;
     typing.remove();
-    if (actions && actions.length) {
-      const box = el("div", "acts");
-      for (const a of actions) box.appendChild(el("div", "act-note", a));
-      $("#chat").appendChild(box);
-    }
-    bubble("assistant", reply);
+    agentTurn(reply, actions || []);
+    const isFirstMessage = state.thread.length === 1;
     state.thread.push({ role: "assistant", content: reply, actions: actions || [] });
+    if (isFirstMessage) setTopbarTitle(text.length > 40 ? text.slice(0, 40) + "…" : text);
+    refreshHistorySidebar();
     // דיווח ביצועים — fire-and-forget, אחרי שהתשובה כבר על המסך; כשל בדיווח לא אמור להפריע למשתמש.
     if (requestId) {
       const clientTotalMs = performance.now() - perfSendStart;
@@ -693,7 +1022,13 @@ async function sendMessage(text) {
     }
   } catch (e) {
     typing.remove();
-    bubble("assistant", "משהו השתבש: " + e.message);
+    const wrap = el("div", "notice notice--error"); wrap.setAttribute("role", "alert");
+    wrap.appendChild(iconSpan(ICON_ALERT, "notice__icon"));
+    const body = el("div", "notice__body");
+    body.appendChild(el("strong", "notice__title", "משהו השתבש"));
+    body.appendChild(el("span", "notice__text", e.message));
+    wrap.appendChild(body);
+    $("#chat").appendChild(wrap);
   } finally {
     state.busy = false;
     $("#send").disabled = false;
@@ -703,18 +1038,26 @@ async function sendMessage(text) {
 }
 
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
-$("#input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+const inputEl = $("#input");
+const desktopPlaceholder = inputEl.getAttribute("placeholder");
+function applyBreakpoint() {
+  setSidebar(false);
+  inputEl.setAttribute("placeholder", MOBILE.matches ? inputEl.dataset.placeholderMobile : desktopPlaceholder);
+}
+MOBILE.addEventListener("change", applyBreakpoint);
+applyBreakpoint();
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + "px";
 });
-$("#input").addEventListener("input", (e) => {
-  e.target.style.height = "auto";
-  e.target.style.height = Math.min(e.target.scrollHeight, 96) + "px";
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(); }
 });
 
 /* ---------- oversight ---------- */
 $("#oversightBtn").onclick = async () => {
   $("#oversight").hidden = false;
-  const body = $("#ovBody"); body.innerHTML = "<p class='role'>טוען… (כמה שניות)</p>";
+  const body = $("#ovBody"); body.innerHTML = "<p class='muted'>טוען… (כמה שניות)</p>";
   try {
     const jobs = state.user.canOversee
       ? [api("/api/control"), api("/api/oversight"), api("/api/crm"), api("/api/commitments"), api("/api/perf/summary")]
@@ -737,10 +1080,10 @@ function renderPerf(p) {
     b.appendChild(el("p", "empty", "אין עדיין נתוני ביצועים בחלון הזה"));
     return;
   }
-  b.appendChild(el("p", "role",
+  b.appendChild(el("p", "muted",
     `${p.totalRequests} בקשות · ${p.errorCount} שגיאות · ${p.cachedCount} מה-cache · ${p.avgAiCallCount ?? "?"} קריאות AI בממוצע`));
   const row = (label, m, unit = "ms") => {
-    const line = el("div", "proj-sub",
+    const line = el("div", "card__sub",
       m.count ? `${label}: חצי ${m.avg}${unit} · P50 ${m.p50}${unit} · P95 ${m.p95}${unit} (n=${m.count})` : `${label}: אין נתונים`);
     b.appendChild(line);
   };
@@ -754,13 +1097,12 @@ $("#ovClose").onclick = () => { $("#oversight").hidden = true; };
 const SEV = { critical:"🔴", high:"🟠", normal:"⚪" };
 
 function findingCard(f) {
-  const box = el("div", "proj");
-  box.style.borderInlineStartColor = f.severity === "critical" ? "var(--overdue)" : "var(--warn)";
-  const top = el("div", "proj-top");
-  top.append(el("span", null, `${SEV[f.severity]} ${f.headline}`), el("span", "role", f.who));
+  const box = el("div", "card card--flag" + (f.severity === "critical" ? " is-late" : ""));
+  const top = el("div", "card__top");
+  top.append(el("span", null, `${SEV[f.severity]} ${f.headline}`), el("span", "muted", f.who));
   box.appendChild(top);
-  box.appendChild(el("div", "proj-sub", f.detail));
-  if (f.url) { const a = el("a", null, "פתח ב-Monday ↗"); a.href = f.url; a.target = "_blank"; a.style.fontSize = ".82rem"; box.appendChild(a); }
+  box.appendChild(el("div", "card__sub", f.detail));
+  if (f.url) { const a = el("a", null, "פתח ב-Monday ↗"); a.href = f.url; a.target = "_blank"; a.style.fontSize = "var(--font-size-xs)"; box.appendChild(a); }
   return box;
 }
 
@@ -769,13 +1111,12 @@ function renderCommitments(list) {
   b.appendChild(el("div", "sec-title", `התחייבויות ללקוחות (${list.length})`));
   const today = new Date().toISOString().slice(0, 10);
   for (const c of list) {
-    const box = el("div", "proj");
     const late = c.dueDate && c.dueDate < today;
-    box.style.borderInlineStartColor = late ? "var(--overdue)" : "var(--warn)";
-    const top = el("div", "proj-top");
-    top.append(el("span", null, `${c.toWhom} — ${c.what}`), el("span", "role", c.by));
+    const box = el("div", "card card--flag" + (late ? " is-late" : ""));
+    const top = el("div", "card__top");
+    top.append(el("span", null, `${c.toWhom} — ${c.what}`), el("span", "muted", c.by));
     box.appendChild(top);
-    box.appendChild(el("div", "proj-sub", (c.dueDate ? (late ? "באיחור · יעד " : "יעד ") + c.dueDate : "בלי תאריך") + (c.project ? ` · ${c.project}` : "")));
+    box.appendChild(el("div", "card__sub", (c.dueDate ? (late ? "באיחור · יעד " : "יעד ") + c.dueDate : "בלי תאריך") + (c.project ? ` · ${c.project}` : "")));
     b.appendChild(box);
   }
 }
@@ -783,18 +1124,19 @@ function renderCommitments(list) {
 function renderCrm(r) {
   const b = $("#ovBody");
   b.appendChild(el("div", "sec-title", "מכירות וכספים"));
-  b.appendChild(el("p", "role", `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
+  b.appendChild(el("p", "muted", `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
   const groups = { "גבייה": [], "מכירות": [], "לידים": [] };
   for (const f of r.findings) (groups[f.project] || (groups[f.project] = [])).push(f);
   for (const [area, list] of Object.entries(groups)) {
     if (!list.length) continue;
-    b.appendChild(el("div", "proj-sub", `${area} — ${list.length}`)).style.fontWeight = "700";
+    const head = el("div", "muted", `${area} — ${list.length}`); head.style.fontWeight = "700";
+    b.appendChild(head);
     for (const f of list.filter(x => x.severity !== "normal")) b.appendChild(findingCard(f));
     const rest = list.filter(x => x.severity === "normal");
     if (rest.length) {
       const d = el("details"); d.style.margin = ".3rem 0 1rem";
-      d.appendChild(el("summary", "role", `עוד ${rest.length} ב${area} (לא דחוף)`));
-      for (const f of rest) d.appendChild(el("div", "proj-sub", `⚪ ${f.headline} — ${f.who}`));
+      d.appendChild(el("summary", "muted", `עוד ${rest.length} ב${area} (לא דחוף)`));
+      for (const f of rest) d.appendChild(el("div", "card__sub", `⚪ ${f.headline} — ${f.who}`));
       b.appendChild(d);
     }
   }
@@ -803,8 +1145,7 @@ function renderCrm(r) {
 function renderControl(r) {
   const b = $("#ovBody");
   b.appendChild(el("div", "sec-title", "בקרה יזומה — פרויקטים ומשימות"));
-  b.appendChild(el("p", "role",
-    `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
+  b.appendChild(el("p", "muted", `${r.counts.critical} קריטי · ${r.counts.high} דחוף · ${r.counts.normal} נוסף`));
   if (r.forManager.length === 0) {
     b.appendChild(el("p", "empty", "אין ממצאים קריטיים או דחופים 👌"));
   }
@@ -812,8 +1153,8 @@ function renderControl(r) {
   const rest = r.findings.filter(f => f.severity === "normal");
   if (rest.length) {
     const d = el("details"); d.style.margin = ".6rem 0 1rem";
-    d.appendChild(el("summary", "role", `עוד ${rest.length} ממצאים (לא דחופים)`));
-    for (const f of rest) d.appendChild(el("div", "proj-sub", `${SEV[f.severity]} ${f.headline} — ${f.who}`));
+    d.appendChild(el("summary", "muted", `עוד ${rest.length} ממצאים (לא דחופים)`));
+    for (const f of rest) d.appendChild(el("div", "card__sub", `${SEV[f.severity]} ${f.headline} — ${f.who}`));
     b.appendChild(d);
   }
 }
@@ -822,8 +1163,7 @@ function renderOversight(r) {
   const b = $("#ovBody");
   const t = r.totals;
   b.appendChild(el("div", "sec-title", "עומס לכל אדם"));
-  b.appendChild(el("p", "role",
-    `סה"כ ${t.openTasks} משימות פתוחות בצוות · ${t.overdue} באיחור · ${t.stuck} תקועות`));
+  b.appendChild(el("p", "muted", `סה"כ ${t.openTasks} משימות פתוחות בצוות · ${t.overdue} באיחור · ${t.stuck} תקועות`));
 
   const sc = el("div", "scroll"); const tbl = el("table");
   tbl.innerHTML = "<thead><tr><th>שם</th><th>פתוחות</th><th>באיחור</th><th>תקועות</th><th>חוסם אחרים</th><th>להיום</th></tr></thead>";
@@ -837,7 +1177,7 @@ function renderOversight(r) {
     tb.appendChild(tr);
     if (p.worst.length) {
       const wr = el("tr"); const td = el("td"); td.colSpan = 6;
-      td.style.cssText = "white-space:normal;font-size:.8rem;color:var(--ink-soft)";
+      td.style.cssText = "white-space:normal;font-size:var(--font-size-xs);color:var(--color-text-muted)";
       td.textContent = "הכי באיחור: " + p.worst.map(w => `${w.name} (${w.daysOverdue} י')`).join(" · ");
       wr.appendChild(td); tb.appendChild(wr);
     }
@@ -846,13 +1186,13 @@ function renderOversight(r) {
 
   b.appendChild(el("div", "sec-title", `פרויקטים שדורשים תשומת לב (${r.projects.length})`));
   for (const p of r.projects) {
-    const box = el("div", "proj");
-    const top = el("div", "proj-top");
-    top.append(el("span", null, p.name), el("span", "role", p.status));
+    const box = el("div", "card card--flag");
+    const top = el("div", "card__top");
+    top.append(el("span", null, p.name), el("span", "muted", p.status));
     box.appendChild(top);
-    box.appendChild(el("div", "proj-sub", `אחראי: ${p.owner}${p.deliveryDate ? " · מסירה: " + p.deliveryDate : ""}`));
-    const ch = el("div", "pchips");
-    for (const f of p.flags) ch.appendChild(el("span", "pchip" + (/תקוע|איחור/.test(f) ? " hot" : ""), f));
+    box.appendChild(el("div", "card__sub", `אחראי: ${p.owner}${p.deliveryDate ? " · מסירה: " + p.deliveryDate : ""}`));
+    const ch = el("div", "card__chips");
+    for (const f of p.flags) ch.appendChild(el("span", "chip-tag" + (/תקוע|איחור/.test(f) ? " hot" : ""), f));
     box.appendChild(ch);
     b.appendChild(box);
   }

@@ -1006,10 +1006,10 @@ export async function runOpsChat(
   // מיידי. הבנר מצורף לתשובה הסופית למטה, לא מוחלף לה.
   const attendanceOn = (opts._attendanceEnabledForUser ?? attendanceEnabledForUser)(user);
   const attendanceBanner = attendanceOn ? checkAttendanceDayStart(user, now).banner : null;
-  // ניסוי Prompt Caching (2026-10-14) — דגל גלובלי (env) + hardcoded ל-"yochi" בלבד (לא רשימת
-  // פיילוט, ר' env.ts). כל משתמש אחר, או יוכי כש-הדגל כבוי, מקבל את ה-buildLoop המקורי בדיוק
-  // כמו קודם (system כמחרוזת רגילה, בלי promptCaching) — אפס שינוי התנהגות.
-  const promptCachingEnabled = env.PROMPT_CACHING_EXPERIMENT_ENABLED && user.key === "yochi";
+  // Prompt Caching (2026-10-14, הורחב לכל המשתמשים 2026-10-18) — נשלט כעת ע"י דגל גלובלי (env)
+  // בלבד, בלי הגבלת user.key. כש-הדגל כבוי, כל משתמש מקבל את ה-buildLoop המקורי בדיוק כמו קודם
+  // (system כמחרוזת רגילה, בלי promptCaching) — אפס שינוי התנהגות.
+  const promptCachingEnabled = env.PROMPT_CACHING_EXPERIMENT_ENABLED;
   // idempotency (audit שלב ה): clientMessageId (מה-UI, ר' OpsChatOptions) הוא הראשי — יציב ברטרי,
   // ולעולם לא מתנגש בין שתי הודעות אמיתיות (גם מקביליות, גם זהות-תוכן) כי כל שליחה מקבלת UUID
   // משלה בלקוח. turnOrdinal (ספירת הודעות מה-DB) הוא fallback בלבד לקוראים שלא שולחים clientMessageId.
@@ -1714,8 +1714,8 @@ export async function runOpsChat(
     capturedPipelineText = null;
     return {
       system: systemPrompt(user, opts.about),
-      // ניסוי Prompt Caching (2026-10-14) — ר' promptCachingEnabled למעלה. כש-כבוי (כל משתמש
-      // חוץ מ-yochi+flag) השדה הזה undefined, ו-agentLoop/anthropic.ts מתנהגים בדיוק כקודם.
+      // Prompt Caching — ר' promptCachingEnabled למעלה. כש-הדגל כבוי השדה הזה undefined,
+      // ו-agentLoop/anthropic.ts מתנהגים בדיוק כקודם.
       ...(promptCachingEnabled ? { promptCaching: buildPromptCachingSplitFor(user, opts.about) } : {}),
       maxTokens: 1024,
       maxTurns: MAX_TURNS,

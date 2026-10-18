@@ -60,7 +60,7 @@ export interface RunModelParams {
   tools: NormTool[];
   maxTokens: number;
   /**
-   * ניסוי Prompt Caching (2026-10-14, מאחורי flag, יוכי בלבד — ר' ops/chat.ts). כש-קיים, ה-provider
+   * Prompt Caching (2026-10-14, מאחורי flag גלובלי לכל המשתמשים — ר' ops/chat.ts). כש-קיים, ה-provider
    * שתומך (רק anthropic.ts — openai.ts מתעלם) בונה את ה-system כמערך בלוקים עם cache_control על
    * הבלוק הקבוע, ומסמן גם את הכלי האחרון ב-tools (סדר prefix של Anthropic: tools→system→messages).
    * volatileSystemSuffix הוא *אותו* תוכן בדיוק של השורה המשתנה (לא הוראה — תאריך/שעה), רק לא

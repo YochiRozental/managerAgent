@@ -1,7 +1,7 @@
 /**
- * ניסוי Prompt Caching (2026-10-14) — חיווט מקצה-לקצה: הדגל + ההגבלה ל-yochi בלבד. דגל ה-env
- * מדומה (mutable, per-test) כדי לבדוק גם flag=on וגם flag=off באותו קובץ בלי תלות בסדר import
- * של קבצי בדיקה אחרים — ר' vi.mock למטה.
+ * Prompt Caching (2026-10-14, הורחב לכל המשתמשים 2026-10-18) — חיווט מקצה-לקצה: הדגל הגלובלי
+ * היחיד שקובע את ההתנהגות (אין יותר הגבלת user.key). דגל ה-env מדומה (mutable, per-test) כדי
+ * לבדוק גם flag=on וגם flag=off באותו קובץ בלי תלות בסדר import של קבצי בדיקה אחרים — ר' vi.mock למטה.
  *
  * READ-ONLY מול Monday (fetchUserOpsTasks מדומה). אפס קריאת AI אמיתית — _runModel מוזרק,
  * ובודק בעצמו (לא רק מניח) מה בדיוק הועבר ל-provider.
@@ -47,7 +47,7 @@ beforeEach(() => {
   env.PROMPT_CACHING_EXPERIMENT_ENABLED = false; // ברירת מחדל — כבוי, כמו בפרודקשן היום
 });
 
-describe("ניסוי Prompt Caching — הגבלת flag + משתמש", () => {
+describe("Prompt Caching — דגל גלובלי לכל המשתמשים", () => {
   it("flag כבוי (ברירת מחדל) — יוכי *לא* מקבל promptCaching, גם בלי שינוי אחר", async () => {
     const yochi = resolveUserByKey("yochi")!;
     const { fn, calls } = captureParams();
@@ -71,13 +71,17 @@ describe("ניסוי Prompt Caching — הגבלת flag + משתמש", () => {
     expect(calls[0]!.promptCaching!.cacheableSystem).not.toMatch(/השעה \d{2}:\d{2}/);
   });
 
-  it("flag פעיל + משתמש *אחר* (דוב) — promptCaching לא מועבר, אין שינוי התנהגות", async () => {
+  it("flag פעיל + משתמש *אחר* (דוב) — promptCaching מועבר, בדיוק כמו ליוכי", async () => {
     env.PROMPT_CACHING_EXPERIMENT_ENABLED = true;
     const dov = resolveUserByKey("dov")!;
     const { fn, calls } = captureParams();
     await runOpsChat(dov, msg("בוקר טוב"), { session: "s3", clientMessageId: "cmid-3", _runModel: fn, _config: TEST_CONFIG });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.promptCaching).toBeUndefined();
+    expect(calls[0]!.promptCaching).toBeDefined();
+    expect(calls[0]!.promptCaching!.cacheableSystem.length).toBeGreaterThan(100);
+    // cacheableSystem של דוב לא מכיל שום דבר מההקשר/ההרשאות של יוכי — כל משתמש מקבל את ה-split
+    // הבנוי מה-system prompt *שלו עצמו* (ר' buildWebPromptCacheSplit), אין שיתוף בין משתמשים.
+    expect(calls[0]!.promptCaching!.cacheableSystem).not.toContain("יוכי");
   });
 
   it("flag פעיל + יוכי, אבל תשובה דרך fallback FAST→SMART — promptCaching מועבר בשני הניסיונות", async () => {

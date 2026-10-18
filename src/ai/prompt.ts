@@ -208,7 +208,7 @@ export interface CacheableWebPrompt {
 }
 
 /**
- * ניסוי Prompt Caching (2026-10-14, מאחורי flag, יוכי בלבד — ר' ops/chat.ts's
+ * Prompt Caching (2026-10-14, מאחורי flag גלובלי לכל המשתמשים — ר' ops/chat.ts's
  * PROMPT_CACHING_EXPERIMENT_ENABLED). מפרק בדיוק את אותו תוכן ש-buildWebPrompt בונה (אותה
  * buildWebPromptLines, אותו dateLine) לשני חלקים, כדי שהחלק הקבוע יהיה ניתן למטמון אצל Anthropic
  * בלי לכלול את השורה היחידה שמשתנה כל דקה. **לא משנה טקסט, סדר, או משמעות של שום הוראה** — ר'

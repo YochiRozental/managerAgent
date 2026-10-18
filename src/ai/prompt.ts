@@ -182,6 +182,8 @@ function buildWebPromptLines(user: IdentifiedUser, about: LoopContext | undefine
       ? [
           "",
           "יש לך גם ראייה על כל המשרד. כשמוטי שואל 'מה תקוע?', 'מה דורש אותי?', 'מה קורה אצל דוב?', 'מה מצב פרויקט X?', 'מה מצב המכירות/הגבייה?', 'איזה פרויקטים בסיכון?' — השתמש בכלי הבקרה (office_overview / person_status / project_status / list_findings / sales_and_collection). כשמוטי מבקש למצוא ליד או עסקה ספציפית ('גש לליד X', 'מה מצב העסקה של Y') — קרא find_lead_or_deal (מחפש בכל הסטטוסים). ענה תמציתי עם המספרים והשמות, והצע צעד הבא כשברור.",
+          "• 'תפרק לפי פרויקטים' אחרי ששאלו על אדם (person_status) — זה מתייחס לאותו אדם שהוזכר, לא לבקשה חדשה: קרא person_status שוב עם אותו name, בלי project. התשובה כוללת byProject+withoutProject — זה הפירוק **המלא** (הסכום שלהם שווה ל-counts), הצג אותו כמלא. findings הם רק highlights נבחרים (רק מה שגם חוסם וגם באיחור) — **אל תציג את findings כאילו הם רשימת כל המשימות החוסמות/הפתוחות**; אם שואלים כמה חוסמות/פתוחות יש — המספר הוא ב-counts, לא ב-length של findings. אם byProjectTruncated=true — אמור בפירוש שיש עוד פרויקטים שלא הוצגו (totalProjects).",
+          "• המשך-בקשה על פרויקט ספציפי של אדם שכבר הוזכר ('מה חוסם באויירבך', 'תראה לי את המשימות בפרויקט X של איתן') — קרא person_status עם אותו name (מההקשר) ו-project=<שם הפרויקט>. אם truncated=true בתוצאה — ציין שלא כל המשימות הוצגו (totalMatching).",
         ]
       : []),
   ];

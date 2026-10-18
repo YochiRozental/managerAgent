@@ -509,6 +509,163 @@ function matchScore(task: OpsTask, q: string): number {
   return words.reduce((s, w) => s + (hay.includes(w) ? 1 : 0), 0);
 }
 
+/**
+ * person_status — פירוק מלא לפי פרויקטים (2026-10-18, המשך audit "פירוט חלקי כאילו מלא").
+ *
+ * שני הסנטינלים הקיימים ל"אין פרויקט" (ר' buildTodayBriefing למעלה, ו-opsRead.ts): "משימת משרד"
+ * (משימה כללית בבורד המשימות, בלי קישור) ו-"פרויקט לא מקושר" (subitem ששלב/פרויקט שלו לא הצליח
+ * להיפתר). שתיהן נכנסות לדלי "ללא פרויקט" אחד, לא לשני דליים — הן שתיהן "העובד לא עובד תחת שום
+ * פרויקט בפריט הזה", רק ממקור שונה.
+ */
+const NO_PROJECT_CONTEXTS = new Set(["משימת משרד", "פרויקט לא מקושר"]);
+function isNoProjectTask(t: DashboardTask): boolean {
+  return !t.projectId && NO_PROJECT_CONTEXTS.has(t.context);
+}
+
+export interface PersonProjectCounts {
+  open: number;
+  overdue: number;
+  stuck: number;
+  blocking: number;
+  dueToday: number;
+}
+export interface PersonProjectBreakdown extends PersonProjectCounts {
+  project: string;
+  projectId?: string;
+}
+export interface PersonTaskBreakdown {
+  /** ממוין overdue→stuck→open יורד, כדי שאם יש חיתוך (byProjectTruncated) הוא יחתוך את הכי-פחות-חשוב. */
+  byProject: PersonProjectBreakdown[];
+  /** true ⇐ יש לעובד יותר פרויקטים מ-PERSON_BYPROJECT_CAP — ר' docstring שם. היום (6 אנשי צוות,
+   *  עד כמה עשרות פרויקטים לאדם) זה לא צפוי לקרות בפועל, אבל חובה לדווח את זה אם כן (לא להציג
+   *  פירוק חלקי כאילו הוא מלא — בדיוק התקלה שהביאה לתיקון הזה). */
+  byProjectTruncated: boolean;
+  /** כמה פרויקטים שונים יש לעובד בפועל — גם אם byProject נחתך, השדה הזה תמיד מדויק. */
+  totalProjects: number;
+  /** קבוצה נפרדת (לא עוד שורה ב-byProject) למשימות בלי שיוך לפרויקט — דרישה מפורשת. */
+  withoutProject: PersonProjectCounts;
+}
+
+/** סף בטיחות — לא אמור להיחתך בפועל היום (אדם בודד לא מגיע לעשרות פרויקטים), אבל קיים כדי שלעולם
+ *  לא נציג "זו הרשימה המלאה" כש-היא לא. ר' byProjectTruncated. */
+export const PERSON_BYPROJECT_CAP = 40;
+
+/**
+ * פונקציה טהורה — פירוק מלא, לא-חלקי, של כל משימות העובד (DashboardTask[], כבר במטמון דרך
+ * getOfficeState — אין כאן שום I/O) לפי פרויקט. ה-counts בכל דלי נספרים *ישירות* מתוך tasks (לא
+ * ממוחזרים מ-oversight.ts/controlScan.ts), ו-byProject+withoutProject הם partition מלא ומוציא-
+ * הדדי של tasks (כל משימה בדיוק בדלי אחד) — לכן סכום הפתוחות על פני byProject+withoutProject שווה
+ * **בהכרח** ל-tasks.length, בלי ספירה כפולה ובלי תלות בעוד חישוב-counts במקום אחר שעלול להתפזר.
+ */
+export function buildPersonProjectBreakdown(tasks: DashboardTask[]): PersonTaskBreakdown {
+  const byProjectMap = new Map<string, PersonProjectBreakdown>();
+  const withoutProject: PersonProjectCounts = { open: 0, overdue: 0, stuck: 0, blocking: 0, dueToday: 0 };
+
+  const bump = (bucket: PersonProjectCounts, t: DashboardTask) => {
+    bucket.open++;
+    if (t.flags.overdue) bucket.overdue++;
+    if (t.flags.stuck) bucket.stuck++;
+    if (t.flags.blocking.length > 0) bucket.blocking++;
+    if (t.flags.dueToday) bucket.dueToday++;
+  };
+
+  for (const t of tasks) {
+    if (isNoProjectTask(t)) {
+      bump(withoutProject, t);
+      continue;
+    }
+    const key = t.projectId ?? t.context;
+    let bucket = byProjectMap.get(key);
+    if (!bucket) {
+      bucket = { project: t.context, projectId: t.projectId, open: 0, overdue: 0, stuck: 0, blocking: 0, dueToday: 0 };
+      byProjectMap.set(key, bucket);
+    }
+    bump(bucket, t);
+  }
+
+  const all = [...byProjectMap.values()].sort(
+    (a, b) => b.overdue - a.overdue || b.stuck - a.stuck || b.open - a.open,
+  );
+  return {
+    byProject: all.slice(0, PERSON_BYPROJECT_CAP),
+    byProjectTruncated: all.length > PERSON_BYPROJECT_CAP,
+    totalProjects: all.length,
+    withoutProject,
+  };
+}
+
+/**
+ * חיפוש מחרוזת-חלקית, case-insensitive, בין ה-byProject buckets שחושבו כבר (לא בין tasks גולמיים)
+ * — רק בין הפרויקטים שבאמת קיימים אצל העובד הזה (לא כל המשרד). scope מכוון, זה מה שהמשתמש ראה
+ * בתשובה הקודמת. **מחזיר buckets שלמים (project+projectId), לא רק שם** — תיקון (2026-10-18, audit
+ * טרום-פריסה): שני byProject buckets יכולים לשתף שם תצוגה זהה (`project`) כש-יש להם projectId
+ * שונה (למשל שגיאת הקלדה/כפילות ב-Monday, או אין projectId כלל והשם זהה במקרה). אם matchPersonProjects
+ * היה מחזיר רק מחרוזות-שם, buildPersonProjectDrilldown לא היה יכול להבחין בין שני הבאקטים האלה
+ * ועלול היה למזג משימות משני פרויקטים שונים לתוך אותה תשובה — בדיוק מה שהדריש' "אין להחזיר משימות
+ * מפרויקט אחר" אוסר. עכשיו: שני באקטים עם שם זהה אבל projectId שונה הם *שתי* התאמות נפרדות (לא
+ * אחת) → נכנסים ל-branch של "יותר מדי התאמות" ונשאלים, לא ממוזגים בשקט.
+ */
+export function matchPersonProjects(byProject: PersonProjectBreakdown[], query: string): PersonProjectBreakdown[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return byProject.filter((p) => p.project.toLowerCase().includes(q));
+}
+
+export interface PersonProjectTaskDetail {
+  itemId: string;
+  name: string;
+  stageName?: string;
+  dueDate?: string;
+  status: string;
+  priority?: string;
+  overdue: boolean;
+  daysOverdue: number;
+  dueToday: boolean;
+  stuck: boolean;
+  blockingCount: number;
+  url: string;
+}
+export interface PersonProjectDrilldown {
+  project: string;
+  tasks: PersonProjectTaskDetail[];
+  /** כמה משימות התאימו בפועל לפרויקט הזה — גם אם tasks נחתך (truncated). */
+  totalMatching: number;
+  truncated: boolean;
+}
+
+/**
+ * פירוט מלא (לא counts) של משימות העובד בפרויקט ספציפי אחד — scope קטן בהגדרה (פרויקט בודד), אבל
+ * עדיין עם cap+truncated מפורש כדי לא להבטיח "השלמות" בלי לבדוק אותה.
+ *
+ * מסנן לפי **אותו מפתח בדיוק** שבו buildPersonProjectBreakdown קיבץ את ה-bucket הזה
+ * (`projectId ?? context`) — לא לפי `context` גולמי. זה מה שמבטיח שלא "יזלגו" לתשובה משימות
+ * מפרויקט *אחר* שרק קורה לחלוק את אותו שם תצוגה (ר' docstring מעל matchPersonProjects).
+ */
+export function buildPersonProjectDrilldown(tasks: DashboardTask[], target: PersonProjectBreakdown): PersonProjectDrilldown {
+  const key = target.projectId ?? target.project;
+  const matching = tasks.filter((t) => !isNoProjectTask(t) && (t.projectId ?? t.context) === key);
+  const limited = matching.slice(0, PERSON_BYPROJECT_CAP);
+  return {
+    project: target.project,
+    tasks: limited.map((t) => ({
+      itemId: t.itemId,
+      name: t.name,
+      stageName: t.stageName,
+      dueDate: t.dueDate,
+      status: t.status,
+      priority: t.priority,
+      overdue: t.flags.overdue,
+      daysOverdue: t.flags.daysOverdue,
+      dueToday: t.flags.dueToday,
+      stuck: t.flags.stuck,
+      blockingCount: t.flags.blocking.length,
+      url: t.url,
+    })),
+    totalMatching: matching.length,
+    truncated: matching.length > limited.length,
+  };
+}
+
 interface ToolDef {
   name: string;
   description: string;
@@ -1213,22 +1370,82 @@ export async function runOpsChat(
       },
       {
         name: "person_status",
-        description: "מצב העבודה של איש צוות מסוים: כמה משימות פתוחות/באיחור/תקועות יש לו, מה הכי באיחור, ואיזה פרויקטים בסיכון קשורים אליו. לשאלות כמו 'מה קורה אצל דוב'.",
+        description:
+          "מצב העבודה של איש צוות מסוים. בלי project: כמה משימות פתוחות/באיחור/תקועות/חוסמות/להיום יש לו, " +
+          "ופירוק **מלא** (byProject + withoutProject, סכומם שווה ל-counts) של כל הפרויקטים שלו — זו התשובה " +
+          "המלאה ל'תפרק לפי פרויקטים', לא findings (findings הן רק highlights נבחרים, לא הרשימה המלאה). " +
+          "עם project: פירוט המשימות בפועל (שם/שלב/תאריך/סטטוס) רק באותו פרויקט אחד של אותו עובד — " +
+          "לשאלות כמו 'מה חוסם באויירבך אצל איתן' אחרי ששמו של העובד כבר ידוע מההקשר.",
         input_schema: {
           type: "object",
-          properties: { name: { type: "string", description: "שם איש הצוות" } },
+          properties: {
+            name: { type: "string", description: "שם איש הצוות" },
+            project: {
+              type: "string",
+              description: "אופציונלי — שם פרויקט (או חלק ממנו) מבין הפרויקטים של העובד הזה, לפירוט המשימות בו בפועל",
+            },
+          },
           required: ["name"],
         },
         run: async (input) => {
           const q = String(input.name ?? "").trim();
-          const [over, ctrl] = await Promise.all([getOversightReport(user), runControlScan()]);
-          const p = over.people.find((x) => x.name.includes(q) || q.includes(x.name.split(" ")[0]!));
-          if (!p) return { error: `לא מצאתי איש צוות בשם "${q}". אפשרויות: ${over.people.map((x) => x.name).join(", ")}` };
+          const projectQuery = typeof input.project === "string" ? input.project.trim() : "";
+          // getOfficeState() בלבד — אותו מטמון (3 דק') ש-getOversightReport/controlScan כבר משתמשים
+          // בו, בלי לעבור דרך oversight.ts: כך ש-counts/byProject/withoutProject כולם נספרים *פעם
+          // אחת* מתוך אותו tasks[] (ר' buildPersonProjectBreakdown) — לא שני חישובים נפרדים שעלולים
+          // להתפזר. runControlScan נשאר, רק ל-findings (highlights, לא השדה המלא).
+          const [office, ctrl] = await Promise.all([getOfficeState(), runControlScan()]);
+          const match = office.perPerson.find(
+            (pp) => pp.member.name.includes(q) || q.includes(pp.member.name.split(" ")[0]!),
+          );
+          if (!match) {
+            return {
+              error: `לא מצאתי איש צוות בשם "${q}". אפשרויות: ${office.perPerson.map((pp) => pp.member.name).join(", ")}`,
+            };
+          }
+          const { member, tasks } = match;
+
+          if (projectQuery) {
+            // matchPersonProjects מחפש בין ה-buckets המחושבים (לא tasks גולמיים) — ר' docstring
+            // שם: שני פרויקטים עם שם זהה אבל projectId שונה הם שתי התאמות נפרדות, לא אחת.
+            const breakdown = buildPersonProjectBreakdown(tasks);
+            const matches = matchPersonProjects(breakdown.byProject, projectQuery);
+            if (matches.length === 0) {
+              return {
+                error: `לא מצאתי פרויקט שמתאים ל"${projectQuery}" אצל ${member.name}.`,
+                availableProjects: breakdown.byProject.map((b) => b.project),
+              };
+            }
+            if (matches.length > 1) {
+              return { hint: "יותר מדי התאמות — איזה מהם?", names: matches.map((m) => m.project) };
+            }
+            const drilldown = buildPersonProjectDrilldown(tasks, matches[0]!);
+            return { name: member.name, ...drilldown };
+          }
+
+          const overdueSorted = tasks.filter((t) => t.flags.overdue).sort((a, b) => b.flags.daysOverdue - a.flags.daysOverdue);
+          const breakdown = buildPersonProjectBreakdown(tasks);
           return {
-            name: p.name,
-            counts: p.counts,
-            worst: p.worst,
-            findings: ctrl.findings.filter((f) => f.who.includes(p.name)).map(fmtFinding),
+            name: member.name,
+            counts: {
+              open: tasks.length,
+              overdue: overdueSorted.length,
+              stuck: tasks.filter((t) => t.flags.stuck).length,
+              blocking: tasks.filter((t) => t.flags.blocking.length > 0).length,
+              dueToday: tasks.filter((t) => t.flags.dueToday).length,
+            },
+            byProject: breakdown.byProject,
+            byProjectTruncated: breakdown.byProjectTruncated,
+            totalProjects: breakdown.totalProjects,
+            withoutProject: breakdown.withoutProject,
+            worst: overdueSorted.slice(0, 3).map((t) => ({
+              name: t.name,
+              context: t.stageName ? `${t.context} › ${t.stageName}` : t.context,
+              dueDate: t.dueDate,
+              daysOverdue: t.flags.daysOverdue,
+              status: t.status,
+            })),
+            findings: ctrl.findings.filter((f) => f.who.includes(member.name)).map(fmtFinding),
           };
         },
       },

@@ -47,6 +47,7 @@ const SAFE_TESTS = [
   "tests/unit/notificationsHistory.test.ts",
   "tests/unit/attendanceReminderText.test.ts",
   "tests/unit/mondayItemUrl.test.ts",
+  "tests/unit/uiHtmlScriptSyntax.test.ts",
   // integration — DB זמני מבודד בלבד
   "tests/integration/loop.test.ts",
   "tests/integration/approvals.test.ts",

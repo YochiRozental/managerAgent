@@ -247,6 +247,10 @@ a{color:var(--color-link)}
 .nt-head{font-weight:700;font-size:var(--font-size-xs);margin-bottom:4px;color:var(--approval-head-fg)}
 .nt.briefing .nt-head,.nt.eod_summary .nt-head{color:var(--color-text-secondary)}
 .nt .dismiss,#notif>.dismiss{margin-top:8px;font:inherit;font-size:var(--font-size-xs);background:none;border:0;color:var(--color-link);cursor:pointer;padding:0;font-weight:600}
+.nt--read{opacity:.55}
+.nt-actions{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px}
+.nt-actions .dismiss{margin-top:0;text-decoration:none;display:inline-block}
+.load-more{display:block;margin:4px auto 12px;font:inherit;font-size:var(--font-size-xs);background:none;border:1px solid var(--color-border);border-radius:var(--radius-md);padding:6px 16px;color:var(--color-text-muted);cursor:pointer}
 
 .scroll{overflow-x:auto;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md)}
 table{border-collapse:collapse;width:100%;font-size:var(--font-size-sm)}
@@ -411,7 +415,7 @@ async function api(path, opts) {
 }
 // activeNudge = הפנייה (אם יש) שהמשתמש בחר במפורש לטפל בה בשיחה הנוכחית — היחידה שמוצגת בגוף
 // הצ'אט. state.nudges (כל הפניות הפתוחות) מוצג רק באזור "התראות", לא בתוך שום שיחה.
-const state = { user: null, session: null, thread: [], busy: false, nudges: [], activeNudge: null, approvals: [], es: null };
+const state = { user: null, session: null, thread: [], busy: false, nudges: [], activeNudge: null, approvals: [], es: null, notifPage: { items: [], hasMore: false }, unseenCount: 0 };
 function fmtDate(iso) {
   if (!iso) return "?";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
@@ -452,7 +456,7 @@ async function loadNudges() {
 }
 function addNudge(n) {
   if (state.nudges.some(x => x.id === n.id)) return;
-  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.source || n.itemSource, taskName: n.taskName, currentDueDateISO: n.currentDueDateISO ?? null, approvalId: n.approvalId ?? null, missedCommitment: n.missedCommitment === true });
+  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.source || n.itemSource, mondayUrl: n.mondayUrl ?? null, taskName: n.taskName, currentDueDateISO: n.currentDueDateISO ?? null, approvalId: n.approvalId ?? null, missedCommitment: n.missedCommitment === true });
   // לא מוזרק לגוף השיחה — רק מעדכן את הבאדג'/overlay של "התראות". ר' loadNotifications.
   loadNotifications();
   toast("📌 פנייה חדשה מהבקרה");
@@ -462,7 +466,7 @@ function addNudge(n) {
 function addApprovalQuestionNudge(n) {
   if (state.nudges.some(x => x.id === n.id)) return;
   const ctx = n.context || {};
-  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource, taskName: null, currentDueDateISO: null, approvalId: ctx.approvalId ?? null });
+  state.nudges.push({ id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource, mondayUrl: n.mondayUrl ?? null, taskName: null, currentDueDateISO: null, approvalId: ctx.approvalId ?? null });
   loadNotifications();
   toast("🧑‍⚖️ מוטי מבקש פרטים");
 }
@@ -785,21 +789,34 @@ async function startApp() {
   openEventStream();
 }
 
-const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה" };
-// kinds שיכולים לשאת itemId+itemSource+findingKey אמיתיים (לא מומצא) — הכפתור עצמו מותנה בבדיקה
-// נוספת בזמן רינדור (n.itemId && n.itemSource && n.findingKey), כי גם בתוך kind actionable ייתכנו
-// שורות ישנות/חלקיות (למשל escalation שנוצרה לפני 2026-09-15, לפני שה-backend צירף context — ר'
-// escalationNotifContext ב-escalation.ts). briefing/weekly נשארים בחוץ: סיכום כללי, לא פריט בודד.
-const ACTIONABLE_NOTIF_KINDS = new Set(["manager_decision", "awaiting_decision", "escalation"]);
+const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה", attendance_reminder:"⏰ תזכורת נוכחות" };
+/** true ⇔ יש להתראה הזו finding אמיתי (itemId+itemSource+findingKey) — רק אז "טיפול בשיחה" עובר
+ *  דרך about/reply_* (מנגנון סגירת-הממצא הקיים, ללא שינוי). שים לב: זה כבר מכיל בדיוק את שלוש
+ *  הקינדים שהיו ב-ACTIONABLE_NOTIF_KINDS הישן (manager_decision/awaiting_decision/escalation) —
+ *  הם היחידים שבפועל נכתבים עם שלושת השדות; הסרת רשימת ה-kinds לא משנה שום התנהגות קיימת, רק
+ *  מוסיפה כיסוי לכל kind עתידי עם אותם שדות. task_assigned/attendance_reminder/briefing/weekly/
+ *  eod_summary אף פעם לא נכתבים עם findingKey (ר' addNotification בקוד השרת) → openContextChat. */
+function hasFullLoopContext(n) {
+  return Boolean(n.itemId && n.itemSource && n.findingKey);
+}
 /** ממיר notification גנרי (מ-/api/notifications) לאותה צורת אובייקט ש-openNudgeInChat/sendMessage
  *  כבר יודעים לצרוך (זהה למה ש-/api/nudges מחזיר) — בלי להמציא שדה שלא קיים בפועל. */
 function notificationToLoopContext(n) {
   const ctx = n.context || {};
   return {
     id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource,
+    mondayUrl: n.mondayUrl ?? null,
     taskName: ctx.taskName ?? null, currentDueDateISO: ctx.currentDueDateISO ?? null,
     approvalId: ctx.approvalId ?? null, missedCommitment: ctx.missedCommitment === true,
   };
+}
+/** קישור "פתח ב-Monday" משותף לכל כרטיסי ההתראות/נודג'ים — פעולה חיצונית טהורה (לשונית חדשה),
+ *  בלי שום קריאת API. */
+function mondayLinkEl(n) {
+  if (!n.mondayUrl) return null;
+  const a = el("a", "dismiss", "פתח ב-Monday ↗");
+  a.href = n.mondayUrl; a.target = "_blank"; a.rel = "noopener noreferrer";
+  return a;
 }
 /** כרטיס פנייה פתוחה בתוך overlay ה"התראות" — עם כפתור מפורש לפתיחה בשיחה נקייה. הפנייה
  *  עצמה לא נמחקת/נעלמת כאן; היא נשארת "פתוחה" עד שנפתרת בפועל (תשובה בשיחה). */
@@ -807,14 +824,18 @@ function nudgeCard(n) {
   const d = el("div", "nt");
   d.appendChild(el("div", "nt-head", n.approvalId ? "🧑‍⚖️ שאלה ממוטי" : "📌 פנייה מהבקרה"));
   d.appendChild(document.createTextNode(n.body));
-  d.appendChild(el("br"));
+  const actions = el("div", "nt-actions");
   const btn = el("button", "dismiss", "טיפול בשיחה ←"); btn.type = "button";
   btn.onclick = () => openNudgeInChat(n);
-  d.appendChild(btn);
+  actions.appendChild(btn);
+  const link = mondayLinkEl(n);
+  if (link) actions.appendChild(link);
+  d.appendChild(actions);
   return d;
 }
-/** בחירה מפורשת של המשתמש בפנייה מהבקרה — פותחת שיחה נקייה חדשה עם ההקשר הזה בלבד,
- *  שומרת את ה-context (itemId/source/findingKey/...) לשליחה הבאה דרך state.activeNudge. */
+/** בחירה מפורשת של המשתמש בפנייה מהבקרה (או בהתראה שכוללת finding מלא) — פותחת שיחה נקייה
+ *  חדשה עם ההקשר הזה בלבד, שומרת את ה-context (itemId/source/findingKey/...) לשליחה הבאה דרך
+ *  state.activeNudge. ה-about בפועל נבנה ב-sendMessage רק אם itemId+findingKey קיימים — ללא שינוי. */
 function openNudgeInChat(n) {
   state.session = null;
   state.thread = [];
@@ -825,49 +846,113 @@ function openNudgeInChat(n) {
   renderChat();
   $("#input").focus();
 }
-// ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות" בכותרת
-// שפותח overlay נפרד (nudgeCard/הכפתור בכרטיס מאפשרים לעבור משם לשיחה במפורש).
-async function loadNotifications() {
-  await loadNudges();
-  const box = $("#notif"); box.innerHTML = "";
+/** התראה בלי finding אמיתי (משימה חדשה שהוקצתה, תזכורת נוכחות, תדריך/דוח, הודעה כללית) — פותחת
+ *  שיחה חדשה *בלי* about (לא נוגעת ב-reply_*/סגירת-ממצא — זה דורש findingKey, שאין כאן), אבל
+ *  מזריקה לתיבת הקלט הפניה לגוף ההתראה כך שהעובד לא צריך להסביר מחדש על מה מדובר; הוא עדיין
+ *  מקליד/שולח בעצמו (אין שליחה אוטומטית של "דיבור" שהוא לא כתב). מצב-הקריאה (seenAt) לא מתעדכן
+ *  כאן בכלל — "טיפול בשיחה" ו"סמן כנקרא" הם שתי פעולות נפרדות בכוונה. */
+function openContextChat(n) {
+  state.session = null;
+  state.thread = [];
+  state.activeNudge = null;
+  setTopbarTitle("שיחה חדשה");
+  $("#notifOverlay").hidden = true;
+  setSidebar(false);
+  renderChat();
+  const body = n.body || "";
+  const quoted = body.length > 160 ? body.slice(0, 160) + "…" : body;
+  const input = $("#input");
+  input.value = quoted ? `לגבי ההתראה: "${quoted}" — ` : "";
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 200) + "px";
+  input.focus();
+}
+/** כרטיס התראה כללית (מ-/api/notifications, בדפדוף) — "טיפול בשיחה" (reply_* אם יש finding
+ *  מלא, אחרת openContextChat), "פתח ב-Monday" אם יש קישור, ו"סמן כנקרא" אישי: לא משפיע על שום
+ *  התראה אחרת (markNotificationSeenById בודק id+user_key), ולא נוגע ב-activeNudge/about בכלל —
+ *  לחיצה על "טיפול בשיחה" אף פעם לא מסמנת כנקרא, בכוונה (שני מצבים נפרדים). */
+function notificationCard(n) {
+  const extraCls = (n.kind === "briefing" ? " briefing" : n.kind === "eod_summary" ? " eod_summary" : "") + (n.seenAt ? " nt--read" : "");
+  const d = el("div", "nt" + extraCls);
+  d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
+  d.appendChild(document.createTextNode(n.body));
+  const actions = el("div", "nt-actions");
+  const openBtn = el("button", "dismiss", "טיפול בשיחה ←"); openBtn.type = "button";
+  openBtn.onclick = () => { hasFullLoopContext(n) ? openNudgeInChat(notificationToLoopContext(n)) : openContextChat(n); };
+  actions.appendChild(openBtn);
+  const link = mondayLinkEl(n);
+  if (link) actions.appendChild(link);
+  if (!n.seenAt) {
+    const seenBtn = el("button", "dismiss", "✓ סמן כנקרא"); seenBtn.type = "button";
+    seenBtn.onclick = async () => {
+      seenBtn.disabled = true;
+      try { await api(`/api/notifications/${n.id}/seen`, { method: "POST" }); } catch { seenBtn.disabled = false; return; }
+      n.seenAt = new Date().toISOString();
+      state.unseenCount = Math.max(0, state.unseenCount - 1);
+      renderNotifBadge();
+      d.classList.add("nt--read");
+      seenBtn.remove();
+    };
+    actions.appendChild(seenBtn);
+  }
+  d.appendChild(actions);
+  return d;
+}
+/** הבאדג'/חיווי על כפתור "התראות" בכותרת — מספר הלא-נקראות (התראות+נודג'ים) בלבד; הכפתור עצמו
+ *  נשאר גלוי כל עוד יש היסטוריה (גם נקראה) כדי שאפשר לחזור ולעיין בה. */
+function renderNotifBadge() {
+  const total = state.unseenCount + state.nudges.length;
   const btnTop = $("#notifBtn");
   const badge = $("#notifBadge");
-  let list;
-  try { ({ notifications: list } = await api("/api/notifications")); }
-  catch { list = []; }
-  const total = list.length + state.nudges.length;
-  if (!total) {
-    btnTop.hidden = true;
-    btnTop.classList.remove("has");
-    badge.textContent = "";
+  const hasHistory = state.notifPage.items.length > 0 || state.nudges.length > 0;
+  btnTop.hidden = !hasHistory;
+  btnTop.classList.toggle("has", total > 0);
+  badge.textContent = total ? String(total) : "";
+}
+// ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות" בכותרת
+// שפותח overlay נפרד (nudgeCard/notificationCard מאפשרים לעבור משם לשיחה במפורש).
+async function loadNotifications() {
+  await loadNudges();
+  try {
+    const { notifications, hasMore, unseenCount } = await api("/api/notifications?limit=20");
+    state.notifPage = { items: notifications || [], hasMore: !!hasMore };
+    state.unseenCount = unseenCount || 0;
+  } catch { state.notifPage = { items: [], hasMore: false }; state.unseenCount = 0; }
+  renderNotificationsBox();
+}
+/** דפדוף: עמוד הבא לפי id של השורה האחרונה שנטענה (לא OFFSET — יציב גם אם מגיעות שורות חדשות). */
+async function loadMoreNotifications() {
+  const last = state.notifPage.items[state.notifPage.items.length - 1];
+  if (!last) return;
+  try {
+    const { notifications, hasMore } = await api(`/api/notifications?limit=20&before=${last.id}`);
+    state.notifPage.items = state.notifPage.items.concat(notifications || []);
+    state.notifPage.hasMore = !!hasMore;
+  } catch { /* השארת המצב הקיים — "טען עוד" פשוט יישאר, אפשר לנסות שוב */ }
+  renderNotificationsBox();
+}
+function renderNotificationsBox() {
+  const box = $("#notif"); box.innerHTML = "";
+  renderNotifBadge();
+  if (state.notifPage.items.length === 0 && state.nudges.length === 0) {
     box.appendChild(el("p", "empty", "אין התראות חדשות 👌"));
     return;
   }
-  btnTop.hidden = false;
-  btnTop.classList.add("has");
-  badge.textContent = String(total);
   for (const n of state.nudges) box.appendChild(nudgeCard(n));
-  for (const n of list) {
-    const d = el("div", "nt" + (n.kind === "briefing" ? " briefing" : n.kind === "eod_summary" ? " eod_summary" : ""));
-    d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
-    d.appendChild(document.createTextNode(n.body));
-    // כפתור "טיפול בשיחה" רק כשיש בפועל itemId+itemSource+findingKey על ההתראה הזו (לא מומצא) —
-    // ר' ACTIONABLE_NOTIF_KINDS למעלה.
-    if (ACTIONABLE_NOTIF_KINDS.has(n.kind) && n.itemId && n.itemSource && n.findingKey) {
-      d.appendChild(el("br"));
-      const openBtn = el("button", "dismiss", "טיפול בשיחה ←"); openBtn.type = "button";
-      openBtn.onclick = () => openNudgeInChat(notificationToLoopContext(n));
-      d.appendChild(openBtn);
-    }
-    box.appendChild(d);
+  for (const n of state.notifPage.items) box.appendChild(notificationCard(n));
+  if (state.notifPage.hasMore) {
+    const more = el("button", "load-more", "טען עוד היסטוריה"); more.type = "button";
+    more.onclick = loadMoreNotifications;
+    box.appendChild(more);
   }
-  const btn = el("button", "dismiss", "סמן הכל כנקרא"); btn.type = "button";
-  btn.onclick = async () => {
-    await api("/api/notifications/seen", { method:"POST" });
-    $("#notifOverlay").hidden = true;
-    loadNotifications();
-  };
-  box.appendChild(btn);
+  if (state.notifPage.items.some(n => !n.seenAt)) {
+    const btn = el("button", "dismiss", "סמן הכל כנקרא"); btn.type = "button";
+    btn.onclick = async () => {
+      await api("/api/notifications/seen", { method:"POST" });
+      loadNotifications();
+    };
+    box.appendChild(btn);
+  }
 }
 $("#notifBtn").onclick = () => { $("#notifOverlay").hidden = false; };
 $("#notifClose").onclick = () => { $("#notifOverlay").hidden = true; };

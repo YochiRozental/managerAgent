@@ -59,6 +59,13 @@ const listUnseenNudgesStmt = db.prepare(
 const markSeenStmt = db.prepare(
   `UPDATE notifications SET seen_at = datetime('now') WHERE user_key = ? AND seen_at IS NULL AND kind NOT IN ${SPECIAL_KINDS}`,
 );
+// סימון נקרא פר-התראה בודדת (לא גורף) — עדיין בהגנת user_key (בעלות) וה-SPECIAL_KINDS exclusion
+// הקיים, כדי שלא יתאפשר "לסמן כנקרא" נודג'/אישור דרך ה-endpoint הגנרי (יש להם מחזור חיים נפרד —
+// ר' markNudgeSeen/markNudgesSeenForFinding למטה). לא נוגע בשורה שכבר נקראה (idempotent).
+const markSeenByIdStmt = db.prepare(
+  `UPDATE notifications SET seen_at = datetime('now')
+   WHERE id = ? AND user_key = ? AND seen_at IS NULL AND kind NOT IN ${SPECIAL_KINDS}`,
+);
 const markNudgeSeenStmt = db.prepare(
   `UPDATE notifications SET seen_at = datetime('now') WHERE id = ? AND seen_at IS NULL`,
 );
@@ -82,6 +89,15 @@ const hasUnseenForKindStmt = db.prepare(
 // חייב להיות מפורמט באותה צורה (לא ISO עם offset) — ראה sqlUtcCutoff ב-eodSummary.ts.
 const byKindSinceStmt = db.prepare(
   `SELECT * FROM notifications WHERE user_key = ? AND kind = ? AND created_at >= ? ORDER BY id ASC`,
+);
+// היסטוריית התראות (נקראות+לא-נקראות) בדפדוף — אותו SPECIAL_KINDS exclusion כמו שאר הרשימה
+// הכללית (נודג'ים/אישורים יש להם תצוגה נפרדת משלהם). "עמוד ראשון" (בלי beforeId) מול "עמוד הבא"
+// (id < beforeId) כדי שלא יהיה תלוי ב-OFFSET (יציב גם אם מגיעות שורות חדשות בין בקשות).
+const pageFirstStmt = db.prepare(
+  `SELECT * FROM notifications WHERE user_key = ? AND kind NOT IN ${SPECIAL_KINDS} ORDER BY id DESC LIMIT ?`,
+);
+const pageBeforeStmt = db.prepare(
+  `SELECT * FROM notifications WHERE user_key = ? AND kind NOT IN ${SPECIAL_KINDS} AND id < ? ORDER BY id DESC LIMIT ?`,
 );
 
 export interface NotificationContext {
@@ -130,6 +146,22 @@ export function notificationsByKindSince(userKey: string, kind: string, sinceIso
 
 export function markNotificationsSeen(userKey: string): void {
   markSeenStmt.run(userKey);
+}
+
+/** true ⇔ נמצאה שורה של המשתמש הזה, לא-נקראת, שסומנה. false ⇔ לא קיימת/לא שלו/כבר נקראה —
+ *  לא שגיאה, idempotent בכוונה (קליק כפול בחלונית לא יזרוק). */
+export function markNotificationSeenById(userKey: string, id: number): boolean {
+  return markSeenByIdStmt.run(id, userKey).changes === 1;
+}
+
+/**
+ * עמוד אחד מהיסטוריית ההתראות (נקראות+לא-נקראות), חדש→ישן. beforeId (מ-id של השורה האחרונה
+ * שנטענה) מביא את העמוד הבא; בלי beforeId — העמוד הראשון. limit הוא מספר השורות המבוקש בפועל
+ * (הקורא מוסיף +1 ובודק hasMore בעצמו אם רוצה — הפונקציה הזו לא מחליטה על hasMore).
+ */
+export function listNotificationsPage(userKey: string, limit: number, beforeId?: number): Notification[] {
+  const rows = beforeId != null ? pageBeforeStmt.all(userKey, beforeId, limit) : pageFirstStmt.all(userKey, limit);
+  return (rows as unknown as Row[]).map(fromRow);
 }
 
 /** פניות יזומות פתוחות של העובד — מוצגות כבועות צ'אט, וה-brief שלהן מוזרק לתשובה. */

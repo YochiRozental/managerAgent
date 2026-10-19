@@ -29,7 +29,10 @@ import { listOpenCommitments, listUserCommitments } from "../db/repositories/com
 import {
   listUnseenNotifications,
   listUnseenNudges,
+  listNotificationsPage,
   markNotificationsSeen,
+  markNotificationSeenById,
+  type Notification,
 } from "../db/repositories/notifications.js";
 import { subscribeNudges } from "../ops/nudgeBus.js";
 import { subscribeNotifications } from "../ops/notificationBus.js";
@@ -63,7 +66,7 @@ import { getHealth, noteIncident } from "../ops/health.js";
 import { getOversightReport } from "../ops/oversight.js";
 import { startScheduler } from "../ops/scheduler.js";
 import { buildWeeklyReport } from "../ops/weeklyReport.js";
-import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
+import { mondayItemUrl, type OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
 import { REQUIRE_ACCESS_LINK, verifyAccessToken } from "./accessLink.js";
 import { clearSessionCookie, createSessionCookie, readSession } from "./session.js";
@@ -128,6 +131,14 @@ function resolveByIdentifier(identifier: string): IdentifiedUser | null {
 function currentUser(req: IncomingMessage): IdentifiedUser | null {
   const key = readSession(req.headers.cookie);
   return key ? resolveUserByKey(key) : null;
+}
+
+/** מצרף mondayUrl (אם יש item_id+item_source תקינים) לתצורת ה-API — לא נוגע ב-DB, רק תצוגה. */
+function serializeNotification(n: Notification) {
+  return {
+    ...n,
+    mondayUrl: n.itemId && n.itemSource ? mondayItemUrl(n.itemId, n.itemSource as OpsTaskSource) : null,
+  };
 }
 
 const server = createServer(async (req, res) => {
@@ -499,10 +510,19 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    // דפדוף: בלי ?before — העמוד הראשון (חדש→ישן, נקראות+לא-נקראות). עם ?before=<id> — העמוד
+    // הבא. unseenCount מחושב בנפרד (לא תלוי בעמוד שנטען) — זה מה שמזין את הבאדג' בחלונית.
     if (req.method === "GET" && path === "/api/notifications") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
-      return send(res, 200, { notifications: listUnseenNotifications(user.key) });
+      const limitParam = Number(url.searchParams.get("limit"));
+      const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 50 ? limitParam : 20;
+      const beforeParam = Number(url.searchParams.get("before"));
+      const beforeId = Number.isFinite(beforeParam) && beforeParam > 0 ? beforeParam : undefined;
+      const page = listNotificationsPage(user.key, limit + 1, beforeId);
+      const hasMore = page.length > limit;
+      const notifications = (hasMore ? page.slice(0, limit) : page).map(serializeNotification);
+      return send(res, 200, { notifications, hasMore, unseenCount: listUnseenNotifications(user.key).length });
     }
 
     if (req.method === "POST" && path === "/api/notifications/seen") {
@@ -510,6 +530,17 @@ const server = createServer(async (req, res) => {
       if (!user) return send(res, 401, { error: "לא מחובר" });
       markNotificationsSeen(user.key);
       return send(res, 200, { ok: true });
+    }
+
+    // סימון נקרא פר-התראה בודדת — לא משפיע על שום התראה אחרת (markNotificationSeenById בודק
+    // id+user_key יחד). "טיפול בשיחה" (endpoint-ים אחרים למטה) לא קורא לזה — מצב-קריאה ומצב-טיפול
+    // נפרדים בכוונה.
+    const notifSeenMatch = path.match(/^\/api\/notifications\/(\d+)\/seen$/);
+    if (notifSeenMatch && req.method === "POST") {
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: "לא מחובר" });
+      const ok = markNotificationSeenById(user.key, Number(notifSeenMatch[1]));
+      return send(res, 200, { ok });
     }
 
     // פניות יזומות פתוחות של העובד — ה-UI מרנדר אותן כבועות צ'אט של העוזר.
@@ -523,6 +554,7 @@ const server = createServer(async (req, res) => {
           findingKey: n.findingKey,
           itemId: n.itemId,
           source: n.itemSource,
+          mondayUrl: n.itemId && n.itemSource ? mondayItemUrl(n.itemId, n.itemSource as OpsTaskSource) : null,
           taskName: (n.context as { taskName?: string } | null)?.taskName ?? null,
           currentDueDateISO: (n.context as { currentDueDateISO?: string | null } | null)?.currentDueDateISO ?? null,
           // אם זו שאלה/הנחיה של מוטי (kind=approval_instruction) — approvalId מגיע דרך about,
@@ -595,14 +627,16 @@ const server = createServer(async (req, res) => {
       res.write(": connected\n\n");
       const unsubNudge = subscribeNudges((n) => {
         if (n.userKey !== user.key) return;
-        res.write(`event: nudge\ndata: ${JSON.stringify(n)}\n\n`);
+        const mondayUrl = n.itemId && n.itemSource ? mondayItemUrl(n.itemId, n.itemSource as OpsTaskSource) : null;
+        res.write(`event: nudge\ndata: ${JSON.stringify({ ...n, mondayUrl })}\n\n`);
       });
       // approval_request → כרטיס "נדרש אישור" חדש למוטי; approval_reply → תשובת עובד על כרטיס
       // קיים (מעדכן במקום, לא כרטיס נוסף); כל קינד אחר → רענון שקט של באנר ההתראות.
       const unsubNotif = subscribeNotifications((n) => {
         if (n.userKey !== user.key) return;
         const eventName = n.kind === "approval_request" ? "approval" : n.kind === "approval_reply" ? "approval_update" : "notification";
-        res.write(`event: ${eventName}\ndata: ${JSON.stringify(n)}\n\n`);
+        const mondayUrl = n.itemId && n.itemSource ? mondayItemUrl(n.itemId, n.itemSource as OpsTaskSource) : null;
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify({ ...n, mondayUrl })}\n\n`);
       });
       const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
       req.on("close", () => {

@@ -40,9 +40,17 @@ import { logger } from "../utils/logger.js";
 
 const TICK_MS = 60_000;
 
-export function buildReminderText(): string {
+/**
+ * workDate מוזרק (dd/MM בסוגריים) כדי שתזכורות על ימים שונים — אם העובד השאיר את השעון פתוח
+ * כמה ימים ברצף, כל יום בלגיטימיות מייצר תזכורת חדשה משלו (ר' reminder_status CAS ב-attendanceDays.ts,
+ * אין כפילות אמיתית לאותו יום) — יראו שונות זו מזו בחלונית במקום להיראות כמו הודעה משוכפלת.
+ * "שעון הנוכחות שלך עדיין פעיל" נשאר תת-מחרוזת רצופה בכוונה — tests/integration/attendance.test.ts
+ * בודק אותה.
+ */
+export function buildReminderText(workDate: string): string {
+  const dateLabel = DateTime.fromISO(workDate, { zone: env.TIMEZONE }).toFormat("dd/MM");
   return (
-    "שים לב, שעון הנוכחות שלך עדיין פעיל.\n" +
+    `שים לב, שעון הנוכחות שלך עדיין פעיל (מתאריך ${dateLabel}).\n` +
     "האם סיימת לעבוד להיום?\n" +
     "אם כן, באיזו שעה סיימת בפועל?"
   );
@@ -64,7 +72,7 @@ export async function sendAttendanceReminder(day: StoredAttendanceDay, deps: Sen
 
   if (!claimReminder(day.userKey, day.workDate)) return false; // מישהו אחר כבר תפס/נשלח
 
-  const body = buildReminderText();
+  const body = buildReminderText(day.workDate);
   let notifId: number;
   try {
     // atomic: notification + reminder_status='sent' יחד. קריסה באמצע → rollback מלא (SQLite),

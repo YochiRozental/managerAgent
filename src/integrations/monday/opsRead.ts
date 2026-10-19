@@ -33,6 +33,17 @@ const STAGE_TASK_DONE = new Set(["הושלם", "לא רלוונטי"]);
 
 export type OpsTaskSource = "general" | "project_stage";
 
+/**
+ * URL ל-pulse ב-Monday מ-itemId+source בלבד — בלי לקרוא ל-API. אותו דפוס בדיוק שבו נבנה
+ * ה-url על כל OpsTask למטה (BOARD_GENERAL_TASKS/BOARD_PROJECT_STAGE_TASKS); מיוצא כדי שהשרת
+ * (לא רק הפונקציות הפנימיות כאן) יוכל לחשב קישור "פתח ב-Monday" להתראה/נודג' שיש להם item_id+
+ * item_source בלבד (למשל task_assigned, שלא עובר דרך fetchUserOpsTasks בכלל).
+ */
+export function mondayItemUrl(itemId: string, source: OpsTaskSource): string {
+  const boardId = source === "general" ? BOARD_GENERAL_TASKS : BOARD_PROJECT_STAGE_TASKS;
+  return `${MONDAY_HOST}/boards/${boardId}/pulses/${itemId}`;
+}
+
 export interface OpsTask {
   source: OpsTaskSource;
   itemId: string;

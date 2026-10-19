@@ -48,6 +48,7 @@ const SAFE_TESTS = [
   "tests/unit/attendanceReminderText.test.ts",
   "tests/unit/mondayItemUrl.test.ts",
   "tests/unit/uiHtmlScriptSyntax.test.ts",
+  "tests/unit/promptAboutBranches.test.ts",
   // integration — DB זמני מבודד בלבד
   "tests/integration/loop.test.ts",
   "tests/integration/approvals.test.ts",
@@ -83,6 +84,8 @@ const SAFE_TESTS = [
   "tests/integration/chatPerfSteps.test.ts",
   "tests/integration/lazyTasksLoading.test.ts",
   "tests/integration/promptCachingExperiment.test.ts",
+  "tests/integration/commitmentLoop.test.ts",
+  "tests/integration/notificationReadVsHandled.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
 ];

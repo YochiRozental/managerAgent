@@ -56,7 +56,7 @@ import {
 } from "../db/repositories/chatPerfSteps.js";
 import { updateTask, type TaskUpdateAction } from "../ops/actions.js";
 import { runOpsChat, type ChatMessage } from "../ops/chat.js";
-import type { LoopContext } from "../ops/loopReply.js";
+import type { IncomingAboutContext } from "../ops/loopReply.js";
 import { getControlScan } from "../ops/controlScan.js";
 import { runCrmScan } from "../ops/crmScan.js";
 import { getEmployeeDashboard } from "../ops/dashboard.js";
@@ -112,7 +112,7 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
  * נשלח פעמיים עם תוכן אחר" (client bug/שימוש חוזר, ר' chatDedup.ts). retry לגיטימי (אותו client
  * שולח את אותה הודעה בדיוק שוב) מגיע עם hash זהה.
  */
-function hashChatContent(text: string, about: LoopContext | undefined): string {
+function hashChatContent(text: string, about: IncomingAboutContext | undefined): string {
   return createHash("sha256").update(JSON.stringify({ text, about })).digest("hex");
 }
 
@@ -230,18 +230,20 @@ const server = createServer(async (req, res) => {
         typeof rawClientMessageId === "string" && rawClientMessageId.length > 0 && rawClientMessageId.length <= 128
           ? rawClientMessageId
           : undefined;
-      // תשובה לפנייה יזומה של הבקרה — ה-UI שולח את הקשר המשימה כדי שהצ'אט ידע על מה מדובר.
-      let about: LoopContext | undefined;
+      // תשובה לפנייה יזומה של הבקרה — ה-UI שולח את הקשר כדי שהצ'אט ידע על מה מדובר. itemId/source
+      // יכולים להיות null (audit "אובדן הקשר", 2026-10-19) — ממצא בלי פריט Monday, כמו התחייבות
+      // (ר' IncomingAboutContext ב-loopReply.ts). findingKey הוא היחיד שחובה תמיד.
+      let about: IncomingAboutContext | undefined;
       const a = body.about as Record<string, unknown> | undefined;
       if (
         a &&
-        typeof a.itemId === "string" &&
         typeof a.findingKey === "string" &&
-        (a.source === "general" || a.source === "project_stage")
+        (a.itemId === null || a.itemId === undefined || typeof a.itemId === "string") &&
+        (a.source === null || a.source === undefined || a.source === "general" || a.source === "project_stage")
       ) {
         about = {
-          itemId: a.itemId,
-          source: a.source,
+          itemId: typeof a.itemId === "string" ? a.itemId : null,
+          source: a.source === "general" || a.source === "project_stage" ? a.source : null,
           findingKey: a.findingKey,
           taskName: typeof a.taskName === "string" ? a.taskName : undefined,
           // תאריך היעד הידוע מרגע יצירת הפנייה — לא קריאת Monday נוספת. ה-UI מעביר אותו כמו שקיבל
@@ -510,11 +512,17 @@ const server = createServer(async (req, res) => {
       });
     }
 
-    // דפדוף: בלי ?before — העמוד הראשון (חדש→ישן, נקראות+לא-נקראות). עם ?before=<id> — העמוד
-    // הבא. unseenCount מחושב בנפרד (לא תלוי בעמוד שנטען) — זה מה שמזין את הבאדג' בחלונית.
+    // ?unseenOnly=1 — "התראות פעילות" בלבד (listUnseenNotifications, בדיוק מה שהיה לפני הדפדוף):
+    // לא כולל שום דבר שסומן נקרא, בלי pagination (הנפח תמיד קטן — ברגע שמטפלים/מסמנים, יורד
+    // מכאן). בלי הדגל — העמוד הראשון/הבא של ההיסטוריה המלאה (נקראות+לא-נקראות), בדיוק כמו קודם.
+    // unseenCount תמיד מחושב בנפרד מהעמוד שנטען — זה מה שמזין את הבאדג' בחלונית בשני המצבים.
     if (req.method === "GET" && path === "/api/notifications") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
+      if (url.searchParams.get("unseenOnly") === "1") {
+        const notifications = listUnseenNotifications(user.key).map(serializeNotification);
+        return send(res, 200, { notifications, hasMore: false, unseenCount: notifications.length });
+      }
       const limitParam = Number(url.searchParams.get("limit"));
       const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 50 ? limitParam : 20;
       const beforeParam = Number(url.searchParams.get("before"));

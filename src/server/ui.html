@@ -251,6 +251,9 @@ a{color:var(--color-link)}
 .nt-actions{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px}
 .nt-actions .dismiss{margin-top:0;text-decoration:none;display:inline-block}
 .load-more{display:block;margin:4px auto 12px;font:inherit;font-size:var(--font-size-xs);background:none;border:1px solid var(--color-border);border-radius:var(--radius-md);padding:6px 16px;color:var(--color-text-muted);cursor:pointer}
+.notif-tabs{display:flex;gap:4px;margin:4px 0 14px;border-bottom:1px solid var(--color-border)}
+.notif-tab{font:inherit;font-size:var(--font-size-sm);background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px;color:var(--color-text-muted);cursor:pointer}
+.notif-tab.is-active{color:var(--color-text);border-bottom-color:var(--color-link);font-weight:600}
 
 .scroll{overflow-x:auto;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md)}
 table{border-collapse:collapse;width:100%;font-size:var(--font-size-sm)}
@@ -355,7 +358,7 @@ td.num.hot{color:var(--status-late-fg);font-weight:700}
       </button>
       <h1 class="topbar__title" id="topbarTitle">ManagerAgent</h1>
       <span class="topbar__actions">
-        <button type="button" class="icon-btn icon-btn--strong" id="notifBtn" aria-label="התראות" hidden>
+        <button type="button" class="icon-btn icon-btn--strong" id="notifBtn" aria-label="התראות">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8.5a6 6 0 1 0-12 0c0 3.2-1.4 4.8-2 5.7a1 1 0 0 0 .8 1.6h14.4a1 1 0 0 0 .8-1.6c-.6-.9-2-2.5-2-5.7"/><path d="M9.3 19a2.7 2.7 0 0 0 5.4 0"/></svg>
           <span class="badge" id="notifBadge"></span>
         </button>
@@ -389,6 +392,10 @@ td.num.hot{color:var(--status-late-fg);font-weight:700}
   </button>
   <div class="ov-wrap">
     <h2 class="sec-title" style="margin-top:.5rem">התראות ותזכורות</h2>
+    <div class="notif-tabs" role="tablist">
+      <button type="button" class="notif-tab is-active" id="notifTabActive" role="tab" aria-selected="true">פעיל</button>
+      <button type="button" class="notif-tab" id="notifTabHistory" role="tab" aria-selected="false">היסטוריה</button>
+    </div>
     <div id="notif"></div>
   </div>
 </div>
@@ -415,7 +422,12 @@ async function api(path, opts) {
 }
 // activeNudge = הפנייה (אם יש) שהמשתמש בחר במפורש לטפל בה בשיחה הנוכחית — היחידה שמוצגת בגוף
 // הצ'אט. state.nudges (כל הפניות הפתוחות) מוצג רק באזור "התראות", לא בתוך שום שיחה.
-const state = { user: null, session: null, thread: [], busy: false, nudges: [], activeNudge: null, approvals: [], es: null, notifPage: { items: [], hasMore: false }, unseenCount: 0 };
+// "פעיל" (notifActive) ו"היסטוריה" (notifHistory) נפרדים בכוונה — audit "התראות שנקראו נשארות
+// ברשימה הפעילה" (2026-10-19): notifActive הוא תמיד listUnseenNotifications בלבד (בלי pagination —
+// הנפח תמיד קטן, ברגע שמטפלים/מסמנים יורד מכאן), notifHistory הוא עמוד ה-pagination (נקראות+
+// לא-נקראות). נקרא (seenAt) ≠ מטופל/נסגר (finding_events) — markNotificationSeenById לא נוגע
+// בממצאי בקרה בכלל (ר' server/index.ts), אז התראה שסומנה נקרא עוברת ל"היסטוריה" בלבד, לא "נפתרת".
+const state = { user: null, session: null, thread: [], busy: false, nudges: [], activeNudge: null, approvals: [], es: null, notifTab: "active", notifActive: [], notifHistory: { items: [], hasMore: false }, unseenCount: 0 };
 function fmtDate(iso) {
   if (!iso) return "?";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
@@ -790,21 +802,22 @@ async function startApp() {
 }
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה", attendance_reminder:"⏰ תזכורת נוכחות" };
-/** true ⇔ יש להתראה הזו finding אמיתי (itemId+itemSource+findingKey) — רק אז "טיפול בשיחה" עובר
- *  דרך about/reply_* (מנגנון סגירת-הממצא הקיים, ללא שינוי). שים לב: זה כבר מכיל בדיוק את שלוש
- *  הקינדים שהיו ב-ACTIONABLE_NOTIF_KINDS הישן (manager_decision/awaiting_decision/escalation) —
- *  הם היחידים שבפועל נכתבים עם שלושת השדות; הסרת רשימת ה-kinds לא משנה שום התנהגות קיימת, רק
- *  מוסיפה כיסוי לכל kind עתידי עם אותם שדות. task_assigned/attendance_reminder/briefing/weekly/
- *  eod_summary אף פעם לא נכתבים עם findingKey (ר' addNotification בקוד השרת) → openContextChat. */
-function hasFullLoopContext(n) {
-  return Boolean(n.itemId && n.itemSource && n.findingKey);
+/** true ⇔ יש להתראה הזו ממצא בקרה אמיתי מאחוריה (findingKey) — רק אז "טיפול בשיחה" עובר דרך
+ *  about. itemId *לא* נדרש כאן יותר (audit "אובדן הקשר בטיפול בשיחה", 2026-10-19): ממצאי
+ *  התחייבות (commitment_overdue) נושאים findingKey תקין בלי שום itemId — אין להם פריט Monday
+ *  בכלל (ר' controlScan.ts). sendMessage ו-server/index.ts כבר מטפלים ב-itemId=null כראוי:
+ *  reply_* (מנגנון סגירת-ממצא Monday) נפתח רק כש-גם itemId קיים; אחרת prompt.ts מזריק הקשר
+ *  התחייבות ממוקד (עם ה-id המדויק) או הקשר כללי — בלי להמציא שום מזהה. */
+function hasFindingContext(n) {
+  return Boolean(n.findingKey);
 }
 /** ממיר notification גנרי (מ-/api/notifications) לאותה צורת אובייקט ש-openNudgeInChat/sendMessage
- *  כבר יודעים לצרוך (זהה למה ש-/api/nudges מחזיר) — בלי להמציא שדה שלא קיים בפועל. */
+ *  כבר יודעים לצרוך (זהה למה ש-/api/nudges מחזיר). itemId/source מועברים כמו שהם — יכולים להיות
+ *  null (ממצא בלי פריט Monday) — בלי להמציא שדה שלא קיים בפועל. */
 function notificationToLoopContext(n) {
   const ctx = n.context || {};
   return {
-    id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId, source: n.itemSource,
+    id: n.id, body: n.body, findingKey: n.findingKey, itemId: n.itemId ?? null, source: n.itemSource ?? null,
     mondayUrl: n.mondayUrl ?? null,
     taskName: ctx.taskName ?? null, currentDueDateISO: ctx.currentDueDateISO ?? null,
     approvalId: ctx.approvalId ?? null, missedCommitment: ctx.missedCommitment === true,
@@ -867,10 +880,12 @@ function openContextChat(n) {
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
   input.focus();
 }
-/** כרטיס התראה כללית (מ-/api/notifications, בדפדוף) — "טיפול בשיחה" (reply_* אם יש finding
- *  מלא, אחרת openContextChat), "פתח ב-Monday" אם יש קישור, ו"סמן כנקרא" אישי: לא משפיע על שום
- *  התראה אחרת (markNotificationSeenById בודק id+user_key), ולא נוגע ב-activeNudge/about בכלל —
- *  לחיצה על "טיפול בשיחה" אף פעם לא מסמנת כנקרא, בכוונה (שני מצבים נפרדים). */
+/** כרטיס התראה כללית (מ-"פעיל" או מ-"היסטוריה") — "טיפול בשיחה" (reply_* / הקשר-התחייבות / הקשר
+ *  כללי, לפי מה שיש — ר' hasFindingContext/notificationToLoopContext), "פתח ב-Monday" אם יש
+ *  קישור, ו"סמן כנקרא" אישי: לא משפיע על שום התראה אחרת (markNotificationSeenById בודק
+ *  id+user_key), ולא נוגע ב-activeNudge/about בכלל — לחיצה על "טיפול בשיחה" אף פעם לא מסמנת
+ *  כנקרא, בכוונה (שני מצבים נפרדים). סימון כנקרא מסיר את ההתראה מ-notifActive (ולכן מ"פעיל",
+ *  אם זה הטאב הפתוח) — אבל אם אנחנו כרגע בטאב "היסטוריה" היא נשארת שם, רק מעוצבת כנקראה. */
 function notificationCard(n) {
   const extraCls = (n.kind === "briefing" ? " briefing" : n.kind === "eod_summary" ? " eod_summary" : "") + (n.seenAt ? " nt--read" : "");
   const d = el("div", "nt" + extraCls);
@@ -878,7 +893,7 @@ function notificationCard(n) {
   d.appendChild(document.createTextNode(n.body));
   const actions = el("div", "nt-actions");
   const openBtn = el("button", "dismiss", "טיפול בשיחה ←"); openBtn.type = "button";
-  openBtn.onclick = () => { hasFullLoopContext(n) ? openNudgeInChat(notificationToLoopContext(n)) : openContextChat(n); };
+  openBtn.onclick = () => { hasFindingContext(n) ? openNudgeInChat(notificationToLoopContext(n)) : openContextChat(n); };
   actions.appendChild(openBtn);
   const link = mondayLinkEl(n);
   if (link) actions.appendChild(link);
@@ -889,72 +904,105 @@ function notificationCard(n) {
       try { await api(`/api/notifications/${n.id}/seen`, { method: "POST" }); } catch { seenBtn.disabled = false; return; }
       n.seenAt = new Date().toISOString();
       state.unseenCount = Math.max(0, state.unseenCount - 1);
-      renderNotifBadge();
-      d.classList.add("nt--read");
-      seenBtn.remove();
+      state.notifActive = state.notifActive.filter((x) => x.id !== n.id);
+      if (state.notifTab === "active") {
+        renderNotificationsBox(); // "פעיל" = לא-נקראות בלבד — ההתראה הזו פשוט נעלמת מהרשימה
+      } else {
+        renderNotifBadge();
+        d.classList.add("nt--read");
+        seenBtn.remove();
+      }
     };
     actions.appendChild(seenBtn);
   }
   d.appendChild(actions);
   return d;
 }
-/** הבאדג'/חיווי על כפתור "התראות" בכותרת — מספר הלא-נקראות (התראות+נודג'ים) בלבד; הכפתור עצמו
- *  נשאר גלוי כל עוד יש היסטוריה (גם נקראה) כדי שאפשר לחזור ולעיין בה. */
+/** הבאדג'/חיווי על כפתור "התראות" בכותרת — מספר הלא-נקראות (התראות+נודג'ים) בלבד. הכפתור עצמו
+ *  תמיד גלוי (גם ב-0 פעילות) כדי שתמיד אפשר לעיין בהיסטוריה, גם בלי שום דבר חדש. */
 function renderNotifBadge() {
   const total = state.unseenCount + state.nudges.length;
-  const btnTop = $("#notifBtn");
-  const badge = $("#notifBadge");
-  const hasHistory = state.notifPage.items.length > 0 || state.nudges.length > 0;
-  btnTop.hidden = !hasHistory;
-  btnTop.classList.toggle("has", total > 0);
-  badge.textContent = total ? String(total) : "";
+  $("#notifBtn").classList.toggle("has", total > 0);
+  $("#notifBadge").textContent = total ? String(total) : "";
 }
-// ההתראות ופניות הבקרה הפתוחות לא נכנסות לגוף שום שיחה — רק לכפתור "התראות" בכותרת
-// שפותח overlay נפרד (nudgeCard/notificationCard מאפשרים לעבור משם לשיחה במפורש).
+/** "פעיל" (audit "התראות שנקראו נשארות ברשימה הפעילה", 2026-10-19): אך ורק listUnseenNotifications
+ *  — שום דבר שסומן נקרא לא מגיע לכאן בכלל, בלי pagination (הנפח תמיד קטן). קרוא ב-init וגם בכל
+ *  SSE live (notification/nudge) כדי שהבאדג' יתעדכן תמיד; מרנדר מחדש רק אם טאב "פעיל" פתוח כרגע —
+ *  לא קופץ למשתמש שעומד בטאב "היסטוריה".
+ */
 async function loadNotifications() {
   await loadNudges();
   try {
-    const { notifications, hasMore, unseenCount } = await api("/api/notifications?limit=20");
-    state.notifPage = { items: notifications || [], hasMore: !!hasMore };
+    const { notifications, unseenCount } = await api("/api/notifications?unseenOnly=1");
+    state.notifActive = notifications || [];
     state.unseenCount = unseenCount || 0;
-  } catch { state.notifPage = { items: [], hasMore: false }; state.unseenCount = 0; }
+  } catch { state.notifActive = []; state.unseenCount = 0; }
+  if (state.notifTab === "active") renderNotificationsBox();
+  else renderNotifBadge();
+}
+/** "היסטוריה" — העמוד הראשון נטען רק כש-עוברים לטאב (lazy, לא בכל init/SSE). כולל נקראות
+ *  וגם לא-נקראות, בדפדוף (GET /api/notifications הרגיל, בלי unseenOnly). */
+async function loadNotificationHistory() {
+  try {
+    const { notifications, hasMore } = await api("/api/notifications?limit=20");
+    state.notifHistory = { items: notifications || [], hasMore: !!hasMore };
+  } catch { state.notifHistory = { items: [], hasMore: false }; }
   renderNotificationsBox();
 }
 /** דפדוף: עמוד הבא לפי id של השורה האחרונה שנטענה (לא OFFSET — יציב גם אם מגיעות שורות חדשות). */
-async function loadMoreNotifications() {
-  const last = state.notifPage.items[state.notifPage.items.length - 1];
+async function loadMoreNotificationHistory() {
+  const last = state.notifHistory.items[state.notifHistory.items.length - 1];
   if (!last) return;
   try {
     const { notifications, hasMore } = await api(`/api/notifications?limit=20&before=${last.id}`);
-    state.notifPage.items = state.notifPage.items.concat(notifications || []);
-    state.notifPage.hasMore = !!hasMore;
+    state.notifHistory.items = state.notifHistory.items.concat(notifications || []);
+    state.notifHistory.hasMore = !!hasMore;
   } catch { /* השארת המצב הקיים — "טען עוד" פשוט יישאר, אפשר לנסות שוב */ }
   renderNotificationsBox();
+}
+function switchNotifTab(tab) {
+  state.notifTab = tab;
+  $("#notifTabActive").classList.toggle("is-active", tab === "active");
+  $("#notifTabActive").setAttribute("aria-selected", String(tab === "active"));
+  $("#notifTabHistory").classList.toggle("is-active", tab === "history");
+  $("#notifTabHistory").setAttribute("aria-selected", String(tab === "history"));
+  if (tab === "history" && state.notifHistory.items.length === 0) loadNotificationHistory();
+  else renderNotificationsBox();
 }
 function renderNotificationsBox() {
   const box = $("#notif"); box.innerHTML = "";
   renderNotifBadge();
-  if (state.notifPage.items.length === 0 && state.nudges.length === 0) {
-    box.appendChild(el("p", "empty", "אין התראות חדשות 👌"));
+  if (state.notifTab === "active") {
+    if (state.notifActive.length === 0 && state.nudges.length === 0) {
+      box.appendChild(el("p", "empty", "אין התראות פעילות 👌"));
+      return;
+    }
+    for (const n of state.nudges) box.appendChild(nudgeCard(n));
+    for (const n of state.notifActive) box.appendChild(notificationCard(n));
+    if (state.notifActive.some((n) => !n.seenAt)) {
+      const btn = el("button", "dismiss", "סמן הכל כנקרא"); btn.type = "button";
+      btn.onclick = async () => {
+        await api("/api/notifications/seen", { method: "POST" });
+        await loadNotifications();
+      };
+      box.appendChild(btn);
+    }
     return;
   }
-  for (const n of state.nudges) box.appendChild(nudgeCard(n));
-  for (const n of state.notifPage.items) box.appendChild(notificationCard(n));
-  if (state.notifPage.hasMore) {
+  if (state.notifHistory.items.length === 0) {
+    box.appendChild(el("p", "empty", "אין היסטוריה עדיין"));
+    return;
+  }
+  for (const n of state.notifHistory.items) box.appendChild(notificationCard(n));
+  if (state.notifHistory.hasMore) {
     const more = el("button", "load-more", "טען עוד היסטוריה"); more.type = "button";
-    more.onclick = loadMoreNotifications;
+    more.onclick = loadMoreNotificationHistory;
     box.appendChild(more);
   }
-  if (state.notifPage.items.some(n => !n.seenAt)) {
-    const btn = el("button", "dismiss", "סמן הכל כנקרא"); btn.type = "button";
-    btn.onclick = async () => {
-      await api("/api/notifications/seen", { method:"POST" });
-      loadNotifications();
-    };
-    box.appendChild(btn);
-  }
 }
-$("#notifBtn").onclick = () => { $("#notifOverlay").hidden = false; };
+$("#notifTabActive").onclick = () => switchNotifTab("active");
+$("#notifTabHistory").onclick = () => switchNotifTab("history");
+$("#notifBtn").onclick = () => { switchNotifTab("active"); $("#notifOverlay").hidden = false; };
 $("#notifClose").onclick = () => { $("#notifOverlay").hidden = true; };
 $("#logoutBtn").onclick = async () => { await api("/api/logout", { method:"POST" }); location.reload(); };
 
@@ -1070,9 +1118,13 @@ async function sendMessage(text) {
     const ctx = [...activeContext()];
     // רק פנייה שהמשתמש בחר במפורש לטפל בה (activeNudge) נשלחת כ-about — לא "הפנייה
     // הפתוחה האחרונה בעולם", כדי לא לערבב הקשר של פנייה שלא נבחרה בשיחה הזו.
+    // findingKey בלבד מספיק (audit "אובדן הקשר בטיפול בשיחה", 2026-10-19) — itemId כבר לא תנאי
+    // סף כאן: ממצאי התחייבות (commitment_overdue) נושאים findingKey תקין בלי itemId בכלל (אין
+    // להם פריט Monday). itemId/source מועברים כמו שהם (null אם אין) — בלי להמציא. השרת (index.ts)
+    // ו-chat.ts כבר יודעים להבדיל: itemId קיים → reply_* הרגיל; חסר → הקשר-התחייבות/כללי בלבד.
     const openNudge = state.activeNudge;
-    const about = openNudge && openNudge.itemId && openNudge.findingKey
-      ? { itemId: openNudge.itemId, source: openNudge.source, findingKey: openNudge.findingKey, taskName: openNudge.taskName, currentDueDateISO: openNudge.currentDueDateISO ?? null, approvalId: openNudge.approvalId ?? undefined, missedCommitment: openNudge.missedCommitment === true }
+    const about = openNudge && openNudge.findingKey
+      ? { itemId: openNudge.itemId ?? null, source: openNudge.source ?? null, findingKey: openNudge.findingKey, taskName: openNudge.taskName, currentDueDateISO: openNudge.currentDueDateISO ?? null, approvalId: openNudge.approvalId ?? undefined, missedCommitment: openNudge.missedCommitment === true }
       : undefined;
     // audit שלב ה: מזהה יציב להודעה הזו, לפני השליחה — crypto.randomUUID() (fallback למחרוזת
     // אקראית בדפדפנים ישנים/הקשר לא-מאובטח). נוצר *פעם אחת* לכל שליחה אמיתית, לא לכל ניסיון —

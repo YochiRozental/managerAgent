@@ -53,13 +53,16 @@ import { replyToApprovalInstruction } from "./approvalActions.js";
 import {
   replyAwaitManager,
   replyBlocked,
+  replyCloseCommitment,
   replyDefer,
   replyDone,
   replyFinishingToday,
   replyNotRelevant,
   replyProgress,
   replyWaiting,
-  type LoopContext,
+  hasMondayItem,
+  parseCommitmentId,
+  type IncomingAboutContext,
 } from "./loopReply.js";
 import { searchLeadsAndDeals } from "../integrations/monday/crmRead.js";
 import { runControlScan } from "./controlScan.js";
@@ -391,7 +394,7 @@ export interface OpsChatResult {
  * כי test-create-task-prompt.ts/test-create-task-behavior.ts/test-project-stage-behavior.ts
  * מייבאים אותו ישירות מ-"./chat.js".
  */
-export function systemPrompt(user: IdentifiedUser, about?: LoopContext): string {
+export function systemPrompt(user: IdentifiedUser, about?: IncomingAboutContext): string {
   return buildSystemPrompt({ channel: "web", user, about, attendanceEnabled: attendanceEnabledForUser(user) });
 }
 
@@ -401,7 +404,7 @@ export function systemPrompt(user: IdentifiedUser, about?: LoopContext): string 
  * בדיוק** כמו ב-systemPrompt למעלה (attendanceEnabledForUser(user), לא attendanceOn/ה-override
  * לבדיקות) — כדי ששני הפיצולים (הרגיל וה-cacheable) יתארו בדיוק את אותו טקסט לאותם user/about.
  */
-export function buildPromptCachingSplitFor(user: IdentifiedUser, about?: LoopContext): { cacheableSystem: string; volatileSystemSuffix: string } {
+export function buildPromptCachingSplitFor(user: IdentifiedUser, about?: IncomingAboutContext): { cacheableSystem: string; volatileSystemSuffix: string } {
   const split = buildWebPromptCacheSplit(user, about, attendanceEnabledForUser(user));
   return { cacheableSystem: split.cacheable, volatileSystemSuffix: split.volatile };
 }
@@ -946,8 +949,12 @@ export function computeOfficeOverviewPerfRecords(s: OfficeOverviewDiagnosticSnap
 }
 
 export interface OpsChatOptions {
-  /** ההודעה היא תשובה לפנייה יזומה של הבקרה על משימה ספציפית — מפעיל את כלי סגירת הלולאה. */
-  about?: LoopContext;
+  /**
+   * ההודעה היא תשובה לפנייה יזומה של הבקרה — מפעיל כלי סגירת-לולאה. itemId יכול להיות null
+   * (למשל ממצא התחייבות, בלי פריט Monday) — אז לא נפתחים כלי reply_*, ר' chat.ts (hasMondayItem)
+   * ו-prompt.ts (buildAboutBlockLines).
+   */
+  about?: IncomingAboutContext;
   /** מזהה השיחה (server/index.ts's session) — בשימוש רק כ-fallback (ר' clientMessageId למטה). */
   session?: string;
   /**
@@ -1265,8 +1272,21 @@ export async function runOpsChat(
         required: ["id", "outcome"],
       },
       run: async (input) => {
-        const ok = closeCommitment(Number(input.id), input.outcome === "cancelled" ? "cancelled" : "done");
-        if (ok) actions.push(`🤝 התחייבות ${input.outcome === "cancelled" ? "בוטלה" : "קוימה"}`);
+        const id = Number(input.id);
+        const outcome: "done" | "cancelled" = input.outcome === "cancelled" ? "cancelled" : "done";
+        // תשובה לפנייה יזומה על ההתחייבות הזו *בדיוק* (about בלי itemId, עם אותו id שחושב מ-
+        // findingKey) — סוגרים גם את הלולאה מול מנוע הבקרה (finding_event + מסיר את הנודג' הפתוח),
+        // בדיוק כמו ש-reply_done סוגר ממצא משימה. לא קורה ל-close_commitment "רגיל" (למשל "מה
+        // הבטחתי?" → "קיימתי", בלי about בכלל, או id אחר שהוזכר תוך כדי השיחה).
+        const about = opts.about;
+        if (about && !hasMondayItem(about) && parseCommitmentId(about.findingKey) === id) {
+          const r = await replyCloseCommitment(user, about, id, outcome);
+          if (r.ok) actions.push(`🤝 התחייבות ${outcome === "cancelled" ? "בוטלה" : "קוימה"}`);
+          return r.ok ? { ok: true, id } : { ok: false, error: r.message };
+        }
+        // closeCommitment עצמה מאמתת קיום+בעלות (user.key) — לא מסתמכים על כך שהמודל בחר id נכון.
+        const ok = closeCommitment(id, outcome, user.key);
+        if (ok) actions.push(`🤝 התחייבות ${outcome === "cancelled" ? "בוטלה" : "קוימה"}`);
         return { ok };
       },
     },
@@ -1287,8 +1307,9 @@ export async function runOpsChat(
     tools.push(a.breakStart, a.breakEnd, a.dayClose, a.setReminder, a.reportCorrection, ATTENDANCE_DAY_STATUS_TOOL_DEFINITION);
   }
 
-  // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה ----
-  if (opts.about) {
+  // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה (פריט Monday אמיתי בלבד —
+  // ממצא בלי itemId, כמו התחייבות, מטופל בנפרד למטה דרך close_commitment הקיים, לא כאן). ----
+  if (opts.about && hasMondayItem(opts.about)) {
     const c = opts.about;
     const label = c.taskName ?? c.itemId;
     const runLoop = async (

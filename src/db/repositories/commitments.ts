@@ -75,9 +75,17 @@ export function listUserCommitments(userKey: string): Commitment[] {
   return (listByUserStmt.all(userKey) as unknown as Row[]).map(fromRow);
 }
 
-export function closeCommitment(id: number, status: "done" | "cancelled"): boolean {
+/**
+ * סוגר התחייבות — מאמת בצד השרת (לא רק דרך הנחיית מודל ב-prompt) שהרשומה קיימת, פתוחה, **והיא
+ * שייכת ל-userKey הנתון** (created_by). עד כה (audit 2026-10-19) הפונקציה לא בדקה בעלות בכלל —
+ * כל משתמש יכול היה תיאורטית לסגור התחייבות של מישהו אחר אם המודל (בטעות/בלבול) קרא לכלי עם id
+ * שלא שלו. ההתחייבויות אישיות במהותן ("הבטחתי ל...") — closeCommitment תמיד נקראת היום בהקשר
+ * "אני קיימתי/ביטלתי את ההבטחה שלי", לא "סגור עבור מישהו אחר", אז הצמדה ל-created_by לא חוסמת
+ * שום תרחיש לגיטימי קיים.
+ */
+export function closeCommitment(id: number, status: "done" | "cancelled", userKey: string): boolean {
   const row = getStmt.get(id) as unknown as Row | undefined;
-  if (!row || row.status !== "open") return false;
+  if (!row || row.status !== "open" || row.created_by !== userKey) return false;
   closeStmt.run(status, id);
   return true;
 }

@@ -15,8 +15,10 @@
  * buildSystemPrompt(params) dispatches on params.channel. The parameters are exactly what the two
  * existing functions already needed — nothing speculative:
  *   - "web": needs `user: IdentifiedUser` (never null — runOpsChat already returns early before
- *     ever reaching this if the user has no mondayUserId) and an optional `about: LoopContext`
- *     (the proactive-nudge reply_* block, injected when the control engine initiated the message).
+ *     ever reaching this if the user has no mondayUserId) and an optional `about: IncomingAboutContext`
+ *     (the proactive-nudge context, injected when the control engine initiated the message — itemId
+ *     may be null for findings with no Monday item, e.g. commitments; see buildAboutBlockLines, added
+ *     2026-10-19, for the 3-way branch this now requires).
  *   - "whatsapp": needs `user: IdentifiedUser | null` — orchestrator.ts calls this even for an
  *     unidentified JID, to produce the "you're not identified" framing.
  *
@@ -33,7 +35,7 @@
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
 import { userCan, type IdentifiedUser } from "../identity/index.js";
-import type { LoopContext } from "../ops/loopReply.js";
+import { hasMondayItem, parseCommitmentId, type IncomingAboutContext } from "../ops/loopReply.js";
 
 export type PromptChannel = "web" | "whatsapp";
 
@@ -42,7 +44,7 @@ export interface BuildSystemPromptParams {
   /** WhatsApp may call this with a null user (unidentified JID) — Web never does. */
   user: IdentifiedUser | null;
   /** Web-only: proactive-nudge context (ops/loopReply.ts). Ignored for channel "whatsapp". */
-  about?: LoopContext;
+  about?: IncomingAboutContext;
   /**
    * מודול נוכחות (2026-10-11, שלב ב) — true ⇔ attendanceEnabledForUser(user) (ops/attendance.ts):
    * הדגל מופעל, המשתמש ברשימת הפיילוט, ויש לו report:hours. Web-only, כברירת מחדל false — אין
@@ -58,60 +60,106 @@ export interface BuildSystemPromptParams {
  * שניהם קוראים לזה — אותו תוכן, אותו סדר, בדיוק כמו קודם; dateLine יושב *באותו מיקום* (index 1)
  * בשני המקרים. אין שום שינוי טקסט/משמעות/סדר להוראות עצמן — רק היכן dateLine מחושב.
  */
-function buildWebPromptLines(user: IdentifiedUser, about: LoopContext | undefined, attendanceEnabled: boolean | undefined, dateLine: string): string[] {
+/**
+ * ה-about-block הקיים ("אובדן הקשר" audit 2026-10-19) — פוצל משלושת ה-ternary שהיו קודם ל-3
+ * ענפים ברורים, בלי לשנות *אות אחת* בטקסט/בסדר של בלוק reply_* (ר' tests/unit/sharedPrompt.test.ts
+ * שמשווה byte-for-byte למקור):
+ *   1. יש פריט Monday (hasMondayItem) — **בדיוק** הטקסט שהיה כאן תמיד, ללא שינוי.
+ *   2. אין פריט Monday אבל יש מזהה התחייבות (parseCommitmentId(findingKey)) — בלוק חדש, מכוון
+ *      ל-close_commitment עם ה-id המדויק (לא reply_*, שדורשים itemId אמיתי לכתיבה ב-Monday).
+ *   3. אין לא פריט ולא מזהה התחייבות (לא אמור לקרות עם סוגי הממצאים הקיימים, אבל לא ממציאים
+ *      מזהה שלא קיים) — הקשר כללי קצר בלבד, בלי הכוונה לשום כלי.
+ */
+function buildAboutBlockLines(about: IncomingAboutContext | undefined): string[] {
+  if (!about) return [];
+  if (hasMondayItem(about)) {
+    return [
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `🔔 מנוע הבקרה פנה לעובד ביוזמתו על משימה ספציפית: "${about.taskName ?? about.itemId}".`,
+      "ההודעה של העובד עכשיו היא התשובה שלו לפנייה הזו. המשימה כבר ידועה לך במלואה —",
+      "**אסור** לקרוא get_today_tasks או find_task. חובה: לזהות את הכוונה, לקרוא כלי reply_* אחד, ולסיים.",
+      "",
+      'מיפוי (הצד הימני = הכלי לקרוא):',
+      '  "סיימתי" / "הגשתי" / "בוצע" / "גמרתי"            → reply_done',
+      '  "עדיין עובד" / "באמצע" / "כמעט" / "מתקדם"        → reply_progress(note)',
+      '  "אסיים היום" / "יהיה מוכן עד הערב" (בלי תאריך אחר) → reply_finishing_today',
+      '  "צריך עוד X ימים" / "עד יום ___" / "תן לי ארכה"  → reply_defer(newDate=YYYY-MM-DD, reason, reasonJudgedPlausible)',
+      '  "מחכה ללקוח" / "הכדור אצל הלקוח"                 → reply_waiting(on="client", reason)',
+      '  "מחכה ליועץ/לספק/לקונסטרוקטור/למהנדס"           → reply_waiting(on="consultant", reason)',
+      '  "מחכה שמוטי/שהמנהל יחליט" / "צריך אישור מלמעלה"  → reply_await_manager(question)',
+      '  "תקוע כי…" / "חסום כי…" / "לא יכול להתקדם כי…"    → reply_blocked(blocker)',
+      '  "לא רלוונטי" / "בוטל" / "כבר לא צריך"            → reply_not_relevant(reason)',
+      "",
+      "אם העובד נתן גם מסגרת זמן קונקרטית וגם למי הוא מחכה ('צריך יומיים, מחכה לקונסטרוקטור') —",
+      "reply_defer מנצח (המסגרת זמן היא הדבר המעשי), והסיבה ('מחכה לקונסטרוקטור') נכנסת ל-reason.",
+      "",
+      "לגבי reasonJudgedPlausible ב-reply_defer: **אתה לא מאשר דחייה ולא מחליט אם היא סבירה מבחינה",
+      "ניהולית** — אתה רק מפרש את מה שהעובד אמר ומעריך אם הוא נתן הסבר קונקרטי. ההחלטה בפועל (האם",
+      "לאשר אוטומטית, לשאול עוד, או להעביר למוטי) מתקבלת אחר-כך, בקוד, לא על ידך. תן לפרמטר את הערך:",
+      '  true  — ניתן הסבר קונקרטי שבאמת מסביר למה צריך את הזמן הנוסף.',
+      '           לדוגמה: "צריך עוד חמישה ימים כי קיבלנו היום שינוי מהלקוח שדורש תכנון מחדש" → true',
+      '  false — "הסבר" ניתן, אבל הוא לא באמת מסביר כלום.',
+      '           לדוגמה: "צריך עוד חמישה ימים, ככה" → false',
+      '  (השמט את הפרמטר) — לא ניתן שום הסבר בכלל.',
+      '           לדוגמה: "צריך עוד חמישה ימים" (בלי שום הסבר) → אל תמלא את reasonJudgedPlausible',
+      "",
+      "שינוי היקף עבודה (scope change): אם העובד מסביר ששינוי או הרחבת היקף העבודה הם הסיבה לצורך",
+      "בזמן נוסף — למשל דרישות נוספות, תוכניות/שרטוטים נוספים, שינוי מצד הלקוח, קומה/חלופה/חלק",
+      "נוסף, או ניסוח חופשי בעל אותה משמעות:",
+      "  א. אם העובד עדיין לא אמר כמה זמן נדרש או מה היעד החדש — **אל תקרא reply_defer**. שאל",
+      '     אותו בקצרה: "הבנתי שהיקף המשימה השתנה. כמה זמן אתה צריך עכשיו כדי לסיים?" וחכה לתשובה.',
+      "  ב. כשהעובד עונה עם משך/תאריך (גם בהודעה נפרדת, בהמשך אותה שיחה) — הבן את זה כהמשך של",
+      "     אותה בקשת שינוי היקף, וקרא reply_defer הרגיל עם newDate, reason שמתאר את שינוי ההיקף,",
+      "     ו-scopeChange=true.",
+      "  ג. אם העובד כבר בהודעה הראשונה אומר גם שההיקף השתנה וגם נותן זמן/תאריך חדש — אין צורך",
+      "     בשאלת ביניים; קרא ישירות reply_defer עם scopeChange=true.",
+      "  scopeChange הוא מידע לתיעוד בלבד — הוא לא משנה איך אתה ממלא את reasonJudgedPlausible",
+      "  (עדיין שיפוט עצמאי לפי ההסבר עצמו), ולא קובע אם הדחייה תאושר.",
+      "אחרי שהכלי חזר — אמור לעובד במשפט אחד את ה-message ואת ה-tracking שקיבלת. אל תקרא עוד כלים.",
+      "רק אם ההודעה ברור שאינה תשובה לפנייה (שאלה כללית, נושא אחר) — התעלם מהבלוק הזה וטפל רגיל.",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ];
+  }
+
+  const commitmentId = parseCommitmentId(about.findingKey);
+  if (commitmentId != null) {
+    return [
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `🔔 מנוע הבקרה פנה לעובד ביוזמתו על התחייבות פתוחה (לא משימת Monday): "${about.taskName ?? "התחייבות"}".`,
+      "ההודעה של העובד עכשיו היא התשובה שלו לפנייה הזו. זו **לא** משימת Monday — אל תקרא לאף כלי",
+      "reply_* (הם כותבים ל-Monday לפי itemId, ואין כאן אחד — הם לא יעבדו וזה יבלבל).",
+      "",
+      `מזהה ההתחייבות הידוע ל-close_commitment הוא בדיוק id=${commitmentId} — אל תמציא id אחר ואל`,
+      "תחפש ב-list_my_commitments, אלא אם ברור מהתשובה שהעובד מתכוון להתחייבות *אחרת* מזו שעליה נשאל.",
+      '  "קיימתי" / "שלחתי ללקוח" / "סיימתי" / "עשיתי את זה"   → close_commitment(id=' + commitmentId + ', outcome="done")',
+      '  "לא רלוונטי" / "בוטל" / "כבר לא צריך"                 → close_commitment(id=' + commitmentId + ', outcome="cancelled")',
+      "כל תשובה אחרת (עדכון ביניים, שאלה, לא ברור אם סגור) — אל תקרא שום כלי, ענה בטקסט רגיל; מנוע",
+      "הבקרה ימשיך לעקוב ויחזור לשאול אם צריך.",
+      "רק אם ההודעה ברור שאינה תשובה לפנייה (שאלה כללית, נושא אחר) — התעלם מהבלוק הזה וטפל רגיל.",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ];
+  }
+
+  // הגנתי: about קיים בלי itemId ובלי commitmentId שניתן לחילוץ — לא אמור לקרות עם סוגי הממצאים
+  // הקיימים (ר' docstring IncomingAboutContext), אבל לא ממציאים מזהה שלא קיים. הקשר כללי בלבד.
+  return [
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    `🔔 מנוע הבקרה פנה לעובד ביוזמתו בעניין: "${about.taskName ?? "נושא פתוח"}".`,
+    "ההודעה של העובד עכשיו היא התשובה שלו לפנייה הזו, אבל אין לך מזהה מדויק לפעול עליו ישירות —",
+    "ענה בטקסט רגיל לפי מה שהעובד אומר, ואם צריך פרטים נוספים כדי לדעת על מה בדיוק מדובר, שאל אותו.",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+  ];
+}
+
+function buildWebPromptLines(user: IdentifiedUser, about: IncomingAboutContext | undefined, attendanceEnabled: boolean | undefined, dateLine: string): string[] {
   return [
     `אתה העוזר התפעולי של ${user.name} במשרד האדריכלים "גוטליב אדריכלים". תפקיד המשתמש: ${user.roleDescription}`,
     dateLine,
     "דבר עברית, קצר, חם ולעניין. אתה בצד של העובד — עוזר לו לנהל את היום, לא בודק אותו.",
-    ...(about
-      ? [
-          "",
-          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-          `🔔 מנוע הבקרה פנה לעובד ביוזמתו על משימה ספציפית: "${about.taskName ?? about.itemId}".`,
-          "ההודעה של העובד עכשיו היא התשובה שלו לפנייה הזו. המשימה כבר ידועה לך במלואה —",
-          "**אסור** לקרוא get_today_tasks או find_task. חובה: לזהות את הכוונה, לקרוא כלי reply_* אחד, ולסיים.",
-          "",
-          'מיפוי (הצד הימני = הכלי לקרוא):',
-          '  "סיימתי" / "הגשתי" / "בוצע" / "גמרתי"            → reply_done',
-          '  "עדיין עובד" / "באמצע" / "כמעט" / "מתקדם"        → reply_progress(note)',
-          '  "אסיים היום" / "יהיה מוכן עד הערב" (בלי תאריך אחר) → reply_finishing_today',
-          '  "צריך עוד X ימים" / "עד יום ___" / "תן לי ארכה"  → reply_defer(newDate=YYYY-MM-DD, reason, reasonJudgedPlausible)',
-          '  "מחכה ללקוח" / "הכדור אצל הלקוח"                 → reply_waiting(on="client", reason)',
-          '  "מחכה ליועץ/לספק/לקונסטרוקטור/למהנדס"           → reply_waiting(on="consultant", reason)',
-          '  "מחכה שמוטי/שהמנהל יחליט" / "צריך אישור מלמעלה"  → reply_await_manager(question)',
-          '  "תקוע כי…" / "חסום כי…" / "לא יכול להתקדם כי…"    → reply_blocked(blocker)',
-          '  "לא רלוונטי" / "בוטל" / "כבר לא צריך"            → reply_not_relevant(reason)',
-          "",
-          "אם העובד נתן גם מסגרת זמן קונקרטית וגם למי הוא מחכה ('צריך יומיים, מחכה לקונסטרוקטור') —",
-          "reply_defer מנצח (המסגרת זמן היא הדבר המעשי), והסיבה ('מחכה לקונסטרוקטור') נכנסת ל-reason.",
-          "",
-          "לגבי reasonJudgedPlausible ב-reply_defer: **אתה לא מאשר דחייה ולא מחליט אם היא סבירה מבחינה",
-          "ניהולית** — אתה רק מפרש את מה שהעובד אמר ומעריך אם הוא נתן הסבר קונקרטי. ההחלטה בפועל (האם",
-          "לאשר אוטומטית, לשאול עוד, או להעביר למוטי) מתקבלת אחר-כך, בקוד, לא על ידך. תן לפרמטר את הערך:",
-          '  true  — ניתן הסבר קונקרטי שבאמת מסביר למה צריך את הזמן הנוסף.',
-          '           לדוגמה: "צריך עוד חמישה ימים כי קיבלנו היום שינוי מהלקוח שדורש תכנון מחדש" → true',
-          '  false — "הסבר" ניתן, אבל הוא לא באמת מסביר כלום.',
-          '           לדוגמה: "צריך עוד חמישה ימים, ככה" → false',
-          '  (השמט את הפרמטר) — לא ניתן שום הסבר בכלל.',
-          '           לדוגמה: "צריך עוד חמישה ימים" (בלי שום הסבר) → אל תמלא את reasonJudgedPlausible',
-          "",
-          "שינוי היקף עבודה (scope change): אם העובד מסביר ששינוי או הרחבת היקף העבודה הם הסיבה לצורך",
-          "בזמן נוסף — למשל דרישות נוספות, תוכניות/שרטוטים נוספים, שינוי מצד הלקוח, קומה/חלופה/חלק",
-          "נוסף, או ניסוח חופשי בעל אותה משמעות:",
-          "  א. אם העובד עדיין לא אמר כמה זמן נדרש או מה היעד החדש — **אל תקרא reply_defer**. שאל",
-          '     אותו בקצרה: "הבנתי שהיקף המשימה השתנה. כמה זמן אתה צריך עכשיו כדי לסיים?" וחכה לתשובה.',
-          "  ב. כשהעובד עונה עם משך/תאריך (גם בהודעה נפרדת, בהמשך אותה שיחה) — הבן את זה כהמשך של",
-          "     אותה בקשת שינוי היקף, וקרא reply_defer הרגיל עם newDate, reason שמתאר את שינוי ההיקף,",
-          "     ו-scopeChange=true.",
-          "  ג. אם העובד כבר בהודעה הראשונה אומר גם שההיקף השתנה וגם נותן זמן/תאריך חדש — אין צורך",
-          "     בשאלת ביניים; קרא ישירות reply_defer עם scopeChange=true.",
-          "  scopeChange הוא מידע לתיעוד בלבד — הוא לא משנה איך אתה ממלא את reasonJudgedPlausible",
-          "  (עדיין שיפוט עצמאי לפי ההסבר עצמו), ולא קובע אם הדחייה תאושר.",
-          "אחרי שהכלי חזר — אמור לעובד במשפט אחד את ה-message ואת ה-tracking שקיבלת. אל תקרא עוד כלים.",
-          "רק אם ההודעה ברור שאינה תשובה לפנייה (שאלה כללית, נושא אחר) — התעלם מהבלוק הזה וטפל רגיל.",
-          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        ]
-      : []),
+    ...buildAboutBlockLines(about),
     "",
     "איך לעבוד:",
     "• כשהעובד אומר 'בוקר טוב' / 'מה יש לי' / 'מה על הפרק' / 'מה המשימות שלי' / 'מה מחכה לי לטיפול' / 'מה עליי לבצע היום' — קרא get_today_tasks והצג את השדה 'pipeline.text' שחוזר משם *בדיוק* כמו שהוא: ברכה+כותרת ('סדר העבודה שלך להיום') ואחריהן חמש קטגוריות קבועות (לידים חדשים / עסקאות חדשות / עסקאות לטיפול / משימות רגילות / משימות פרויקטים), תמיד ובאותו סדר, גם כשריקות. זו התשובה היחידה — **אל תצרף לפניה שום תדריך/רשימת משימות נוסף** (לא לפי פרויקטים, לא 'עכשיו:'), ואל תוסיף 'דורש תשומת לב' / 'מחכים ממני' אלא אם ביקשו במפורש.",
@@ -196,7 +244,7 @@ function buildDateLine(): string {
   return `היום ${now.toFormat("EEEE, dd/MM/yyyy")}, השעה ${now.toFormat("HH:mm")} (${env.TIMEZONE}).`;
 }
 
-function buildWebPrompt(user: IdentifiedUser, about?: LoopContext, attendanceEnabled?: boolean): string {
+function buildWebPrompt(user: IdentifiedUser, about?: IncomingAboutContext, attendanceEnabled?: boolean): string {
   return buildWebPromptLines(user, about, attendanceEnabled, buildDateLine()).join("\n");
 }
 
@@ -216,7 +264,7 @@ export interface CacheableWebPrompt {
  * buildWebPrompt. buildWebPrompt/buildSystemPrompt עצמם לא השתנו אות אחת — כל משתמש/ערוץ שלא
  * בניסוי ממשיך להפעיל אותם בדיוק כקודם.
  */
-export function buildWebPromptCacheSplit(user: IdentifiedUser, about?: LoopContext, attendanceEnabled?: boolean): CacheableWebPrompt {
+export function buildWebPromptCacheSplit(user: IdentifiedUser, about?: IncomingAboutContext, attendanceEnabled?: boolean): CacheableWebPrompt {
   const dateLine = buildDateLine();
   const lines = buildWebPromptLines(user, about, attendanceEnabled, dateLine);
   // dateLine יושב ב-index 1 (ר' buildWebPromptLines) — מוציאים אותו, לא מוחקים/משנים שום דבר אחר.

@@ -15,6 +15,7 @@ import { env } from "../config/env.js";
 import { markNudgesSeenForFinding } from "../db/repositories/notifications.js";
 import { recordFindingEvent } from "../db/repositories/findingEvents.js";
 import { addNotification } from "../db/repositories/notifications.js";
+import { closeCommitment } from "../db/repositories/commitments.js";
 import { createApproval, type CreateApprovalInput, type StoredApproval } from "../db/repositories/managerApprovals.js";
 import { resolveUserByKey, type IdentifiedUser } from "../identity/index.js";
 import type { OpsTaskSource } from "../integrations/monday/opsRead.js";
@@ -50,6 +51,36 @@ export interface LoopContext {
    * wasOverdue. replyDefer מעביר את זה ל-Policy Engine בלי לפרש בעצמו. ר' policy.ts.
    */
   missedCommitment?: boolean;
+}
+
+/**
+ * "about" כפי שמגיע בפועל מה-UI/משרת ה-API (audit 2026-10-19, תיקון "אובדן הקשר בטיפול בשיחה"):
+ * itemId/source יכולים להיות null כש-הממצא לא נוגע לפריט Monday בכלל — היום זה קורה רק ל-
+ * commitment_overdue (ר' controlScan.ts: listOpenCommitments() לא מספקת itemId/itemSource כי
+ * התחייבות היא רשומה פנימית, לא פריט Monday). **LoopContext עצמו (למעלה) לא השתנה** — כש-יש
+ * itemId+source (hasMondayItem) מצמצמים את האובייקט הזה בדיוק ל-LoopContext, ומנגנון reply_*
+ * הקיים ממשיך לרוץ בלי שום שינוי, בלי לדעת שהטיפוס הרחב הזה קיים.
+ */
+export interface IncomingAboutContext {
+  itemId: string | null;
+  source: OpsTaskSource | null;
+  findingKey: string;
+  taskName?: string;
+  currentDueDateISO?: string | null;
+  approvalId?: number;
+  missedCommitment?: boolean;
+}
+
+/** true ⇔ יש פריט Monday אמיתי — רק אז בטוח לצמצם ל-LoopContext (reply_* דורשים itemId/source לא-null). */
+export function hasMondayItem(c: IncomingAboutContext): c is IncomingAboutContext & { itemId: string; source: OpsTaskSource } {
+  return c.itemId != null && c.source != null;
+}
+
+/** מזהה התחייבות גלוי בתוך findingKey בפורמט "commitment:<id>" (controlScan.ts) — נגזר מנתון
+ *  קיים, לא מומצא. null אם findingKey לא בפורמט הזה (ממצא שאינו התחייבות). */
+export function parseCommitmentId(findingKey: string): number | null {
+  const m = /^commitment:(\d+)$/.exec(findingKey);
+  return m ? Number(m[1]) : null;
 }
 
 export interface LoopResult {
@@ -640,5 +671,47 @@ export async function replyNotRelevant(
     ok: true,
     message: "רשמתי את הבקשה שלך והעברתי להחלטת מוטי — לא סגרתי את המשימה לבד.",
     tracking: "לא אטריד אותך על זה עד שמוטי יחליט.",
+  };
+}
+
+export type ReplyCloseCommitmentResult =
+  | { ok: true; message: string; tracking: string }
+  | { ok: false; message: string };
+
+export interface ReplyCloseCommitmentDeps {
+  closeCommitment?: typeof closeCommitment;
+  recordFindingEvent?: typeof recordFindingEvent;
+  markNudgesSeenForFinding?: typeof markNudgesSeenForFinding;
+}
+
+/**
+ * סוגר התחייבות שהעובד ענה עליה מתוך פנייה יזומה של הבקרה (about עם itemId=null — אין משימת
+ * Monday מעורבת, ר' IncomingAboutContext). **closeCommitment עצמה (לא כאן) מאמתת קיום+בעלות**
+ * לפי userKey (audit 2026-10-19) — לא מסתמכים על כך שהמודל קיבל את ה-id הנכון מה-prompt; אם
+ * closeCommitment מחזירה false (לא קיימת/לא פתוחה/לא שייכת למשתמש) — שום finding_event/
+ * markNudgesSeenForFinding לא נכתבים, בדיוק כמו שכישלון כתיבה ב-reply_* האחרים לא מתעד הצלחה
+ * שלא קרתה.
+ */
+export async function replyCloseCommitment(
+  user: IdentifiedUser,
+  c: { findingKey: string },
+  commitmentId: number,
+  outcome: "done" | "cancelled",
+  deps: ReplyCloseCommitmentDeps = {},
+): Promise<ReplyCloseCommitmentResult> {
+  const doCloseCommitment = deps.closeCommitment ?? closeCommitment;
+  const doRecordFindingEvent = deps.recordFindingEvent ?? recordFindingEvent;
+  const doMarkNudgesSeenForFinding = deps.markNudgesSeenForFinding ?? markNudgesSeenForFinding;
+
+  const ok = doCloseCommitment(commitmentId, outcome, user.key);
+  if (!ok) {
+    return { ok: false, message: "לא מצאתי התחייבות פתוחה כזו על שמך — אולי כבר נסגרה, או שה-id לא תואם." };
+  }
+  doRecordFindingEvent(c.findingKey, "resolved_by_reply", { byUser: user.key, action: outcome });
+  doMarkNudgesSeenForFinding(user.key, c.findingKey);
+  return {
+    ok: true,
+    message: outcome === "cancelled" ? "סימנתי שההתחייבות בוטלה." : "סימנתי שההתחייבות קוימה ✅",
+    tracking: "הממצא ייסגר בסריקה הבאה. לא אטריד יותר על זה.",
   };
 }

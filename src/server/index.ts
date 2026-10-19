@@ -26,6 +26,7 @@ import {
   newSessionId,
 } from "../db/repositories/chatHistory.js";
 import { listOpenCommitments, listUserCommitments } from "../db/repositories/commitments.js";
+import { findWorkDateForReminder } from "../db/repositories/attendanceDays.js";
 import {
   listUnseenNotifications,
   listUnseenNudges,
@@ -133,10 +134,22 @@ function currentUser(req: IncomingMessage): IdentifiedUser | null {
   return key ? resolveUserByKey(key) : null;
 }
 
-/** מצרף mondayUrl (אם יש item_id+item_source תקינים) לתצורת ה-API — לא נוגע ב-DB, רק תצוגה. */
+/**
+ * מצרף mondayUrl (אם יש item_id+item_source תקינים) ו-context.workDate להתראות נוכחות ישנות
+ * (audit "תזכורות נוכחות נראות כפולות", 2026-10-19) — לתצורת ה-API בלבד, לא נוגע ב-DB. התראת
+ * נוכחות חדשה כבר נושאת context.workDate מרגע היצירה (attendanceReminderScheduler.ts) — כאן רק
+ * fallback לרשומות ישנות (קריאה-בלבד, דרך findWorkDateForReminder — התאמה מדויקת, לא ניחוש;
+ * null כש-אין התאמה חד-משמעית, אז פשוט לא מוצג תאריך, לא מוצג תאריך שגוי).
+ */
 function serializeNotification(n: Notification) {
+  let context = n.context;
+  if (n.kind === "attendance_reminder" && typeof context?.workDate !== "string") {
+    const workDate = findWorkDateForReminder(n.userKey, n.createdAt);
+    if (workDate) context = { ...(context ?? {}), workDate };
+  }
   return {
     ...n,
+    context,
     mondayUrl: n.itemId && n.itemSource ? mondayItemUrl(n.itemId, n.itemSource as OpsTaskSource) : null,
   };
 }

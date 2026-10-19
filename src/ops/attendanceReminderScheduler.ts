@@ -79,7 +79,13 @@ export async function sendAttendanceReminder(day: StoredAttendanceDay, deps: Sen
     // reminder_status נשאר 'pending_send' (ר' claimReminder למעלה, מחוץ לטרנזקציה הזו) →
     // recoverStuckAttendanceReminders ב-startup מאפס ל-'none' → הטיק הבא כותב מההתחלה, בלי כפילות.
     notifId = runInTransaction(() => {
-      const id = doAddNotification(day.userKey, "attendance_reminder", body);
+      // context.workDate (audit "תזכורות נוכחות נראות כפולות", 2026-10-19) — עד כה רק הדחיפה
+      // החיה למטה (doPublish) נשאה את זה; הרשומה הנשמרת נשארה בלי מבנה, ואחרי טעינה מחדש
+      // (GET /api/notifications) המידע פשוט נעלם. עכשיו גם הרשומה הנשמרת נושאת אותו — אותו
+      // day.workDate בדיוק, לא טקסט חופשי מ-body.
+      const id = doAddNotification(day.userKey, "attendance_reminder", body, undefined, {
+        context: { workDate: day.workDate },
+      });
       markReminderSent(day.userKey, day.workDate);
       return id;
     });

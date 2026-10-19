@@ -248,6 +248,7 @@ a{color:var(--color-link)}
 .nt.briefing .nt-head,.nt.eod_summary .nt-head{color:var(--color-text-secondary)}
 .nt .dismiss,#notif>.dismiss{margin-top:8px;font:inherit;font-size:var(--font-size-xs);background:none;border:0;color:var(--color-link);cursor:pointer;padding:0;font-weight:600}
 .nt--read{opacity:.55}
+.nt-date{font-size:var(--font-size-xs);color:var(--color-text-muted);margin-top:4px}
 .nt-actions{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px}
 .nt-actions .dismiss{margin-top:0;text-decoration:none;display:inline-block}
 .load-more{display:block;margin:4px auto 12px;font:inherit;font-size:var(--font-size-xs);background:none;border:1px solid var(--color-border);border-radius:var(--radius-md);padding:6px 16px;color:var(--color-text-muted);cursor:pointer}
@@ -859,11 +860,20 @@ function openNudgeInChat(n) {
   renderChat();
   $("#input").focus();
 }
+/** תאריך יום הנוכחות של התראת attendance_reminder, אם השרת סיפק אותו (context.workDate — חדשה:
+ *  נשמר מרגע היצירה; ישנה: שוחזר בקריאה-בלבד ב-server/index.ts, רק כש-יש התאמה חד-משמעית) —
+ *  אחרת null. לא מנחשים כלום בצד הלקוח. */
+function attendanceWorkDate(n) {
+  return n.kind === "attendance_reminder" && n.context && typeof n.context.workDate === "string" ? n.context.workDate : null;
+}
 /** התראה בלי finding אמיתי (משימה חדשה שהוקצתה, תזכורת נוכחות, תדריך/דוח, הודעה כללית) — פותחת
  *  שיחה חדשה *בלי* about (לא נוגעת בכלי reply_* / סגירת-ממצא — זה דורש findingKey, שאין כאן), אבל
  *  מזריקה לתיבת הקלט הפניה לגוף ההתראה כך שהעובד לא צריך להסביר מחדש על מה מדובר; הוא עדיין
  *  מקליד/שולח בעצמו (אין שליחה אוטומטית של "דיבור" שהוא לא כתב). מצב-הקריאה (seenAt) לא מתעדכן
- *  כאן בכלל — "טיפול בשיחה" ו"סמן כנקרא" הם שתי פעולות נפרדות בכוונה. */
+ *  כאן בכלל — "טיפול בשיחה" ו"סמן כנקרא" הם שתי פעולות נפרדות בכוונה.
+ *  תזכורת נוכחות עם תאריך ידוע (attendanceWorkDate) מקבלת פתיחה ממוקדת עם התאריך המפורש —
+ *  כך שגם הודעות-המשך באותה שיחה (שנשלחות עם כל ההיסטוריה) ימשיכו לדעת על איזה יום מדובר,
+ *  בלי צורך במנגנון about/LoopContext (תזכורת נוכחות היא לא ממצא בקרה). */
 function openContextChat(n) {
   state.session = null;
   state.thread = [];
@@ -872,10 +882,15 @@ function openContextChat(n) {
   $("#notifOverlay").hidden = true;
   setSidebar(false);
   renderChat();
-  const body = n.body || "";
-  const quoted = body.length > 160 ? body.slice(0, 160) + "…" : body;
   const input = $("#input");
-  input.value = quoted ? `לגבי ההתראה: "${quoted}" — ` : "";
+  const workDate = attendanceWorkDate(n);
+  if (workDate) {
+    input.value = `לגבי שעון הנוכחות שנשאר פתוח מתאריך ${fmtDate(workDate)} — `;
+  } else {
+    const body = n.body || "";
+    const quoted = body.length > 160 ? body.slice(0, 160) + "…" : body;
+    input.value = quoted ? `לגבי ההתראה: "${quoted}" — ` : "";
+  }
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
   input.focus();
@@ -891,6 +906,10 @@ function notificationCard(n) {
   const d = el("div", "nt" + extraCls);
   d.appendChild(el("div", "nt-head", NT_HEAD[n.kind] || "הודעה"));
   d.appendChild(document.createTextNode(n.body));
+  // תזכורות נוכחות שונות (ימים שונים) נראות כמו הודעה משוכפלת בלי זה — הטקסט עצמו זהה מילה
+  // במילה. מוצג רק כש-יש תאריך ידוע בוודאות (attendanceWorkDate) — בלי תאריך, בלי שורה, בלי ניחוש.
+  const workDate = attendanceWorkDate(n);
+  if (workDate) d.appendChild(el("div", "nt-date", `תאריך הנוכחות: ${fmtDate(workDate)}`));
   const actions = el("div", "nt-actions");
   const openBtn = el("button", "dismiss", "טיפול בשיחה ←"); openBtn.type = "button";
   openBtn.onclick = () => { hasFindingContext(n) ? openNudgeInChat(notificationToLoopContext(n)) : openContextChat(n); };

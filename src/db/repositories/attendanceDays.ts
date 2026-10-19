@@ -108,6 +108,14 @@ const revertReminderStmt = db.prepare(
 // שחזור אחרי קריסה (startup בלבד, לא scheduler) — 'pending_send' הוא מצב-מעבר תוך-בקשה בלבד;
 // שורה שנמצאת בו ב-STARTUP קרתה רק כי התהליך קרס בין claim לתוצאה. בדיוק עיקרון recoverStuckFollowups.
 const recoverStuckRemindersStmt = db.prepare(`UPDATE attendance_days SET reminder_status = 'none' WHERE reminder_status = 'pending_send'`);
+// שחזור work_date להתראת נוכחות ישנה (audit "תזכורות נוכחות נראות כפולות", 2026-10-19) — קריאה
+// בלבד, לא נוגעת בשום שורה. reminder_sent_at ו-notifications.created_at נכתבים באותה טרנזקציה
+// (sendAttendanceReminder) אז התאמה מדויקת ביניהם מזהה את ה-work_date הנכון בוודאות — לא ניחוש
+// מתאריך יצירה, שיכול לחול על יום קלנדרי אחר מ-work_date (ר' listDueForReminderStmt — בודקת רק
+// שעה-ביום, לא תאריך, אז יום פתוח יכול "להמתין" כמה ימים לפני שהתזכורת שלו בפועל נשלחת).
+const findWorkDateForReminderStmt = db.prepare(
+  `SELECT work_date FROM attendance_days WHERE user_key = ? AND reminder_sent_at = ?`,
+);
 
 // ── סנכרון Monday (שלב ד — claim/finalize/retry, בדיוק עיקרון התזכורות) ────────────────────────
 // ימים שסיימו (closed) וצריכים סנכרון/ריסנכרון: not_synced (חדש, או אופס אחרי תיקון — ר'
@@ -196,6 +204,17 @@ export function markReminderSent(userKey: string, workDate: string): boolean {
 
 export function revertReminderClaim(userKey: string, workDate: string): void {
   revertReminderStmt.run(userKey, workDate);
+}
+
+/**
+ * שחזור work_date להתראת נוכחות ישנה (context.workDate חסר — נוצרה לפני שהשדה הזה נוסף) —
+ * התאמה מדויקת בלבד, לא ניחוש. מחזיר null כש-אין בדיוק שורה אחת תואמת (אפס — reminder_sent_at
+ * לא נמצא, למשל אם attendance_days נוקה; או יותר מאחת — חפיפה תיאורטית בין שני ימים של אותו
+ * משתמש שנשלחו באותה שנייה בדיוק) — עדיף בלי תאריך מאשר תאריך שגוי.
+ */
+export function findWorkDateForReminder(userKey: string, sentAt: string): string | null {
+  const rows = findWorkDateForReminderStmt.all(userKey, sentAt) as { work_date: string }[];
+  return rows.length === 1 ? rows[0]!.work_date : null;
 }
 
 /** startup בלבד — ר' הערת recoverStuckRemindersStmt. מחזיר כמה שורות שוחזרו. */

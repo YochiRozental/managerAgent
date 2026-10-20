@@ -25,7 +25,7 @@
 import { DateTime } from "luxon";
 import { env } from "../config/env.js";
 import { runInTransaction } from "../db/db.js";
-import { isAttendanceModuleEnabled } from "./attendance.js";
+import { isAttendanceModuleEnabled, reconcileAllOpenAttendanceReminders } from "./attendance.js";
 import {
   listOpenDaysDueForReminder,
   claimReminder,
@@ -122,6 +122,17 @@ export async function runAttendanceReminderTick(now: DateTime = DateTime.now().s
   if (tickInProgress) return 0; // הגנת overlap ברמת ה-scheduler — ה-CAS ב-DB נשאר שכבת הגנה נוספת
   tickInProgress = true;
   try {
+    // סריקת ה-reconciliation היזומה (audit "מחזור חיים" 2026-10-20 — ר' reconcileAllOpenAttendanceReminders
+    // ב-attendance.ts) רצה בכל טיק, לפני שליחת תזכורות חדשות: סוגרת כל תזכורת פתוחה ששייכת ליום
+    // שכבר נסגר בפועל (למשל אחרי correction שאושרה), גם אם אף hook ריאקטיבי לא "נגע" בה מאז.
+    // best-effort מכוונת — כשל כאן לא אמור לעצור שליחת תזכורות חדשות, וה-return value של הפונקציה
+    // הזו (sent) ממשיך להיות רק מספר התזכורות שנשלחו בפועל, כפי שבדיקות קיימות סומכות עליו.
+    try {
+      reconcileAllOpenAttendanceReminders();
+    } catch (err) {
+      logger.warn({ err }, "תזכורות נוכחות: סריקת reconciliation נכשלה — ממשיכים לשליחת תזכורות חדשות");
+    }
+
     const due = listOpenDaysDueForReminder(now.hour, now.minute);
     let sent = 0;
     for (const day of due) {

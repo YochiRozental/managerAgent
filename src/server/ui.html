@@ -1169,11 +1169,14 @@ async function sendMessage(text) {
       const clientTotalMs = performance.now() - perfSendStart;
       api("/api/perf/client", { method: "POST", body: JSON.stringify({ requestId, clientTotalMs }) }).catch(() => {});
     }
-    // הפנייה הפעילה אולי נפתרה בשרת (תשובה סגרה את ה-finding) — מרעננים ובודקים אם היא
-    // עדיין ברשימת הפתוחות; אם לא, מסירים אותה מהשיחה (state.activeNudge בלבד, לא נמחקת בשרת).
-    if (state.activeNudge) {
-      await loadNotifications();
-      if (!state.nudges.some(x => x.id === state.activeNudge.id)) state.activeNudge = null;
+    // כל תור שיחה יכול לסגור התראות ברקע (סגירת יום נוכחות, פתרון ממצא, סגירת התחייבות) — מרעננים
+    // את רשימת ההתראות תמיד, לא רק כש-יש activeNudge, כדי שהלשונית "פעיל" ומספר ההתראות יתעדכנו
+    // מיד בלי רענון ידני (audit "מחזור חיים" 2026-10-20). הפנייה הפעילה (אם יש) אולי נפתרה בשרת
+    // (תשובה סגרה את ה-finding) — בודקים אם היא עדיין ברשימת הפתוחות; אם לא, מסירים אותה מהשיחה
+    // (state.activeNudge בלבד, לא נמחקת בשרת).
+    await loadNotifications();
+    if (state.activeNudge && !state.nudges.some(x => x.id === state.activeNudge.id)) {
+      state.activeNudge = null;
       renderChat();
     }
   } catch (e) {

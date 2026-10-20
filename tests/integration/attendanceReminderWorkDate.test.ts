@@ -57,16 +57,20 @@ describe("תזכורת חדשה — context.workDate נשמר מרגע היצי�
     const day1 = "2031-04-11";
     checkAttendanceDayStart(yochi, at(day1, "08:00"));
     await runAttendanceReminderTick(at(day1, "09:00"));
+    const notif1 = listUnseenNotifications(yochi.key).find((n) => n.kind === "attendance_reminder");
+    expect((notif1?.context as { workDate?: string } | null)?.workDate).toBe(day1);
     // סוגרים את היום כדי ש-היום הבא ייפתח נקי (כמו בשאר הבדיקות הקיימות באותו קובץ).
     db.prepare(`UPDATE attendance_days SET status='closed' WHERE user_key=? AND work_date=?`).run(yochi.key, day1);
 
     const day2 = "2031-04-12";
     checkAttendanceDayStart(yochi, at(day2, "08:00"));
     await runAttendanceReminderTick(at(day2, "09:00"));
-
+    // הטיק של day2 מריץ גם את ה-reconciliation היזומה (audit "מחזור חיים" 2026-10-20) — day1
+    // כבר status='closed' (אפילו בלי לעבור ב-recomputeAndPersistDay), אז התזכורת שלו נסגרת
+    // אוטומטית כתופעת-לוואי נכונה; זה בדיוק התרחיש שהתיקון נועד לכסות, לא כפילות. נשארת רק day2.
     const notifs = listUnseenNotifications(yochi.key).filter((n) => n.kind === "attendance_reminder");
     const workDates = notifs.map((n) => (n.context as { workDate?: string } | null)?.workDate).sort();
-    expect(workDates).toEqual([day1, day2]);
+    expect(workDates).toEqual([day2]);
   });
 });
 

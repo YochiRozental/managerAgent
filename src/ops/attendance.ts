@@ -64,7 +64,8 @@ import {
   type StoredCorrection,
 } from "../db/repositories/attendanceCorrections.js";
 import { isPayrollMonthClosed } from "../db/repositories/payrollMonths.js";
-import { listUnseenNotifications, markNotificationSeenById } from "../db/repositories/notifications.js";
+import { listUnseenNotifications, listUnseenNotificationsByKind, markNotificationSeenById } from "../db/repositories/notifications.js";
+import { publishNotificationLive } from "./notificationBus.js";
 import { logger } from "../utils/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,16 +189,10 @@ function effectiveSummary(userKey: string, workDate: string) {
 }
 
 /**
- * attendance_days.status הוא **גס** (open/closed/pending_completion — ר' schema.sql, ועל זה
- * מבוססות כל שאילתות ה-SQL כמו listOpenDaysDueForReminder/findOpenDayBefore). ה-status העדין
- * שה-state machine עובד איתו (working/on_break) ממופה כאן ל-"open" — ההבדל בין "עובד" ל"בהפסקה"
- * לא נשמר ברמת ה-cache הזה, רק נגזר-מחדש מהיומן בכל פעם שצריך (effectiveSummary, לא כאן).
- */
-/**
  * סוגר (markNotificationSeenById) כל התראת attendance_reminder פתוחה של המשתמש ששייכת בוודאות
- * ליום-העבודה הזה — audit "מחזור חיים של התראות נוכחות" (2026-10-19): עד כה שום דבר לא חיבר בין
- * סגירת/אימות יום נוכחות לבין ההתראה שהזכירה אותו, אז תזכורת נשארה "פעילה" לנצח גם אחרי שהיום
- * נסגר בפועל — התראה 286 (13/10, יוכי) הייתה הדוגמה המדויקת לזה.
+ * ליום-העבודה הזה — audit "מחזור חיים של התראות נוכחות" (2026-10-19/20): עד כה שום דבר לא חיבר
+ * בין סגירת/אימות יום נוכחות לבין ההתראה שהזכירה אותו, אז תזכורת נשארה "פעילה" לנצח גם אחרי
+ * שהיום נסגר בפועל — התראה 286 (13/10, יוכי) הייתה הדוגמה המדויקת לזה.
  *
  * שיוך "ודאי" בלבד: context.workDate (התראות חדשות) או findWorkDateForReminder — התאמה מדויקת
  * ל-reminder_sent_at (התראות ישנות). בלי שיוך ודאי — מדלגים על ההתראה הזו, לא מנחשים ולא סוגרים
@@ -205,10 +200,19 @@ function effectiveSummary(userKey: string, workDate: string) {
  * UPDATE ישיר — כך הפעולה נשארת תחת אותה הגנת בעלות (user_key) ואותו SPECIAL_KINDS exclusion
  * כמו כל סימון-נקרא אחר; idempotent מאליו (שורה שכבר seen_at מדולגת בשקט).
  *
- * שני קוראים בלבד, שניהם מאמתים מצב נוכחות *אמיתי* לפני הקריאה — **לא** נקרא משום claim חופשי
- * בצ'אט: (1) recomputeAndPersistDay, כש-יום נסגר/נרשם-מחדש כסגור על ידי אירוע אמיתי (report
- * DayClose/תיקון); (2) agentTools.ts's attendance_day_status, כש-הסוכן רק *בודק* יום (קריאה
- * בלבד מבחינת נתוני נוכחות עצמם) ומגלה שהוא כבר סגור — גם בלי אירוע חדש באותו תור.
+ * דחיפה חיה (audit שלב ב, 2026-10-20 — תגובה ל"נשאר פעיל עד רענון"): **מחוץ** לשום דבר שחייב
+ * atomicity עם הכתיבה עצמה (כמו שה-reminder-creation flow כבר עושה ב-attendanceReminderScheduler
+ * .ts) — best-effort, לא ניתן ל-rollback, אבל גם לא מזיק אם "יתפרסם" רגע לפני קריסה היפותטית:
+ * הלקוח פשוט ירענן ולא ימצא שינוי. נכשל בשקט (try/catch) — ההתראה כבר נסגרה ב-DB גם אם הדחיפה
+ * נכשלה; תיראה סגורה בטעינה הבאה בכל מקרה.
+ *
+ * שלושה קוראים, כולם מאמתים מצב נוכחות *אמיתי* לפני הקריאה — **לא** נקרא משום claim חופשי בצ'אט:
+ * (1) recomputeAndPersistDay, כש-יום נסגר/נרשם-מחדש כסגור על ידי אירוע אמיתי (reportDayClose/
+ * תיקון); (2) agentTools.ts's attendance_day_status, כש-הסוכן רק *בודק* יום (קריאה בלבד מבחינת
+ * נתוני נוכחות עצמם) ומגלה שהוא כבר סגור — גם בלי אירוע חדש באותו תור; (3) reconcileAllOpen
+ * AttendanceReminderNotifications למטה — סריקה יזומה תקופתית, לא רק תגובתית (מכסה ימים שנסגרו
+ * *לפני* שהתיקון הזה עלה לאוויר, כמו 314/18-10 — נמצא בפועל בפרודקשן שנשאר פעיל יממה שלמה בלי
+ * שום אינטראקציה שתעורר אותו).
  */
 export function closeAttendanceReminderNotifications(userKey: string, workDate: string): number {
   const candidates = listUnseenNotifications(userKey).filter((n) => n.kind === "attendance_reminder");
@@ -216,11 +220,62 @@ export function closeAttendanceReminderNotifications(userKey: string, workDate: 
   for (const n of candidates) {
     const storedWorkDate = typeof n.context?.workDate === "string" ? (n.context.workDate as string) : null;
     const resolvedWorkDate = storedWorkDate ?? findWorkDateForReminder(n.userKey, n.createdAt);
-    if (resolvedWorkDate === workDate && markNotificationSeenById(userKey, n.id)) closed++;
+    if (resolvedWorkDate !== workDate) continue;
+    if (!markNotificationSeenById(userKey, n.id)) continue;
+    closed++;
+    try {
+      publishNotificationLive({
+        userKey,
+        id: n.id,
+        kind: n.kind,
+        body: "", // ריק בכוונה — "notification" ב-SSE עם body מציג toast ב-UI (ר' onLiveNotification),
+        // וזו סגירה, לא הודעה חדשה שדורשת תשומת לב. התפקיד היחיד של הדחיפה הזו הוא לגרום ל-
+        // loadNotifications() לרוץ מיד אצל כל חלון פתוח של המשתמש — לא להציג תוכן.
+        findingKey: n.findingKey,
+        itemId: n.itemId,
+        itemSource: n.itemSource,
+        context: n.context,
+        createdAt: n.createdAt,
+      });
+    } catch {
+      /* best-effort — ר' תיעוד למעלה: ההתראה כבר seen_at ב-DB בכל מקרה */
+    }
   }
   return closed;
 }
 
+/**
+ * סריקה יזומה (לא רק תגובתית) — סוגרת כל attendance_reminder פתוחה בכל המערכת ששייכת ליום
+ * שכבר closed בפועל, גם אם שום דבר לא "נגע" בה מאז (audit שלב ב, 2026-10-20): מוכח בפרודקשן
+ * שהתראה 314 (יוכי, 18/10) נשארה פעילה יממה שלמה אחרי שהיום שלה כבר נסגר, כי שני הקוראים
+ * הריאקטיביים (recomputeAndPersistDay/attendance_day_status) דורשים שמשהו *יקרה* כדי לרוץ.
+ * נקראת כל טיק (60 שניות, attendanceReminderScheduler.ts) — נפח תמיד קטן (היקף הפיילוט בלבד),
+ * אותה לוגיקת "שיוך ודאי בלבד" כמו closeAttendanceReminderNotifications (לא מנחשת, לא סוגרת
+ * ללא ודאות). בטוחה להפעלה חוזרת — idempotent בדיוק כמו הקריאה הבודדת.
+ */
+export function reconcileAllOpenAttendanceReminders(): number {
+  const candidates = listUnseenNotificationsByKind("attendance_reminder");
+  const checked = new Set<string>(); // (userKey:workDate) — לא קוראים לאותו זוג פעמיים באותה סריקה
+  let totalClosed = 0;
+  for (const n of candidates) {
+    const storedWorkDate = typeof n.context?.workDate === "string" ? (n.context.workDate as string) : null;
+    const resolvedWorkDate = storedWorkDate ?? findWorkDateForReminder(n.userKey, n.createdAt);
+    if (!resolvedWorkDate) continue; // לא ניתן לשייך בוודאות — מדלגים, לא מנחשים
+    const key = `${n.userKey}:${resolvedWorkDate}`;
+    if (checked.has(key)) continue;
+    checked.add(key);
+    const day = getDay(n.userKey, resolvedWorkDate);
+    if (day?.status === "closed") totalClosed += closeAttendanceReminderNotifications(n.userKey, resolvedWorkDate);
+  }
+  return totalClosed;
+}
+
+/**
+ * attendance_days.status הוא **גס** (open/closed/pending_completion — ר' schema.sql, ועל זה
+ * מבוססות כל שאילתות ה-SQL כמו listOpenDaysDueForReminder/findOpenDayBefore). ה-status העדין
+ * שה-state machine עובד איתו (working/on_break) ממופה כאן ל-"open" — ההבדל בין "עובד" ל"בהפסקה"
+ * לא נשמר ברמת ה-cache הזה, רק נגזר-מחדש מהיומן בכל פעם שצריך (effectiveSummary, לא כאן).
+ */
 function recomputeAndPersistDay(userKey: string, workDate: string): StoredAttendanceDay {
   const summary = effectiveSummary(userKey, workDate);
   const dayStatus = summary.status === "closed" ? "closed" : "open";

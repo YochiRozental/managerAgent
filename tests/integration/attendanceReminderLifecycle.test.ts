@@ -29,6 +29,7 @@ import {
   reportDayClose,
   setAttendanceReminderTime,
   closeAttendanceReminderNotifications,
+  reconcileAllOpenAttendanceReminders,
 } from "../../src/ops/attendance.js";
 import { buildMessageIdempotencySeed } from "../../src/ops/attendanceEngine.js";
 import { runAttendanceReminderTick } from "../../src/ops/attendanceReminderScheduler.js";
@@ -211,6 +212,83 @@ describe("6. בידוד, idempotency, ואפס השפעה על קינדים לא
 
     const otherRow = db.prepare(`SELECT seen_at FROM notifications WHERE id=?`).get(otherId) as { seen_at: string | null };
     expect(otherRow.seen_at).toBeNull(); // לא נגעו בה
+  });
+});
+
+describe("7. reconcileAllOpenAttendanceReminders — סריקה יזומה (audit 2026-10-20, תרחיש התראה 314 בפרודקשן)", () => {
+  it("תרחיש 314 המדויק: יום נסגר ביממה שחלפה, אף hook ריאקטיבי לא הופעל מאז — הסריקה היזומה סוגרת בכל זאת", async () => {
+    const day = "2032-02-01";
+    setAttendanceReminderTime(yochi, 9, 0);
+    checkAttendanceDayStart(yochi, at(day, "08:00"));
+    await runAttendanceReminderTick(at(day, "09:00"));
+    const notifId = openReminder(yochi.key)?.id;
+    expect(notifId).toBeDefined();
+
+    // מדמים את 314 במדויק: היום נסגר (לא דרך reportDayClose/recomputeAndPersistDay — למשל
+    // backfill/מיגרציה חיצונית, או כל מצב שבו שום קוד-אפליקציה לא "נגע" בשורה) ושום דבר לא
+    // קרה מאז שיגרום ל-hook הריאקטיבי (recomputeAndPersistDay / attendance_day_status) לרוץ.
+    db.prepare(`UPDATE attendance_days SET status='closed' WHERE user_key=? AND work_date=?`).run(yochi.key, day);
+    expect(openReminder(yochi.key)).toBeDefined(); // עדיין פתוחה — כמו 314 שנשארה יממה שלמה
+
+    const closed = reconcileAllOpenAttendanceReminders();
+
+    expect(closed).toBe(1);
+    expect(openReminder(yochi.key)).toBeUndefined();
+    const history = listNotificationsPage(yochi.key, 20).map((n) => n.id);
+    expect(history).toContain(notifId);
+  });
+
+  it("לא סוגר תזכורת של יום שעדיין פתוח", async () => {
+    const day = "2032-02-02";
+    setAttendanceReminderTime(yochi, 9, 0);
+    checkAttendanceDayStart(yochi, at(day, "08:00"));
+    await runAttendanceReminderTick(at(day, "09:00"));
+
+    const closed = reconcileAllOpenAttendanceReminders();
+
+    expect(closed).toBe(0);
+    expect(openReminder(yochi.key)).toBeDefined();
+  });
+
+  it("חוצה-משתמשים: סוגר את התזכורת של כל מי שהיום שלו כבר closed, לא רק של הראשון שנבדק", async () => {
+    const day = "2032-02-03";
+    setAttendanceReminderTime(yochi, 9, 0);
+    setAttendanceReminderTime(dov, 9, 0);
+    checkAttendanceDayStart(yochi, at(day, "08:00"));
+    checkAttendanceDayStart(dov, at(day, "08:00"));
+    await runAttendanceReminderTick(at(day, "09:00"));
+    db.prepare(`UPDATE attendance_days SET status='closed' WHERE user_key IN (?, ?) AND work_date=?`).run(yochi.key, dov.key, day);
+
+    const closed = reconcileAllOpenAttendanceReminders();
+
+    expect(closed).toBe(2);
+    expect(openReminder(yochi.key)).toBeUndefined();
+    expect(openReminder(dov.key)).toBeUndefined();
+  });
+
+  it("לא מנחשת: התראה בלי context.workDate ובלי reminder_sent_at תואם — נשארת פתוחה גם כש-קיים יום closed אחר של אותו משתמש", () => {
+    const day = "2032-02-04";
+    addNotification(yochi.key, "attendance_reminder", "שים לב, שעון הנוכחות שלך עדיין פעיל.");
+    db.prepare(`INSERT INTO attendance_days (user_key, work_date, status) VALUES (?, ?, 'closed')`).run(yochi.key, day);
+
+    const closed = reconcileAllOpenAttendanceReminders();
+
+    expect(closed).toBe(0);
+    expect(openReminder(yochi.key)).toBeDefined(); // שיוך לא ודאי — לא נוגעים
+  });
+
+  it("idempotent — הרצה שנייה ברצף לא סוגרת שוב / לא זורקת", async () => {
+    const day = "2032-02-05";
+    setAttendanceReminderTime(yochi, 9, 0);
+    checkAttendanceDayStart(yochi, at(day, "08:00"));
+    await runAttendanceReminderTick(at(day, "09:00"));
+    db.prepare(`UPDATE attendance_days SET status='closed' WHERE user_key=? AND work_date=?`).run(yochi.key, day);
+
+    const first = reconcileAllOpenAttendanceReminders();
+    const second = reconcileAllOpenAttendanceReminders();
+
+    expect(first).toBe(1);
+    expect(second).toBe(0);
   });
 });
 

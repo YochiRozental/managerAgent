@@ -51,6 +51,12 @@ const SPECIAL_KINDS = `('nudge','approval_request','approval_instruction')`;
 const listUnseenStmt = db.prepare(
   `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NULL AND kind NOT IN ${SPECIAL_KINDS} ORDER BY id ASC`,
 );
+// פר-kind, חוצה-משתמשים — ל-reconciliation (attendance.ts's reconcileAllOpenAttendanceReminders,
+// audit "מחזור חיים" 2026-10-20): נפח תמיד קטן (kind='attendance_reminder' = לכל היותר תזכורת
+// אחת פתוחה פר-עובד-פיילוט), לא סריקה רחבה של הטבלה כולה.
+const listUnseenByKindStmt = db.prepare(
+  `SELECT * FROM notifications WHERE kind = ? AND seen_at IS NULL ORDER BY id ASC`,
+);
 // approval_instruction — שאלה/הנחיה של מוטי לעובד — מוצגת לעובד בדיוק כמו נודג': בועה ייעודית
 // שנשארת פתוחה עד שהוא עונה, ומזינה about (עם approvalId) להודעה הבאה שלו.
 const listUnseenNudgesStmt = db.prepare(
@@ -136,6 +142,11 @@ export function addNotification(
 
 export function listUnseenNotifications(userKey: string): Notification[] {
   return (listUnseenStmt.all(userKey) as unknown as Row[]).map(fromRow);
+}
+
+/** כל ההתראות הלא-נקראות מסוג נתון, חוצה-משתמשים — ר' listUnseenByKindStmt למעלה. */
+export function listUnseenNotificationsByKind(kind: string): Notification[] {
+  return (listUnseenByKindStmt.all(kind) as unknown as Row[]).map(fromRow);
 }
 
 /** ר' hasUnseenForKindStmt למעלה — idempotency guard מפורש, לא רק הדה-דופ הפנימי של addNotification. */

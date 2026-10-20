@@ -51,20 +51,32 @@ describe("markNotificationSeenById — פר-התראה, לא גורף", () => {
   });
 });
 
-describe("listNotificationsPage — דפדוף היסטוריה, חדש→ישן", () => {
-  it("מחזיר נקראות וגם לא-נקראות, מהחדש לישן", () => {
+describe("listNotificationsPage — היסטוריה נקראות-בלבד, חדש→ישן (audit הפרדת לשוניות, 2026-10-19)", () => {
+  it("מחזיר רק נקראות — לא-נקראת לא מופיעה כאן בכלל", () => {
     const id1 = addNotification(U1, "task_assigned", "ראשונה");
     const id2 = addNotification(U1, "task_assigned", "שנייה");
     markNotificationSeenById(U1, id1);
 
     const page = listNotificationsPage(U1, 10);
-    expect(page.map((n) => n.id)).toEqual([id2, id1]);
-    expect(page.find((n) => n.id === id1)?.seenAt).not.toBeNull();
-    expect(page.find((n) => n.id === id2)?.seenAt).toBeNull();
+    expect(page.map((n) => n.id)).toEqual([id1]);
+    expect(page[0]?.seenAt).not.toBeNull();
   });
 
-  it("beforeId מחזיר את העמוד הבא בלי לחפוף לעמוד הקודם", () => {
+  it("זר לחלוטין ל-listUnseenNotifications — אותה שורה לא מופיעה גם שם וגם כאן (אין חפיפה)", () => {
+    const idOpen = addNotification(U1, "task_assigned", "פתוחה");
+    const idClosed = addNotification(U1, "task_assigned", "סגורה");
+    markNotificationSeenById(U1, idClosed);
+
+    const active = listUnseenNotifications(U1).map((n) => n.id);
+    const history = listNotificationsPage(U1, 10).map((n) => n.id);
+    expect(active).toEqual([idOpen]);
+    expect(history).toEqual([idClosed]);
+    expect(active.filter((id) => history.includes(id))).toEqual([]); // אין חפיפה
+  });
+
+  it("beforeId מחזיר את העמוד הבא בלי לחפוף לעמוד הקודם (רק בין נקראות)", () => {
     const ids = [1, 2, 3, 4, 5].map((i) => addNotification(U1, "task_assigned", `הודעה ${i}`));
+    for (const id of ids) markNotificationSeenById(U1, id);
 
     const firstPage = listNotificationsPage(U1, 2);
     expect(firstPage.map((n) => n.id)).toEqual([ids[4], ids[3]]);
@@ -76,18 +88,24 @@ describe("listNotificationsPage — דפדוף היסטוריה, חדש→ישן
     expect(thirdPage.map((n) => n.id)).toEqual([ids[0]]);
   });
 
-  it("לא כולל נודג'ים/בקשות אישור — אותו SPECIAL_KINDS exclusion כמו listUnseenNotifications", () => {
+  it("לא כולל נודג'ים/בקשות אישור — אותו SPECIAL_KINDS exclusion כמו listUnseenNotifications (גם כש-נקראו)", () => {
     const taskId = addNotification(U1, "task_assigned", "משימה");
-    addNotification(U1, "nudge", "פנייה", "finding-y");
-    addNotification(U1, "approval_request", "בקשת אישור");
+    const nudgeId = addNotification(U1, "nudge", "פנייה", "finding-y");
+    const approvalId = addNotification(U1, "approval_request", "בקשת אישור");
+    markNotificationSeenById(U1, taskId);
+    // nudge/approval_request לא ניתנים לסימון דרך ה-endpoint הגנרי (ר' markSeenByIdStmt) — מדמים
+    // "נקרא" ישירות ב-DB כדי לוודא שגם ככה הם לא דולפים להיסטוריה הכללית.
+    db.prepare(`UPDATE notifications SET seen_at = datetime('now') WHERE id IN (?, ?)`).run(nudgeId, approvalId);
 
     const page = listNotificationsPage(U1, 10);
     expect(page.map((n) => n.id)).toEqual([taskId]);
   });
 
   it("מבודד בין משתמשים", () => {
-    addNotification(U1, "task_assigned", "של משתמש 1");
+    const u1Id = addNotification(U1, "task_assigned", "של משתמש 1");
     const u2Id = addNotification(U2, "task_assigned", "של משתמש 2");
+    markNotificationSeenById(U1, u1Id);
+    markNotificationSeenById(U2, u2Id);
 
     expect(listNotificationsPage(U2, 10).map((n) => n.id)).toEqual([u2Id]);
   });

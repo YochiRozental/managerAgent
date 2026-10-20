@@ -90,14 +90,18 @@ const hasUnseenForKindStmt = db.prepare(
 const byKindSinceStmt = db.prepare(
   `SELECT * FROM notifications WHERE user_key = ? AND kind = ? AND created_at >= ? ORDER BY id ASC`,
 );
-// היסטוריית התראות (נקראות+לא-נקראות) בדפדוף — אותו SPECIAL_KINDS exclusion כמו שאר הרשימה
-// הכללית (נודג'ים/אישורים יש להם תצוגה נפרדת משלהם). "עמוד ראשון" (בלי beforeId) מול "עמוד הבא"
-// (id < beforeId) כדי שלא יהיה תלוי ב-OFFSET (יציב גם אם מגיעות שורות חדשות בין בקשות).
+// היסטוריית התראות — **נקראות בלבד** (audit "מחזור חיים של התראות נוכחות + הפרדת לשוניות",
+// 2026-10-19): עד כה לא היה כאן פילטר על seen_at בכלל, אז "היסטוריה" הייתה מציגה גם התראות
+// פעילות (seen_at IS NULL) — בדיוק מה שכבר מוצג בלשונית "פעיל" (listUnseenStmt), חפיפה מלאה בין
+// שתי הלשוניות. עכשיו זו חלוקה זרה לחלוטין: "פעיל" = seen_at IS NULL, "היסטוריה" = seen_at IS NOT
+// NULL — אותו SPECIAL_KINDS exclusion כמו שאר הרשימה הכללית (נודג'ים/אישורים מוצגים בנפרד).
+// "עמוד ראשון" (בלי beforeId) מול "עמוד הבא" (id < beforeId) כדי שלא יהיה תלוי ב-OFFSET (יציב
+// גם אם מגיעות שורות חדשות בין בקשות).
 const pageFirstStmt = db.prepare(
-  `SELECT * FROM notifications WHERE user_key = ? AND kind NOT IN ${SPECIAL_KINDS} ORDER BY id DESC LIMIT ?`,
+  `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NOT NULL AND kind NOT IN ${SPECIAL_KINDS} ORDER BY id DESC LIMIT ?`,
 );
 const pageBeforeStmt = db.prepare(
-  `SELECT * FROM notifications WHERE user_key = ? AND kind NOT IN ${SPECIAL_KINDS} AND id < ? ORDER BY id DESC LIMIT ?`,
+  `SELECT * FROM notifications WHERE user_key = ? AND seen_at IS NOT NULL AND kind NOT IN ${SPECIAL_KINDS} AND id < ? ORDER BY id DESC LIMIT ?`,
 );
 
 export interface NotificationContext {
@@ -155,9 +159,11 @@ export function markNotificationSeenById(userKey: string, id: number): boolean {
 }
 
 /**
- * עמוד אחד מהיסטוריית ההתראות (נקראות+לא-נקראות), חדש→ישן. beforeId (מ-id של השורה האחרונה
- * שנטענה) מביא את העמוד הבא; בלי beforeId — העמוד הראשון. limit הוא מספר השורות המבוקש בפועל
- * (הקורא מוסיף +1 ובודק hasMore בעצמו אם רוצה — הפונקציה הזו לא מחליטה על hasMore).
+ * עמוד אחד מהיסטוריית ההתראות — **נקראות בלבד** (seen_at IS NOT NULL — ר' audit "הפרדת לשוניות",
+ * 2026-10-19), חדש→ישן. זר לחלוטין ל-listUnseenNotifications (seen_at IS NULL): שום שורה לא
+ * יכולה להופיע גם כאן וגם שם. beforeId (מ-id של השורה האחרונה שנטענה) מביא את העמוד הבא; בלי
+ * beforeId — העמוד הראשון. limit הוא מספר השורות המבוקש בפועל (הקורא מוסיף +1 ובודק hasMore
+ * בעצמו אם רוצה — הפונקציה הזו לא מחליטה על hasMore).
  */
 export function listNotificationsPage(userKey: string, limit: number, beforeId?: number): Notification[] {
   const rows = beforeId != null ? pageBeforeStmt.all(userKey, beforeId, limit) : pageFirstStmt.all(userKey, limit);

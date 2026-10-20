@@ -43,6 +43,7 @@ import {
   findOpenDayBefore,
   markPendingCompletion,
   markNeedsMondaySync,
+  findWorkDateForReminder,
   type StoredAttendanceDay,
 } from "../db/repositories/attendanceDays.js";
 import {
@@ -63,6 +64,8 @@ import {
   type StoredCorrection,
 } from "../db/repositories/attendanceCorrections.js";
 import { isPayrollMonthClosed } from "../db/repositories/payrollMonths.js";
+import { listUnseenNotifications, markNotificationSeenById } from "../db/repositories/notifications.js";
+import { logger } from "../utils/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // שער ההפעלה
@@ -190,6 +193,34 @@ function effectiveSummary(userKey: string, workDate: string) {
  * שה-state machine עובד איתו (working/on_break) ממופה כאן ל-"open" — ההבדל בין "עובד" ל"בהפסקה"
  * לא נשמר ברמת ה-cache הזה, רק נגזר-מחדש מהיומן בכל פעם שצריך (effectiveSummary, לא כאן).
  */
+/**
+ * סוגר (markNotificationSeenById) כל התראת attendance_reminder פתוחה של המשתמש ששייכת בוודאות
+ * ליום-העבודה הזה — audit "מחזור חיים של התראות נוכחות" (2026-10-19): עד כה שום דבר לא חיבר בין
+ * סגירת/אימות יום נוכחות לבין ההתראה שהזכירה אותו, אז תזכורת נשארה "פעילה" לנצח גם אחרי שהיום
+ * נסגר בפועל — התראה 286 (13/10, יוכי) הייתה הדוגמה המדויקת לזה.
+ *
+ * שיוך "ודאי" בלבד: context.workDate (התראות חדשות) או findWorkDateForReminder — התאמה מדויקת
+ * ל-reminder_sent_at (התראות ישנות). בלי שיוך ודאי — מדלגים על ההתראה הזו, לא מנחשים ולא סוגרים
+ * (דרישה מפורשת: עדיף להשאיר פתוח מאשר לסגור בטעות). קוראים ל-markNotificationSeenById, לא ל-
+ * UPDATE ישיר — כך הפעולה נשארת תחת אותה הגנת בעלות (user_key) ואותו SPECIAL_KINDS exclusion
+ * כמו כל סימון-נקרא אחר; idempotent מאליו (שורה שכבר seen_at מדולגת בשקט).
+ *
+ * שני קוראים בלבד, שניהם מאמתים מצב נוכחות *אמיתי* לפני הקריאה — **לא** נקרא משום claim חופשי
+ * בצ'אט: (1) recomputeAndPersistDay, כש-יום נסגר/נרשם-מחדש כסגור על ידי אירוע אמיתי (report
+ * DayClose/תיקון); (2) agentTools.ts's attendance_day_status, כש-הסוכן רק *בודק* יום (קריאה
+ * בלבד מבחינת נתוני נוכחות עצמם) ומגלה שהוא כבר סגור — גם בלי אירוע חדש באותו תור.
+ */
+export function closeAttendanceReminderNotifications(userKey: string, workDate: string): number {
+  const candidates = listUnseenNotifications(userKey).filter((n) => n.kind === "attendance_reminder");
+  let closed = 0;
+  for (const n of candidates) {
+    const storedWorkDate = typeof n.context?.workDate === "string" ? (n.context.workDate as string) : null;
+    const resolvedWorkDate = storedWorkDate ?? findWorkDateForReminder(n.userKey, n.createdAt);
+    if (resolvedWorkDate === workDate && markNotificationSeenById(userKey, n.id)) closed++;
+  }
+  return closed;
+}
+
 function recomputeAndPersistDay(userKey: string, workDate: string): StoredAttendanceDay {
   const summary = effectiveSummary(userKey, workDate);
   const dayStatus = summary.status === "closed" ? "closed" : "open";
@@ -208,7 +239,16 @@ function recomputeAndPersistDay(userKey: string, workDate: string): StoredAttend
   // סנכרון Monday (שלב ד — החלטה 4: מבוסס DB משותף, לא תלוי בערוץ): כל פעם שהיום *נגמר* סגור —
   // כולל תיקון שמגיע אחרי שהיום כבר נסגר — מסמנים שצריך (ל-ריסנכרן. לא CAS: תמיד מאפס ל-not_synced
   // (אלא אם כבר שם), כדי שתיקון אחרי שליחה ל-Monday יידחף שוב. ימים פתוחים לא מסונכרנים כלל כרגע.
-  if (dayStatus === "closed") markNeedsMondaySync(userKey, workDate);
+  if (dayStatus === "closed") {
+    markNeedsMondaySync(userKey, workDate);
+    // best-effort, מחוץ ל"חובה" של persist היום עצמו — כשל כאן (למשל שאילתת notifications נכשלת)
+    // לא אמור אף פעם לבטל/לשבש את כתיבת הנוכחות שכבר הצליחה (ר' upsertDay למעלה).
+    try {
+      closeAttendanceReminderNotifications(userKey, workDate);
+    } catch (err) {
+      logger.error({ err, userKey, workDate }, "סגירת תזכורות נוכחות אחרי סגירת יום נכשלה — רישום הנוכחות עצמו נשאר תקין");
+    }
+  }
 
   return day;
 }

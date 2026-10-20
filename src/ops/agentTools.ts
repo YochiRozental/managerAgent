@@ -43,6 +43,7 @@ import {
   requestAttendanceCorrection,
   attendanceEnabledForUser,
   getAttendanceDayStatus,
+  closeAttendanceReminderNotifications,
   type AttendanceActionResult,
   type RequestCorrectionResult,
 } from "./attendance.js";
@@ -594,12 +595,14 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
     {
       name: "attendance_day_status",
       description:
-        "קריאה בלבד — אף פעם לא כותב/משנה כלום. מחזיר את כל אירועי הנוכחות של העובד ליום מבוקש, בסדר כרונומטי, עם מזהה " +
-        "אירוע, שעה מקומית, סוג (כניסה/יציאה-להפסקה/חזרה-מהפסקה/סיום-יום), מצב נוכחי (עובד/בהפסקה/סגור), ושעות עבודה/" +
-        "הפסקה מחושבות *עד כה* (אם היום עדיין פתוח — זו הערכה זמנית, לא סופית; isFinal=false מציין את זה). " +
-        "קרא לזה על: 'מה רשום לי היום', 'מתי יצאתי/חזרתי מהפסקה', 'אני כרגע בעבודה או בהפסקה', 'כמה עבדתי עד עכשיו', " +
-        "'מה רשום לי אתמול'. גם *לפני* תיקון (attendance_report_correction) כשיש חוסר-בטחון באיזה אירוע/eventId מתכוונים. " +
-        "workDate אופציונלי (YYYY-MM-DD, חשב יחסית להיום כמו בכלים אחרים) — בלי זה, ברירת המחדל היא היום.",
+        "קריאה בלבד *לגבי נתוני הנוכחות עצמם* — אף פעם לא כותב/משנה אירוע/יום/תיקון. מחזיר את כל אירועי הנוכחות של העובד " +
+        "ליום מבוקש, בסדר כרונומטי, עם מזהה אירוע, שעה מקומית, סוג (כניסה/יציאה-להפסקה/חזרה-מהפסקה/סיום-יום), מצב נוכחי " +
+        "(עובד/בהפסקה/סגור), ושעות עבודה/הפסקה מחושבות *עד כה* (אם היום עדיין פתוח — זו הערכה זמנית, לא סופית; " +
+        "isFinal=false מציין את זה). קרא לזה על: 'מה רשום לי היום', 'מתי יצאתי/חזרתי מהפסקה', 'אני כרגע בעבודה או " +
+        "בהפסקה', 'כמה עבדתי עד עכשיו', 'מה רשום לי אתמול'. גם *לפני* תיקון (attendance_report_correction) כשיש חוסר-" +
+        "בטחון באיזה אירוע/eventId מתכוונים. workDate אופציונלי (YYYY-MM-DD, חשב יחסית להיום כמו בכלים אחרים) — בלי זה, " +
+        "ברירת המחדל היא היום. תופעת-לוואי יחידה, לא-קשורה לנתוני נוכחות: אם היום מתגלה כבר סגור, תזכורות-נוכחות ישנות " +
+        "(attendance_reminder) שעדיין מופיעות כ'פעילות' עבור אותו יום נסגרות ברקע — בלי קשר למה שהעובד אמר בצ'אט.",
       input_schema: {
         type: "object",
         properties: {
@@ -611,7 +614,19 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
         assertAttendanceEnabled(ctx.user, doAttendanceEnabledForUser);
         const workDate = input.workDate ? String(input.workDate) : workDateFor(DateTime.now().setZone(env.TIMEZONE));
         if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error(`workDate לא תקין: "${workDate}" (צריך YYYY-MM-DD)`);
-        return getAttendanceDayStatus(ctx.user, workDate);
+        const result = getAttendanceDayStatus(ctx.user, workDate);
+        // audit "מחזור חיים של התראות נוכחות" (2026-10-19) — ר' closeAttendanceReminderNotifications
+        // ב-attendance.ts: רק כש-הקריאה *האמיתית* מהDB מאשרת status==='closed', לא על בסיס שום דבר
+        // שהעובד טען בצ'אט. best-effort — כשל כאן לא הופך את הקריאה הזו (עדיין קריאה-בלבד לנתוני
+        // נוכחות) לכישלון.
+        if (result.status === "closed") {
+          try {
+            closeAttendanceReminderNotifications(ctx.user.key, workDate);
+          } catch {
+            /* best-effort — ר' תיעוד ב-attendance.ts */
+          }
+        }
+        return result;
       },
     },
   ];

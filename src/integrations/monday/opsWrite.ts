@@ -41,6 +41,11 @@ const STATUS_CONFIG: Record<OpsTaskSource, StatusConfig> = {
   },
 };
 
+/** התוויות החוקיות של עמודת הסטטוס לפי מקור — לאימות מוקדם בעדכון קבוצתי (src/ops/bulkUpdate.ts). */
+export function taskStatusLabels(source: OpsTaskSource): readonly string[] {
+  return STATUS_CONFIG[source].labels;
+}
+
 /** תוויות "סיימתי" לפי מקור — כדי שהחלונית לא תצטרך לדעת את ההבדל. */
 export const DONE_LABEL: Record<OpsTaskSource, string> = {
   general: "בוצע",
@@ -186,7 +191,7 @@ const COLUMN_LABELS_TTL_MS = 10 * 60_000;
  * תוויות תקינות של עמודת status/color לפי id — נקרא דינמית מ-Monday (לא מנחשים ערכים,
  * ר' get_board_info ב-CLAUDE.md §8). labels ריק (עמודה לא נמצאה) → מדלגים על הוולידציה.
  */
-async function getColumnLabels(boardId: string, columnId: string): Promise<string[]> {
+export async function getColumnLabels(boardId: string, columnId: string): Promise<string[]> {
   const key = `${boardId}:${columnId}`;
   const cached = columnLabelsCache.get(key);
   if (cached && Date.now() - cached.at < COLUMN_LABELS_TTL_MS) return cached.labels;

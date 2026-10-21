@@ -126,6 +126,12 @@
 
 רוב הסקריפטים בנויים כקוד רציף עם `check(label, cond, extra)` או `assert(cond, msg)`. בהעברה הם נשארו כמעט כפי שהם: אותם קלטים, אותם תנאים, אותן הודעות. רק העזר הוחלף ב-`tests/helpers/check.ts`, שרושם כל קריאה כ-`it` נפרד. הוסרו רק ספירת הכישלונות ו-`process.exit`, ונתיבי ה-import תוקנו.
 
+### סינון ועדכון קבוצתי (2026-10-21): בידוד
+
+- `unit/relativeDates.test.ts`, `unit/bulkQuery.test.ts`: לוגיקה טהורה, עם "עכשיו" מוזרק. ה-fetchers מוזרקים דרך `deps`. בבדיקת ה-pagination של `fetchLeadsForBulk` מוחלף `mondayRequest` (vi.mock).
+- `integration/bulkUpdate.test.ts`: Monday מדומה בזיכרון (`deps` של `prepareBulkUpdate`/`confirmBulkUpdate`), והתוכניות נכתבות רק ל-DB הזמני.
+- `integration/bulkChat.test.ts`: שיחה מלאה דרך `runOpsChat` עם מודל מסוקרפט. `fetchUserOpsTasks`, `readItemsForVerification` ו-`setItemColumnValues` מוחלפים ב-vi.mock. אין כתיבה אמיתית ואין קריאת AI.
+
 ## הסקריפטים הישנים שנשארו
 
 בדיקות ה-Live נמצאות ב-`scripts/live/` (`npm run test:<שם>`), יחד עם טבלת הסיכונים של כל אחת ב-`scripts/live/README.md`. בדיקת ה-E2E נמצאת ב-`scripts/e2e-loop.ts`. חלקם נוגעים ב-`data/agent.db` המקומי, ב-Monday אמיתי או ב-AI, ולכן הם **לא** חלק מ-`npm test`.

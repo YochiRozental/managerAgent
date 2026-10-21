@@ -89,3 +89,22 @@ export async function setItemPeople(
     { boardId, itemId, columnId, value },
   );
 }
+
+/**
+ * עדכון כמה עמודות בפריט אחד בקריאה אחת (change_multiple_column_values) — לעדכון קבוצתי
+ * (src/ops/bulkUpdate.ts): סטטוס+תאריך+תעדוף+אחראי לרשומה = קריאת API אחת, לא אחת לכל עמודה.
+ * הערכים כבר בפורמט של Monday ({label}, {date}, {personsAndTeams}) ומאומתים אצל הקורא.
+ */
+export async function setItemColumnValues(
+  boardId: string,
+  itemId: string,
+  values: Record<string, unknown>,
+): Promise<void> {
+  if (!Object.keys(values).length) return;
+  await mondayRequest(
+    `mutation ($boardId: ID!, $itemId: ID!, $values: JSON!) {
+      change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id }
+    }`,
+    { boardId, itemId, values: JSON.stringify(values) },
+  );
+}

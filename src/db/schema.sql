@@ -343,3 +343,43 @@ CREATE TABLE IF NOT EXISTS chat_perf_steps (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_perf_steps_request ON chat_perf_steps (request_id);
 CREATE INDEX IF NOT EXISTS idx_chat_perf_steps_created ON chat_perf_steps (created_at);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- סינון מתקדם ועדכון קבוצתי בשפה טבעית (2026-10-21) — ר' src/ops/bulkQuery.ts / bulkUpdate.ts.
+-- bulk_result_sets: קבוצת התוצאות האחרונה של שאילתה בשיחה (user+session) — כדי ש"תעביר את כולן" /
+--   "חוץ מפרויקט X" בהודעה הבאה יתייחסו בדיוק לאותה קבוצה (ההיסטוריה שנשלחת למודל היא טקסט בלבד).
+-- bulk_plans: תוכנית עדכון שהוצגה למשתמש וממתינה לאישור מפורש. items_json = snapshot טרי מ-Monday
+--   של כל רשומה (לפני) + הערכים החדשים (אחרי). status: awaiting_confirmation → executing → executed;
+--   או stale / cancelled / expired. ה-CAS ל-executing מונע ביצוע כפול באישור חוזר/retry.
+-- אין כאן תוכן רגיש מעבר לשמות הפריטים שהמשתמש עצמו כבר ראה.
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bulk_result_sets (
+  id TEXT PRIMARY KEY,
+  user_key TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  record_type TEXT NOT NULL,           -- tasks | leads
+  filters_json TEXT NOT NULL,
+  filters_text TEXT NOT NULL,
+  records_json TEXT NOT NULL,          -- [{itemId, kind, name}] בסדר התצוגה
+  complete INTEGER NOT NULL,           -- 1 = כל המקורות נשלפו במלואם
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_result_sets_owner ON bulk_result_sets (user_key, session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS bulk_plans (
+  id TEXT PRIMARY KEY,
+  user_key TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  result_set_id TEXT NOT NULL,
+  record_type TEXT NOT NULL,
+  change_json TEXT NOT NULL,
+  change_text TEXT NOT NULL,
+  items_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_turn TEXT NOT NULL,          -- מזהה ההודעה שבה נוצרה התוכנית — אישור חייב להגיע בהודעה אחרת
+  expires_at TEXT NOT NULL,
+  report_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_plans_owner ON bulk_plans (user_key, session_id, created_at);

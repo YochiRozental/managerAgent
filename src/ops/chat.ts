@@ -74,6 +74,17 @@ import { getEmployeeFeed, formatEmployeeFeedText, formatEmployeeFeedBriefing, em
 import { attendanceEnabledForUser, checkAttendanceDayStart } from "./attendance.js";
 import { buildMessageIdempotencySeed } from "./attendanceEngine.js";
 import { countUserMessagesInSession } from "../db/repositories/chatHistory.js";
+import { getLatestPendingPlan, getLatestResultSet, saveResultSet } from "../db/repositories/bulkOps.js";
+import { explicitDayInText, resolveSingleDay } from "./relativeDates.js";
+import { formatQueryText, mergeFilters, runBulkQuery, type BulkFilters, type BulkRecordType } from "./bulkQuery.js";
+import {
+  buildBulkContextLines,
+  cancelBulkUpdate,
+  confirmBulkUpdate,
+  prepareBulkUpdate,
+  type BulkChangeInput,
+  type BulkContext,
+} from "./bulkUpdate.js";
 
 const MAX_TURNS = 7;
 
@@ -300,6 +311,11 @@ export const WEB_CHAT_LOCAL_TOOL_NAMES: readonly string[] = [
   "list_findings",
   "sales_and_collection",
   "find_lead_or_deal",
+  // סינון מתקדם + עדכון קבוצתי (2026-10-21) — ר' buildBulkTools
+  "query_records",
+  "prepare_bulk_update",
+  "confirm_bulk_update",
+  "cancel_bulk_update",
 ];
 
 /**
@@ -796,6 +812,170 @@ interface ToolDef {
  * (execute(input,ctx), src/ai/toolRegistry.ts — היום רק create_lead). ה-duck-typing (שדה
  * execute קיים) עובד כי שתי הצורות לעולם לא מגדירות את שני השדות (run/execute) גם יחד.
  */
+/** פעולה על כמה רשומות בבת אחת — "תעביר את כל המשימות...", "שנה את כולן...". */
+const BULK_INTENT = /(כל\s+ה(משימות|לידים)|כולן|כולם)/;
+/** בקשת המשך שמתייחסת לקבוצה הקודמת — "חוץ מ...", "רק של...", "אותן", "השלישית", אישור. */
+const BULK_FOLLOWUP = /(חוץ מ|בלי ה|רק ה|רק של|אותן|אותם|את אלה|רשימה|ראשונה|שנייה|שלישית|תעביר|תשנה|תזיז|העבר|שנה|הזז|כן|מאשר|תבצע|בטל)/;
+
+const BULK_FILTER_PROPERTIES = {
+  recordType: { type: "string", enum: ["tasks", "leads"], description: "tasks = משימות (משרד + פרויקטים, פתוחות בלבד); leads = לידים" },
+  assignees: {
+    type: "array",
+    items: { type: "string" },
+    description: "של מי: שמות מהצוות, 'אני' למשתמש עצמו, 'כולם' לכל הצוות. השמט = המשימות של המשתמש עצמו (בלידים: לפי ההרשאה שלו).",
+  },
+  projects: { type: "array", items: { type: "string" }, description: "שם/חלק משם פרויקט (משימות בלבד)" },
+  excludeProjects: { type: "array", items: { type: "string" }, description: "'חוץ מפרויקט X'" },
+  activeProjectsOnly: { type: "boolean", description: "רק בפרויקטים פעילים" },
+  statuses: { type: "array", items: { type: "string" }, description: "סטטוסים לכלול, כפי שנאמרו ('תקוע', 'ממתין', 'בעבודה', 'פולואפ'). 'בלי סטטוס' = תווית ריקה" },
+  excludeStatuses: { type: "array", items: { type: "string" } },
+  priorities: { type: "array", items: { type: "string" }, description: "משימות בלבד. 'דחוף/דחופות' = ['קריטי','גבוה']" },
+  date: {
+    type: "string",
+    description:
+      "תאריך יעד (משימה) / תזכורת הבאה (ליד), כפי שהמשתמש אמר — 'היום', 'מחר', 'אתמול', 'השבוע', 'שבוע הבא', 'יום ראשון הבא', 'החודש', 'בעוד 3 ימים', '25/10', 'YYYY-MM-DD'. הקוד מפענח לפי Asia/Jerusalem.",
+  },
+  dateFrom: { type: "string", description: "תחילת טווח (אותם ביטויים כמו date)" },
+  dateTo: { type: "string", description: "סוף טווח (אותם ביטויים כמו date)" },
+  overdue: { type: "boolean", description: "שעבר להן התאריך / באיחור / תזכורת שעברה" },
+  noDate: { type: "boolean", description: "בלי תאריך בכלל" },
+  notUpdatedSince: { type: "string", description: "לידים בלבד — 'לא טופלו השבוע' → 'השבוע' (לא עודכנו ב-Monday מאז תחילת הטווח)" },
+  nameContains: { type: "string" },
+  includeClosed: { type: "boolean", description: "לידים בלבד — לכלול גם סגורים / שעברו לעסקה / הוקפאו (ברירת המחדל: רק לידים פתוחים)" },
+} as const;
+
+/**
+ * ארבעת כלי הסינון/העדכון הקבוצתי (ר' bulkQuery.ts / bulkUpdate.ts). Web-local (לא AgentTool) כי
+ * הם תלויים בהקשר השיחה — session, מזהה ההודעה וההודעה האחרונה של המשתמש (אכיפת "אישור מפורש
+ * בהודעה נפרדת") — ש-AgentToolContext לא נושא. setCaptured — הטקסט שיוגש מילה במילה.
+ */
+function buildBulkTools(
+  user: IdentifiedUser,
+  ctx: BulkContext,
+  history: ChatMessage[],
+  setCaptured: (text: string) => void,
+  actions: string[],
+  turnState: { prepared: boolean },
+): ToolDef[] {
+  const tools: ToolDef[] = [
+    {
+      name: "query_records",
+      description:
+        "שליפה מסוננת של רשומות Monday — כל הרשומות התואמות (לא מדגם), עם כמה תנאים יחד: עובד + פרויקט + תאריך + סטטוס + תעדוף. " +
+        "השתמש בזה לכל בקשת הצגה עם סינון: 'המשימות שלי למחר', 'המשימות של איתן שעבר להן התאריך', 'הדחופות שלי בפרויקטים פעילים', " +
+        "'לידים פתוחים שלא טופלו השבוע' — ולא ב-get_today_tasks (שמיועד רק לתדריך 'מה יש לי היום'). " +
+        "גם השלב הראשון של כל עדכון קבוצתי ('העבר את כל המשימות של מחר...'): קודם query_records, ואז prepare_bulk_update. " +
+        "בקשת המשך שמשנה סינון קודם ('חוץ מפרויקט X', 'רק של דוב') → base='last' ורק התנאי שהשתנה; excludeIndexes = מספרי השורות מהרשימה הקודמת להחרגה. " +
+        "אם לא ברור לאיזה סוג רשומות/איזה תאריך/איזה אדם הכוונה — שאל לפני הקריאה. התשובה (text) מוצגת למשתמש כמו שהיא.",
+      input_schema: {
+        type: "object",
+        properties: {
+          ...BULK_FILTER_PROPERTIES,
+          base: { type: "string", enum: ["last"], description: "'last' = עדכון של הסינון הקודם בשיחה (ולא סינון חדש מאפס)" },
+          excludeIndexes: { type: "array", items: { type: "number" }, description: "מספרי שורות (1-based) מהרשימה הקודמת להחרגה — רק עם base='last'" },
+        },
+      },
+      run: async (input) => {
+        const { base, excludeIndexes, ...rest } = input as Record<string, unknown> & { base?: string; excludeIndexes?: number[] };
+        let filters = rest as unknown as BulkFilters;
+        let excludeIds: string[] = [];
+        if (base === "last") {
+          const prev = getLatestResultSet(user.key, ctx.sessionId);
+          if (!prev) return { ok: false, error: "אין סינון קודם בשיחה הזו — בנה סינון מלא." };
+          if (excludeIndexes?.length) {
+            const bad = excludeIndexes.filter((i) => !Number.isInteger(i) || i < 1 || i > prev.records.length);
+            if (bad.length) return { ok: false, error: `מספרי שורה לא קיימים ברשימה הקודמת: ${bad.join(", ")} (יש ${prev.records.length}).` };
+            excludeIds = excludeIndexes.map((i) => prev.records[i - 1]!.itemId);
+          }
+          filters = mergeFilters(prev.filters as BulkFilters, { ...filters, recordType: filters.recordType ?? (prev.recordType as BulkRecordType), excludeItemIds: excludeIds });
+        } else if (excludeIndexes?.length) {
+          return { ok: false, error: "excludeIndexes עובד רק עם base='last'." };
+        }
+        const outcome = await runBulkQuery(user, filters, ctx.now);
+        if (!outcome.ok) return outcome;
+        saveResultSet({
+          userKey: user.key,
+          sessionId: ctx.sessionId,
+          recordType: outcome.recordType,
+          filters,
+          filtersText: outcome.filtersText,
+          records: outcome.records.map((r) => ({ itemId: r.itemId, kind: r.kind, name: r.name })),
+          complete: outcome.complete,
+        });
+        const text = formatQueryText(outcome);
+        setCaptured(text);
+        return { ok: true, count: outcome.records.length, complete: outcome.complete, text };
+      },
+    },
+  ];
+
+  const canWrite = userCan(user, "task:update_own") || userCan(user, "lead:manage");
+  if (!canWrite) return tools;
+
+  tools.push(
+    {
+      name: "prepare_bulk_update",
+      description:
+        "מכין עדכון קבוצתי על קבוצת התוצאות האחרונה מ-query_records ומחזיר תצוגה מקדימה — **לא משנה כלום ב-Monday**. " +
+        "שדות: dueDate (תאריך חדש, ביטוי יום יחיד: 'יום ראשון הבא', '25/10') או shiftDays (הזזה יחסית, למשל 2 = יומיים קדימה), status, priority (משימות), assignee. " +
+        "'אחרי החג' / 'בהמשך' / תאריך לא חד-משמעי — אל תנחש, שאל לתאריך מדויק. " +
+        "'כולן' / 'אותן' / 'את אלה' = קבוצת התוצאות האחרונה כפי שהיא (כולל החרגות קודמות) — אל תקרא query_records מחדש לפני כן. " +
+        "אחרי הקריאה הצג את text בדיוק כמו שהוא וסיים — אל תקרא שום כלי נוסף באותה הודעה.",
+      input_schema: {
+        type: "object",
+        properties: {
+          dueDate: { type: "string", description: "הביטוי של המשתמש מילה במילה ('יום ראשון הבא', 'מחר', '25/10'). אל תחשב תאריך בעצמך — הקוד מחשב." },
+          shiftDays: { type: "number" },
+          status: { type: "string" },
+          priority: { type: "string" },
+          assignee: { type: "string" },
+        },
+      },
+      run: async (input) => {
+        const change = input as BulkChangeInput;
+        // אימות דטרמיניסטי: מודל שהמיר בעצמו "יום ראשון הבא" לתאריך מספרי שגוי (נמצא בבדיקה חיה) — נדחה
+        if (change.dueDate && /\d/.test(change.dueDate)) {
+          const latest = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+          const said = explicitDayInText(latest, ctx.now);
+          const passed = resolveSingleDay(change.dueDate, ctx.now);
+          if (said && passed && said !== passed) {
+            return { ok: false, error: `התאריך שהועבר (${change.dueDate}) לא תואם את מה שהמשתמש אמר. העבר ב-dueDate את הביטוי המקורי של המשתמש מילה במילה.` };
+          }
+        }
+        const r = await prepareBulkUpdate(user, ctx, { change });
+        if (r.ok) {
+          setCaptured(r.text);
+          turnState.prepared = true;
+        }
+        return r;
+      },
+    },
+    {
+      name: "confirm_bulk_update",
+      description:
+        "מבצע עדכון קבוצתי שהוצג ואושר. קרא רק כשההודעה האחרונה של המשתמש היא אישור מפורש ('כן', 'מאשר', 'תבצע') לתצוגה מקדימה שהוצגה בהודעה קודמת. " +
+        "הקוד בודק שוב את האישור ואת הרשומות מול Monday; אם משהו השתנה — לא יבוצע כלום. הצג את text כמו שהוא.",
+      input_schema: { type: "object", properties: { planId: { type: "string", description: "מזהה התוכנית (bp_...) — השמט לתוכנית הממתינה האחרונה" } } },
+      run: async (input) => {
+        const latestUserMessage = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+        const r = await confirmBulkUpdate(user, { ...ctx, latestUserMessage }, { planId: input.planId ? String(input.planId) : undefined });
+        if (r.ok) {
+          setCaptured(r.text);
+          if (r.executed) actions.push("📦 עדכון קבוצתי בוצע");
+        }
+        return r;
+      },
+    },
+    {
+      name: "cancel_bulk_update",
+      description: "מבטל עדכון קבוצתי שממתין לאישור ('לא', 'בטל', 'עזוב').",
+      input_schema: { type: "object", properties: {} },
+      run: async () => cancelBulkUpdate(user, ctx),
+    },
+  );
+  return tools;
+}
+
 function isSharedToolDefinition(tool: ToolDef | ToolDefinition): tool is ToolDefinition {
   return "execute" in tool;
 }
@@ -1067,6 +1247,24 @@ export async function runOpsChat(
   // כמו capturedBriefing — get_my_pipeline מוגש מילה-במילה כשזה כל מה שקרה בסבב, כדי שהחלוקה
   // לחמש הקטגוריות (לידים/עסקאות/משימות) לא תיטשטש בניסוח חופשי של המודל.
   let capturedPipelineText: string | null = null;
+  // סינון/עדכון קבוצתי — תצוגה מקדימה / דוח ביצוע / רשימת תוצאות מוגשים מילה במילה: המספרים
+  // והרשימה חייבים להיות בדיוק מה שנשלף (לא "סיכום" של המודל שעלול להשמיט או להמציא רשומה).
+  let capturedBulkText: string | null = null;
+  const bulkCtx: BulkContext = {
+    sessionId: scopeId,
+    turnId: opts.clientMessageId ?? `h${history.length}`,
+    now,
+  };
+  // מצב קבוצתי פעיל (תוצאות אחרונות / תוכנית ממתינה) — נכנס לחלק המשתנה של ה-system prompt בלבד,
+  // ורק כשקיים; בלי מצב פעיל ה-prompt זהה בדיוק לקודם (ומטמון ה-prompt לא נפגע).
+  const bulkContextSuffix = buildBulkContextLines(user.key, scopeId, now).join("\n");
+  const bulkTurn = { prepared: false };
+  // בקשת המשך / פעולה על קבוצה → SMART (נמצא בבדיקה חיה: FAST איבד את ההחרגה מההודעה הקודמת
+  // וחישב תאריך שגוי). דיוק בפעולה על כמה רשומות חשוב מהעלות; בקשות רגילות לא מושפעות.
+  const latestText = history[history.length - 1]?.content ?? "";
+  const bulkNeedsSmart =
+    !opts.about &&
+    (!!getLatestPendingPlan(user.key, scopeId) || BULK_INTENT.test(latestText) || (!!bulkContextSuffix && BULK_FOLLOWUP.test(latestText)));
   // audit שלב ז (2026-10-13) — נתיב דטרמיניסטי לאישור פעולת נוכחות: מתעד את ה-message *האמיתי*
   // שכלי נוכחות החזיר בהצלחה בסבב הזה (לא ניסוח חופשי של המודל). אם קיים — הוא מחליף את תשובת
   // המודל כליל (ר' למטה, אחרי runCentralAgent). מאופס מחדש בכל ניסיון (ר' runAttempt).
@@ -1306,6 +1504,10 @@ export async function runOpsChat(
     const a = buildAttendanceToolDefinitions(messageSeed);
     tools.push(a.breakStart, a.breakEnd, a.dayClose, a.setReminder, a.reportCorrection, ATTENDANCE_DAY_STATUS_TOOL_DEFINITION);
   }
+
+  // ---- סינון מתקדם + עדכון קבוצתי (2026-10-21) — ר' ops/bulkQuery.ts / bulkUpdate.ts. ההרשאות
+  // נאכפות שם (פר-רשומה); החשיפה כאן רק מונעת להציע כלי כתיבה למי שאין לו שום הרשאת עדכון. ----
+  tools.push(...buildBulkTools(user, bulkCtx, history, (t) => (capturedBulkText = t), actions, bulkTurn));
 
   // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה (פריט Monday אמיתי בלבד —
   // ממצא בלי itemId, כמו התחייבות, מטופל בנפרד למטה דרך close_commitment הקיים, לא כאן). ----
@@ -1733,11 +1935,20 @@ export async function runOpsChat(
   const buildLoop = () => {
     capturedBriefing = null; // איפוס לפני כל ניסיון — כדי שה-fallback ל-SMART יאסוף תדריך מחדש
     capturedPipelineText = null;
+    capturedBulkText = null;
+    bulkTurn.prepared = false;
+    const cacheSplit = promptCachingEnabled ? buildPromptCachingSplitFor(user, opts.about) : null;
     return {
-      system: systemPrompt(user, opts.about),
+      system: bulkContextSuffix ? `${systemPrompt(user, opts.about)}\n${bulkContextSuffix}` : systemPrompt(user, opts.about),
       // Prompt Caching — ר' promptCachingEnabled למעלה. כש-הדגל כבוי השדה הזה undefined,
       // ו-agentLoop/anthropic.ts מתנהגים בדיוק כקודם.
-      ...(promptCachingEnabled ? { promptCaching: buildPromptCachingSplitFor(user, opts.about) } : {}),
+      ...(cacheSplit
+        ? {
+            promptCaching: bulkContextSuffix
+              ? { ...cacheSplit, volatileSystemSuffix: `${cacheSplit.volatileSystemSuffix}\n${bulkContextSuffix}` }
+              : cacheSplit,
+          }
+        : {}),
       maxTokens: 1024,
       maxTurns: MAX_TURNS,
       messages: toNormMessages(history),
@@ -1749,6 +1960,11 @@ export async function runOpsChat(
       // AgentTool/permission data, אין להם מה להמיר. actions.push/refresh() (SHARED_TOOL_UI_EFFECT) ו-
       // כל ה-logging נשארים channel adapter concern, מחוברים דרך hooks — הדיספצ'ר עצמו לא מכיר אותם.
       executeToolCall: async (call: NormToolCall) => {
+        // עדכון קבוצתי: אחרי שתצוגה מקדימה הוכנה בסבב הזה — שום כלי נוסף באותו סבב (נמצא בבדיקה חיה:
+        // מודל FAST ביטל את התצוגה שהכין ואז ניסה set_status על מזהים מומצאים). התצוגה היא סוף הסבב.
+        if (bulkTurn.prepared && call.name !== "prepare_bulk_update") {
+          return { content: "שגיאה: התצוגה המקדימה מוכנה — הצג אותה למשתמש וסיים. אסור לקרוא לכלים נוספים בהודעה הזו.", sideEffect: false };
+        }
         const tool = tools.find((t) => t.name === call.name);
         if (!tool) return { content: `שגיאה: כלי לא ידוע ${call.name}`, sideEffect: false };
         const input = (call.input ?? {}) as Record<string, unknown>;
@@ -1812,6 +2028,7 @@ export async function runOpsChat(
         toolCallRecords.push({ name, durationMs, ok });
       },
       finalizeText: (modelText: string) => {
+        if (capturedBulkText) return capturedBulkText;
         // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא (כולל ברכה+כותרת,
         // ר' formatEmployeeFeedBriefing) במקום הניסוח החופשי של המודל (שנוטה לשבש את מבנה חמש
         // הקטגוריות). לא רלוונטי בתשובה לפנייה יזומה — שם רוצים את התשובה של הכלי.
@@ -1834,7 +2051,7 @@ export async function runOpsChat(
       historyLength: history.length,
       canSeeAllWork: userCan(user, "view:all_work"),
       // תשובה לפנייה יזומה → SMART: הבנת הכוונה + הפעולה הנכונה ב-Monday חשובה מהעלות.
-      forceTier: forceTier ?? (opts.about ? "smart" : undefined),
+      forceTier: forceTier ?? (opts.about || bulkNeedsSmart ? "smart" : undefined),
       buildLoop,
       // ל-ops chat "תופעת לוואי" = כתיבה ל-Monday/DB (actions), לא סתם קריאת מידע
       sideEffectCount: () => actions.length,

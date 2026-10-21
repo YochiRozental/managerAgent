@@ -577,9 +577,14 @@ async function main() {
         "list_findings",
         "sales_and_collection",
         "find_lead_or_deal",
+        // נוספו 2026-10-21 — סינון מתקדם + עדכון קבוצתי (buildBulkTools ב-chat.ts), באותו שינוי
+        "query_records",
+        "prepare_bulk_update",
+        "confirm_bulk_update",
+        "cancel_bulk_update",
       ].sort(),
     ),
-    "WEB_CHAT_LOCAL_TOOL_NAMES: בדיוק 20 הכלים המקומיים (19 + get_my_pipeline, 2026-10-11)",
+    "WEB_CHAT_LOCAL_TOOL_NAMES: בדיוק 24 הכלים המקומיים (19 + get_my_pipeline 2026-10-11 + 4 כלי עדכון קבוצתי 2026-10-21)",
   );
 
   // ───────────────────────── 12. WhatsApp's 22-tool registry (2026-10-08: +find_lead/update_lead_contact) ─────────────────────────

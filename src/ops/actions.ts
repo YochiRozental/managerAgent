@@ -237,6 +237,8 @@ export async function updateTask(
 ): Promise<{ ok: true; message: string }> {
   const doSetTaskStatus = deps.setTaskStatus ?? setTaskStatus;
   const doAddTaskNote = deps.addTaskNote ?? addTaskNote;
+  // מזהה מומצא ("item_2_x") לא מגיע לכתיבה — נמצא בבדיקה חיה 2026-10-21 (כמו reassignItem/addUpdateToItem)
+  if (!/^\d+$/.test(String(input.itemId ?? ""))) throw new Error("מזהה פריט לא תקין — זהה את המשימה עם find_task");
   await authorize(user, input.itemId, deps);
 
   switch (input.action) {

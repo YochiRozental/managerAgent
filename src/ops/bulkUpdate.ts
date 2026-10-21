@@ -270,6 +270,14 @@ export async function prepareBulkUpdate(
     return { ok: false, error: "השליפה האחרונה הייתה חלקית — אסור לעדכן קבוצה לא מלאה. הרץ שוב query_records ורק אם השליפה מלאה אפשר להמשיך." };
   }
   if (rs.records.length === 0) return { ok: false, error: "קבוצת התוצאות ריקה — אין מה לעדכן." };
+  // עסקאות/התחייבויות (תצוגת "כל מה שיש לי") — קריאה בלבד; לא מעדכנים קבוצה שחלק ממנה לא נתמך בשקט
+  const readOnly = rs.records.filter((r) => r.kind === "deal" || r.kind === "commitment");
+  if (readOnly.length) {
+    return {
+      ok: false,
+      error: `בקבוצה יש ${readOnly.length} עסקאות/התחייבויות — עדכון קבוצתי נתמך רק למשימות וללידים. שאל את המשתמש אם לעדכן רק את המשימות/הלידים (query_records מחדש עם recordType מתאים).`,
+    };
+  }
   if (rs.records.length > BULK_MAX_ITEMS) {
     return { ok: false, error: `נמצאו ${rs.records.length} רשומות — יותר מ-${BULK_MAX_ITEMS} בעדכון אחד. בקש מהמשתמש לצמצם את הסינון.` };
   }
@@ -413,7 +421,7 @@ export async function prepareBulkUpdate(
     "עדכון קבוצתי — תוכנית הוכנה, ממתינה לאישור",
   );
 
-  const noun = rs.recordType === "tasks" ? "משימות" : "לידים";
+  const noun = rs.recordType === "tasks" ? "משימות" : rs.recordType === "leads" ? "לידים" : "רשומות";
   const lines = [
     "📋 תצוגה מקדימה — עדכון קבוצתי (עדיין לא בוצע שום שינוי)",
     `סינון: ${rs.filtersText}`,

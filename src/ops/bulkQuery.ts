@@ -8,20 +8,29 @@
  *      שאר התנאים כאן. שליפה שנכשלה למקור אחד → complete=false, לעולם לא "0 תוצאות" בשקט.
  *
  * סוגי רשומות נתמכים: tasks (בורד "משימות 📝" + תת-משימות "מאגר משימות פרויקטים" — **פתוחות בלבד**,
- * כמו בכל שאר החלונית) ו-leads (בורד הלידים). אין כאן כתיבה — ר' bulkUpdate.ts.
+ * כמו בכל שאר החלונית), leads (בורד הלידים), deals (בורד העסקאות — קריאה בלבד) ו-commitments
+ * (התחייבויות פתוחות מה-DB שלנו — קריאה בלבד). recordTypes עם כמה סוגים = "כל מה שיש לי ב..."
+ * (2026-10-21). אין כאן כתיבה — ר' bulkUpdate.ts.
  */
 
 import { DateTime } from "luxon";
 import { resolveUsersByAssigneeText, TEAM_DIRECTORY, resolveUserByKey, userCan, type IdentifiedUser } from "../identity/index.js";
 import { fetchActiveProjects, fetchUserOpsTasks, type OpsTask, type ProjectMeta } from "../integrations/monday/opsRead.js";
-import { fetchLeadsForBulk, type BulkItemKind, type BulkLead } from "../integrations/monday/bulkRead.js";
+import { fetchDealsForBulk, fetchLeadsForBulk, type BulkDeal, type BulkItemKind, type BulkLead } from "../integrations/monday/bulkRead.js";
+import { DEAL_CLOSED } from "../integrations/monday/crmRead.js";
+import { listUserCommitments, type Commitment } from "../db/repositories/commitments.js";
 import { resolveDateExpr, type DateRange } from "./relativeDates.js";
 
-export type BulkRecordType = "tasks" | "leads";
+export type BulkRecordType = "tasks" | "leads" | "deals" | "commitments";
+export const ALL_RECORD_TYPES: readonly BulkRecordType[] = ["tasks", "leads", "deals", "commitments"];
+/** סוג רשומה בודדת — כולל סוגים שהם קריאה בלבד (עסקה/התחייבות; עדכון קבוצתי לא נתמך להם). */
+export type BulkRecordKind = BulkItemKind | "deal" | "commitment";
 
-/** הסינון כפי שהמודל ממלא אותו — כל השדות אופציונליים חוץ מ-recordType. */
+/** הסינון כפי שהמודל ממלא אותו — recordType (סוג יחיד) או recordTypes (כמה סוגים יחד). */
 export interface BulkFilters {
-  recordType: BulkRecordType;
+  recordType?: BulkRecordType;
+  /** כמה סוגים יחד — "כל מה שיש לי מחר" = כל הסוגים; "תביא גם את הלידים" = הקודמים + leads */
+  recordTypes?: BulkRecordType[];
   /** שמות אנשים; "אני" = המשתמש; "כולם" = כל הצוות. ריק → משימות: המשתמש עצמו; לידים: לפי ה-scope שלו. */
   assignees?: string[];
   /** שם (או חלק משם) פרויקט — משימות בלבד */
@@ -52,7 +61,7 @@ export interface BulkFilters {
 
 export interface BulkRecord {
   itemId: string;
-  kind: BulkItemKind;
+  kind: BulkRecordKind;
   name: string;
   project?: string;
   projectId?: string;
@@ -76,7 +85,10 @@ export interface CompiledFilters {
 export type BulkQueryOutcome =
   | {
       ok: true;
-      recordType: BulkRecordType;
+      /** "mixed" = כמה סוגים בתוצאה אחת */
+      recordType: BulkRecordType | "mixed";
+      /** הסוגים שנכללו בפועל (בתוצאה משולבת — לפי סדר התצוגה) */
+      types?: BulkRecordType[];
       records: BulkRecord[];
       /** false = לפחות מקור אחד לא נשלף — התוצאות חלקיות */
       complete: boolean;
@@ -122,10 +134,22 @@ function looseMatch(value: string | undefined, query: string): boolean {
 // אימות ופענוח (טהור)
 // ---------------------------------------------------------------------------
 
-export function compileFilters(filters: BulkFilters, now: DateTime): CompiledFilters {
-  if (filters.recordType !== "tasks" && filters.recordType !== "leads") {
-    throw new Error(`סוג רשומות לא נתמך: "${String(filters.recordType)}". נתמכים: tasks (משימות), leads (לידים).`);
+/** הסוגים המבוקשים, מאומתים. recordTypes גובר על recordType. */
+export function requestedTypes(filters: BulkFilters): BulkRecordType[] {
+  const raw = filters.recordTypes?.length ? filters.recordTypes : filters.recordType ? [filters.recordType] : [];
+  if (!raw.length) throw new Error("לא צוין סוג רשומות (recordType / recordTypes).");
+  const bad = raw.filter((t) => !ALL_RECORD_TYPES.includes(t));
+  if (bad.length) {
+    throw new Error(`סוג רשומות לא נתמך: "${bad.join(", ")}". נתמכים: tasks (משימות), leads (לידים), deals (עסקאות), commitments (התחייבויות). אמור זאת למשתמש במפורש.`);
   }
+  return [...new Set(raw)];
+}
+
+/** פענוח לסוג *יחיד* (raw.recordType). כמה סוגים — runBulkQuery מפצל וקורא לזה לכל סוג. */
+export function compileFilters(filters: BulkFilters, now: DateTime): CompiledFilters {
+  const types = requestedTypes(filters);
+  if (types.length !== 1) throw new Error("compileFilters מקבל סוג יחיד");
+  filters = { ...filters, recordType: types[0], recordTypes: undefined };
   const todayISO = now.toFormat("yyyy-MM-dd");
   const out: CompiledFilters = { raw: filters, todayISO };
 
@@ -149,14 +173,14 @@ export function compileFilters(filters: BulkFilters, now: DateTime): CompiledFil
     throw new Error("noDate (בלי תאריך) סותר סינון לפי תאריך/איחור — שאל את המשתמש למה התכוון.");
   }
   if (filters.notUpdatedSince) {
-    if (filters.recordType !== "leads") throw new Error("notUpdatedSince נתמך כרגע ללידים בלבד.");
+    if (filters.recordType !== "leads" && filters.recordType !== "deals") throw new Error("notUpdatedSince נתמך כרגע ללידים ולעסקאות בלבד.");
     out.updatedBefore = parse(filters.notUpdatedSince, "notUpdatedSince").from;
   }
-  if (filters.recordType === "leads") {
+  if (filters.recordType !== "tasks") {
     if (filters.projects?.length || filters.excludeProjects?.length || filters.activeProjectsOnly) {
-      throw new Error("ללידים אין סינון לפי פרויקט.");
+      throw new Error("סינון לפי פרויקט רלוונטי רק למשימות — שאל את המשתמש אם להציג רק משימות.");
     }
-    if (filters.priorities?.length) throw new Error("ללידים אין עמודת תעדוף.");
+    if (filters.priorities?.length) throw new Error("סינון תעדוף רלוונטי רק למשימות — שאל את המשתמש אם להציג רק משימות.");
   }
   if (filters.recordType === "tasks") {
     if (filters.includeClosed) throw new Error("ניתן לסנן רק משימות פתוחות — משימות שבוצעו לא נשלפות.");
@@ -174,9 +198,8 @@ export function applyFilters(records: BulkRecord[], c: CompiledFilters, activePr
   const excluded = new Set(f.excludeItemIds ?? []);
   const out = records.filter((r) => {
     if (excluded.has(r.itemId)) return false;
-    if (f.recordType === "leads" && !f.includeClosed && LEAD_NOT_OPEN.has(r.status) && !(f.statuses ?? []).some((s) => statusMatches(r.status, s))) {
-      return false;
-    }
+    const notOpen = r.kind === "lead" ? LEAD_NOT_OPEN.has(r.status) : r.kind === "deal" ? DEAL_CLOSED.has(r.status) : false;
+    if (notOpen && !f.includeClosed && !(f.statuses ?? []).some((s) => statusMatches(r.status, s))) return false;
     if (f.projects?.length && !f.projects.some((p) => looseMatch(r.project, p))) return false;
     if (f.excludeProjects?.length && f.excludeProjects.some((p) => looseMatch(r.project, p))) return false;
     if (f.activeProjectsOnly && !(r.projectId && activeProjectIds?.has(r.projectId))) return false;
@@ -205,6 +228,9 @@ export function mergeFilters(prev: BulkFilters, next: Partial<BulkFilters>): Bul
       (merged as unknown as Record<string, unknown>)[k] = v;
     }
   }
+  // סוג/סוגים חדשים מחליפים את הקודמים (לא מצטברים) — "גם הלידים" = המודל מעביר את הרשימה המלאה
+  if (next.recordTypes?.length) delete merged.recordType;
+  else if (next.recordType) delete merged.recordTypes;
   // טווח חדש מבטל date קודם ולהפך — אחרת compileFilters ידחה שילוב של שניהם
   if (next.date) {
     delete merged.dateFrom;
@@ -219,7 +245,13 @@ const pretty = (iso: string) => DateTime.fromISO(iso).toFormat("dd/MM");
 
 export function describeFilters(c: CompiledFilters, peopleText: string): string {
   const f = c.raw;
-  const parts: string[] = [f.recordType === "tasks" ? "משימות פתוחות" : f.includeClosed ? "לידים (כולל סגורים)" : "לידים פתוחים"];
+  const NOUN: Record<BulkRecordType, string> = {
+    tasks: "משימות פתוחות",
+    leads: f.includeClosed ? "לידים (כולל סגורים)" : "לידים פתוחים",
+    deals: f.includeClosed ? "עסקאות (כולל סגורות)" : "עסקאות פתוחות",
+    commitments: "התחייבויות פתוחות",
+  };
+  const parts: string[] = [requestedTypes(f).map((t) => NOUN[t]).join(" + ")];
   if (peopleText) parts.push(`של: ${peopleText}`);
   if (f.projects?.length) parts.push(`פרויקט: ${f.projects.join(" / ")}`);
   if (f.excludeProjects?.length) parts.push(`חוץ מפרויקט: ${f.excludeProjects.join(", ")}`);
@@ -227,7 +259,8 @@ export function describeFilters(c: CompiledFilters, peopleText: string): string 
   if (f.statuses?.length) parts.push(`סטטוס: ${f.statuses.join(" / ")}`);
   if (f.excludeStatuses?.length) parts.push(`חוץ מסטטוס: ${f.excludeStatuses.join(", ")}`);
   if (f.priorities?.length) parts.push(`תעדוף: ${f.priorities.join(" / ")}`);
-  const dateWord = f.recordType === "tasks" ? "תאריך יעד" : "תזכורת";
+  const types = requestedTypes(f);
+  const dateWord = types.length > 1 ? "תאריך" : types[0] === "leads" || types[0] === "deals" ? "תזכורת" : "תאריך יעד";
   if (c.dateRange) {
     const { from, to } = c.dateRange;
     if (from === to) parts.push(`${dateWord}: ${pretty(from)}`);
@@ -235,7 +268,7 @@ export function describeFilters(c: CompiledFilters, peopleText: string): string 
     else if (to === "9999-12-31") parts.push(`${dateWord} מ-${pretty(from)}`);
     else parts.push(`${dateWord}: ${pretty(from)}–${pretty(to)}`);
   }
-  if (f.overdue) parts.push(f.recordType === "tasks" ? "באיחור" : "תזכורת שעברה");
+  if (f.overdue) parts.push(types.length === 1 && (types[0] === "leads" || types[0] === "deals") ? "תזכורת שעברה" : "באיחור");
   if (f.noDate) parts.push(`בלי ${dateWord}`);
   if (c.updatedBefore) parts.push(`לא עודכנו מאז ${pretty(c.updatedBefore)}`);
   if (f.nameContains) parts.push(`שם מכיל: "${f.nameContains}"`);
@@ -285,6 +318,8 @@ function isOwnerOrAdmin(user: IdentifiedUser): boolean {
 export interface BulkQueryDeps {
   fetchUserOpsTasks?: (mondayUserId: string) => Promise<OpsTask[]>;
   fetchLeadsForBulk?: (ownerMondayId?: string) => Promise<BulkLead[]>;
+  fetchDealsForBulk?: (ownerMondayId?: string) => Promise<BulkDeal[]>;
+  listUserCommitments?: (userKey: string) => Commitment[];
   fetchActiveProjects?: () => Promise<ProjectMeta[]>;
 }
 
@@ -301,6 +336,32 @@ function taskToRecord(t: OpsTask): BulkRecord {
     date: t.dueDate,
     assignees: t.assignees,
     url: t.url,
+  };
+}
+
+function dealToRecord(d: BulkDeal): BulkRecord {
+  return {
+    itemId: d.itemId,
+    kind: "deal",
+    name: d.name,
+    status: d.stage,
+    date: d.reminderDate,
+    assignees: d.owner,
+    updatedAt: d.updatedAt,
+    url: d.url,
+  };
+}
+
+function commitmentToRecord(c: Commitment): BulkRecord {
+  return {
+    itemId: `c${c.id}`,
+    kind: "commitment",
+    name: `${c.what} (ל${c.toWhom})`,
+    project: c.project ?? undefined,
+    status: "פתוחה",
+    date: c.dueDate ?? undefined,
+    assignees: "",
+    url: "",
   };
 }
 
@@ -341,6 +402,75 @@ export async function runBulkQuery(
   now: DateTime,
   deps: BulkQueryDeps = {},
 ): Promise<BulkQueryOutcome> {
+  let types: BulkRecordType[];
+  try {
+    types = requestedTypes(filters);
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+  if (types.length === 1) return querySingle(user, { ...filters, recordType: types[0], recordTypes: undefined }, now, deps, false);
+
+  // כמה סוגים ("כל מה שיש לי מחר"): אותו סינון לכל סוג, ובלי assignees = של המשתמש עצמו בכל הסוגים
+  // (גם לבעלים — "שלי", לא כל הלידים במשרד). סוג שאין עליו הרשאה מדולג עם הערה מפורשת, לא נכשל.
+  const base: BulkFilters = { ...filters, recordTypes: undefined, assignees: filters.assignees?.length ? filters.assignees : ["אני"] };
+  const records: BulkRecord[] = [];
+  const failures: string[] = [];
+  const notes: string[] = [];
+  const included: BulkRecordType[] = [];
+  for (const t of types) {
+    const o = await querySingle(user, { ...base, recordType: t }, now, deps, true);
+    if (!o.ok) {
+      if (o.error.startsWith(PERMISSION_SKIP)) notes.push(o.error.slice(PERMISSION_SKIP.length));
+      else return o; // סינון לא חוקי / כשל מלא בשליפה — לא מציגים תמונה חלקית כאילו היא מלאה
+      continue;
+    }
+    included.push(t);
+    records.push(...o.records);
+    failures.push(...o.failures);
+    notes.push(...o.notes);
+  }
+  if (!included.length) return { ok: false, error: notes.join(" ") || "אין סוג רשומות שמותר לך לצפות בו." };
+  let compiled: CompiledFilters;
+  let people: IdentifiedUser[];
+  try {
+    compiled = compileFilters({ ...base, recordType: included[0] }, now);
+    people = resolvePeople(user, base.assignees ?? []);
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+  // מקובץ לפי סוג (בסדר התצוגה), ובתוך סוג — לפי תאריך. הסדר השמור = המספור המוצג (excludeIndexes)
+  const order = (r: BulkRecord) => included.indexOf(KIND_TYPE[r.kind]);
+  records.sort((a, b) => order(a) - order(b) || (a.date ?? "9999-99-99").localeCompare(b.date ?? "9999-99-99") || a.name.localeCompare(b.name, "he"));
+  return {
+    ok: true,
+    recordType: included.length > 1 ? "mixed" : included[0]!,
+    types: included,
+    records,
+    complete: failures.length === 0,
+    failures,
+    filtersText: describeFilters({ ...compiled, raw: { ...compiled.raw, recordType: undefined, recordTypes: included } }, people.map((p) => (p.key === user.key ? "אני" : p.name)).join(", ")),
+    notes,
+  };
+}
+
+const KIND_TYPE: Record<BulkRecordKind, BulkRecordType> = {
+  general: "tasks",
+  project_stage: "tasks",
+  lead: "leads",
+  deal: "deals",
+  commitment: "commitments",
+};
+
+/** קידומת פנימית: "אין הרשאה לסוג הזה" — בשאילתה משולבת מדלגים עליו עם הערה במקום להיכשל. */
+const PERMISSION_SKIP = "\u0000skip:";
+
+async function querySingle(
+  user: IdentifiedUser,
+  filters: BulkFilters,
+  now: DateTime,
+  deps: BulkQueryDeps,
+  inMixed: boolean,
+): Promise<BulkQueryOutcome> {
   let compiled: CompiledFilters;
   let people: IdentifiedUser[];
   try {
@@ -349,9 +479,17 @@ export async function runBulkQuery(
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
-  return filters.recordType === "tasks"
-    ? queryTasks(user, compiled, people, deps)
-    : queryLeads(user, compiled, people, deps);
+  const skip = (msg: string): BulkQueryOutcome => ({ ok: false, error: inMixed ? PERMISSION_SKIP + msg : msg });
+  switch (filters.recordType) {
+    case "tasks":
+      return queryTasks(user, compiled, people, deps);
+    case "leads":
+      return queryCrm(user, compiled, people, deps, "leads", skip);
+    case "deals":
+      return queryCrm(user, compiled, people, deps, "deals", skip);
+    default:
+      return queryCommitments(user, compiled, people, deps, skip);
+  }
 }
 
 async function queryTasks(
@@ -431,45 +569,73 @@ async function queryTasks(
   };
 }
 
-async function queryLeads(
+async function queryCrm(
   user: IdentifiedUser,
   compiled: CompiledFilters,
   requested: IdentifiedUser[],
   deps: BulkQueryDeps,
+  type: "leads" | "deals",
+  skip: (msg: string) => BulkQueryOutcome,
 ): Promise<BulkQueryOutcome> {
+  const noun = type === "leads" ? "לידים" : "עסקאות";
   if (!userCan(user, "lead:manage") && !userCan(user, "view:all_work")) {
-    return { ok: false, error: "אין לך הרשאה לצפות בלידים." };
+    return skip(`${noun} — אין לך הרשאה לצפות בהם, לא נכללו.`);
   }
   const seeAll = isOwnerOrAdmin(user);
   // בלי owner/admin — רק הלידים של המשתמש עצמו (אותו scope כמו findLeadAction ב-actions.ts)
   if (!seeAll) {
     const others = requested.filter((p) => p.key !== user.key);
-    if (others.length) return { ok: false, error: `אין לך הרשאה לצפות בלידים של ${others.map((o) => o.name).join(", ")} — רק בלידים שלך.` };
+    if (others.length) return { ok: false, error: `אין לך הרשאה לצפות ב${noun} של ${others.map((o) => o.name).join(", ")} — רק בשלך.` };
     if (!user.mondayUserId) return { ok: false, error: "אין לך חשבון Monday מקושר." };
   }
   const owners = seeAll ? requested : [user];
   const ownerIds = owners.map((o) => o.mondayUserId).filter((x): x is string => !!x);
-  if (owners.length && !ownerIds.length) return { ok: false, error: `ל${owners.map((o) => o.name).join(", ")} אין חשבון Monday — אין לידים באחריותו/ה.` };
+  if (owners.length && !ownerIds.length) return skip(`ל${owners.map((o) => o.name).join(", ")} אין חשבון Monday — אין ${noun} באחריותו/ה.`);
 
-  let leads: BulkLead[];
+  let rows: (BulkLead | BulkDeal)[];
   try {
-    const doFetch = deps.fetchLeadsForBulk ?? fetchLeadsForBulk;
+    const doFetch = type === "leads" ? (deps.fetchLeadsForBulk ?? fetchLeadsForBulk) : (deps.fetchDealsForBulk ?? fetchDealsForBulk);
     // אחראי יחיד → סינון בצד Monday; כמה → שליפה אחת של הכל וסינון כאן (במקום N שליפות)
-    leads = await doFetch(ownerIds.length === 1 ? ownerIds[0] : undefined);
+    rows = await doFetch(ownerIds.length === 1 ? ownerIds[0] : undefined);
   } catch {
-    return { ok: false, error: "השליפה מבורד הלידים ב-Monday נכשלה. לא ניתן להציג תוצאות — נסה שוב בעוד רגע." };
+    return { ok: false, error: `השליפה מבורד ה${noun} ב-Monday נכשלה. לא ניתן להציג תוצאות — נסה שוב בעוד רגע.` };
   }
-  if (ownerIds.length > 1) leads = leads.filter((l) => l.ownerIds.some((id) => ownerIds.includes(id)));
-  if (!seeAll) leads = leads.filter((l) => l.ownerIds.includes(user.mondayUserId!));
+  if (ownerIds.length > 1) rows = rows.filter((l) => l.ownerIds.some((id) => ownerIds.includes(id)));
+  if (!seeAll) rows = rows.filter((l) => l.ownerIds.includes(user.mondayUserId!));
 
-  const filtered = applyFilters(leads.map(leadToRecord), compiled);
+  const filtered = applyFilters(
+    type === "leads" ? (rows as BulkLead[]).map(leadToRecord) : (rows as BulkDeal[]).map(dealToRecord),
+    compiled,
+  );
   return {
     ok: true,
-    recordType: "leads",
+    recordType: type,
     records: filtered,
     complete: true,
     failures: [],
     filtersText: describeFilters(compiled, owners.map((p) => (p.key === user.key ? "אני" : p.name)).join(", ")),
+    notes: [],
+  };
+}
+
+/** התחייבויות פתוחות (DB שלנו, לא Monday) — אישיות במהותן: רק של המשתמש עצמו. */
+async function queryCommitments(
+  user: IdentifiedUser,
+  compiled: CompiledFilters,
+  requested: IdentifiedUser[],
+  deps: BulkQueryDeps,
+  skip: (msg: string) => BulkQueryOutcome,
+): Promise<BulkQueryOutcome> {
+  const others = requested.filter((p) => p.key !== user.key);
+  if (others.length) return skip("התחייבויות מוצגות רק למי שרשם אותן — לא נכללו התחייבויות של אחרים.");
+  const list = (deps.listUserCommitments ?? listUserCommitments)(user.key).filter((c) => c.status === "open");
+  return {
+    ok: true,
+    recordType: "commitments",
+    records: applyFilters(list.map(commitmentToRecord), compiled),
+    complete: true,
+    failures: [],
+    filtersText: describeFilters(compiled, "אני"),
     notes: [],
   };
 }
@@ -483,8 +649,9 @@ export const QUERY_DISPLAY_CAP = 40;
 export function formatRecordLine(r: BulkRecord, index: number): string {
   const bits: string[] = [];
   if (r.project) bits.push(r.stage ? `${r.project} · ${r.stage}` : r.project);
-  if (r.date) bits.push(`${r.kind === "lead" ? "תזכורת" : "יעד"} ${pretty(r.date)}`);
-  else bits.push(r.kind === "lead" ? "בלי תזכורת" : "בלי תאריך");
+  const crm = r.kind === "lead" || r.kind === "deal";
+  if (r.date) bits.push(`${crm ? "תזכורת" : "יעד"} ${pretty(r.date)}`);
+  else bits.push(crm ? "בלי תזכורת" : "בלי תאריך");
   bits.push(r.status || "בלי סטטוס");
   if (r.priority) bits.push(r.priority);
   if (r.assignees) bits.push(r.assignees);
@@ -492,10 +659,33 @@ export function formatRecordLine(r: BulkRecord, index: number): string {
 }
 
 /** הטקסט שמוצג למשתמש מילה במילה (chat.ts) — מספרים אמיתיים בלבד, אין "ועוד" בלי מספר. */
+const TYPE_NOUN: Record<BulkRecordType | "mixed", string> = { tasks: "משימות", leads: "לידים", deals: "עסקאות", commitments: "התחייבויות", mixed: "רשומות" };
+
 export function formatQueryText(o: Extract<BulkQueryOutcome, { ok: true }>): string {
-  const noun = o.recordType === "tasks" ? "משימות" : "לידים";
+  const noun = TYPE_NOUN[o.recordType];
   const lines: string[] = [];
-  if (o.records.length === 0) {
+  if (o.recordType === "mixed") {
+    // מקובץ לפי סוג, עם ספירה לכל סוג (גם 0) — המספור רציף כדי ש"חוץ מהשלישית" יעבוד על כל הרשימה
+    lines.push(o.records.length ? `נמצאו ${o.records.length} רשומות (${o.filtersText}):` : `לא נמצאו רשומות שתואמות לסינון: ${o.filtersText}.`);
+    let i = 0;
+    let shown = 0;
+    for (const t of o.types ?? []) {
+      const rows = o.records.filter((r) => KIND_TYPE[r.kind] === t);
+      lines.push("", `${TYPE_NOUN[t]} (${rows.length}):`);
+      if (!rows.length) lines.push("אין");
+      for (const r of rows) {
+        i++;
+        if (shown < QUERY_DISPLAY_CAP) {
+          lines.push(formatRecordLine(r, i));
+          shown++;
+        }
+      }
+    }
+    if (o.records.length > QUERY_DISPLAY_CAP) {
+      lines.push(`…ועוד ${o.records.length - QUERY_DISPLAY_CAP} (מוצגות ${QUERY_DISPLAY_CAP} הראשונות מתוך ${o.records.length}).`);
+    }
+    lines.push("", "ℹ️ פגישות ביומן (Google Calendar) לא נכללות בתצוגה הזו.");
+  } else if (o.records.length === 0) {
     lines.push(`לא נמצאו ${noun} שתואמות לסינון: ${o.filtersText}.`);
   } else {
     lines.push(`נמצאו ${o.records.length} ${noun} (${o.filtersText}):`);

@@ -123,7 +123,7 @@ describe("compileFilters — אימות לפני Monday", () => {
     expect(() => compileFilters({ recordType: "leads", projects: ["x"] }, NOW)).toThrow();
     expect(() => compileFilters({ recordType: "leads", priorities: ["גבוה"] }, NOW)).toThrow();
   });
-  it("סוג רשומות לא נתמך", () => expect(() => compileFilters({ recordType: "deals" } as unknown as BulkFilters, NOW)).toThrow(/לא נתמך/));
+  it("סוג רשומות לא נתמך", () => expect(() => compileFilters({ recordType: "meetings" } as unknown as BulkFilters, NOW)).toThrow(/לא נתמך/));
 });
 
 describe("mergeFilters — בקשות המשך", () => {
@@ -263,5 +263,86 @@ describe("fetchLeadsForBulk — pagination מלאה", () => {
     mondayRequestMock.mockResolvedValueOnce({ boards: [{ items_page: { cursor: null, items: [] } }] });
     await fetchLeadsForBulk("62982081");
     expect(String(mondayRequestMock.mock.calls[0]![0])).toContain('compare_value: ["person-62982081"]');
+  });
+});
+
+// ───────────────────────── "כל מה שיש לי ב..." — כמה סוגים יחד (2026-10-21) ─────────────────────────
+
+describe("runBulkQuery — כמה סוגים (recordTypes)", () => {
+  const ALL = ["tasks", "leads", "deals", "commitments"] as const;
+  const TOMORROW = "2026-10-22";
+  const leadRow = (itemId: string, reminderDate: string | undefined, status = "ליד חדש"): BulkLead => ({
+    itemId, name: `ליד ${itemId}`, status, reminderDate, owner: "מוטי", ownerIds: [moti.mondayUserId!], source: "", product: "", url: "",
+  });
+  const deal = (itemId: string, reminderDate: string | undefined, stage = "נשלחה הצעת מחיר") => ({
+    itemId, name: `עסקה ${itemId}`, stage, reminderDate, owner: "מוטי", ownerIds: [moti.mondayUserId!], url: "",
+  });
+  const commitment = (id: number, dueDate: string | null, status: "open" | "done" = "open") => ({
+    id, createdBy: "moti", toWhom: "לקוח", what: `לשלוח ${id}`, dueDate, project: null, status, createdAt: "", closedAt: null,
+  });
+  const deps = {
+    fetchUserOpsTasks: vi.fn(async () => [task("t1", { dueDate: TOMORROW }), task("t2", { dueDate: "2026-10-15" }), task("t3")]),
+    fetchLeadsForBulk: vi.fn(async () => [leadRow("L1", TOMORROW), leadRow("L2", "2026-10-01"), leadRow("L3", TOMORROW, "עבר לעסקה")]),
+    fetchDealsForBulk: vi.fn(async () => [deal("D1", TOMORROW), deal("D2", TOMORROW, "נחתם")]),
+    listUserCommitments: vi.fn(() => [commitment(1, TOMORROW), commitment(2, TOMORROW, "done"), commitment(3, null)]),
+  };
+
+  it("'כל מה שיש לי למחר': רק מה שמתוכנן למחר, מכל הסוגים — בלי באיחור, בלי סגורים", async () => {
+    const o = await runBulkQuery(moti, { recordTypes: [...ALL], date: "מחר" }, NOW, deps);
+    expect(o.ok).toBe(true);
+    if (!o.ok) return;
+    expect(o.recordType).toBe("mixed");
+    expect(o.records.map((r) => r.itemId)).toEqual(["t1", "L1", "D1", "c1"]); // מקובץ לפי סוג
+    const text = formatQueryText(o);
+    expect(text).toMatch(/^נמצאו 4 רשומות/);
+    expect(text).toMatch(/משימות \(1\):\n1\. /);
+    expect(text).toMatch(/לידים \(1\):\n2\. /);
+    expect(text).toMatch(/עסקאות \(1\):\n3\. /);
+    expect(text).toMatch(/התחייבויות \(1\):\n4\. /);
+    expect(text).toMatch(/פגישות ביומן .* לא נכללות/);
+    expect(text).not.toContain("t2"); // באיחור — לא נכנס למחר
+  });
+
+  it("בלי assignees בשאילתה משולבת = של המשתמש עצמו (גם לבעלים — לא כל הלידים במשרד)", async () => {
+    await runBulkQuery(moti, { recordTypes: ["leads", "deals"], date: "מחר" }, NOW, deps);
+    expect(deps.fetchLeadsForBulk).toHaveBeenLastCalledWith(moti.mondayUserId);
+    expect(deps.fetchDealsForBulk).toHaveBeenLastCalledWith(moti.mondayUserId);
+  });
+
+  it("סוג ריק מוצג במפורש ('אין'), לא מושמט", async () => {
+    const o = await runBulkQuery(moti, { recordTypes: ["tasks", "deals"], date: "יום ראשון" }, NOW, deps);
+    expect(o.ok && formatQueryText(o)).toMatch(/משימות \(0\):\nאין[\s\S]*עסקאות \(0\):\nאין/);
+  });
+
+  it("שרטטת: לידים/עסקאות מדולגים עם הערה מפורשת; משימות והתחייבויות כן", async () => {
+    const o = await runBulkQuery(ruchama, { recordTypes: [...ALL], date: "מחר" }, NOW, { ...deps, listUserCommitments: () => [] });
+    expect(o.ok).toBe(true);
+    if (!o.ok) return;
+    expect(o.types).toEqual(["tasks", "commitments"]);
+    expect(o.notes.join(" ")).toMatch(/לידים — אין לך הרשאה.*עסקאות — אין לך הרשאה/);
+  });
+
+  it("כשל מלא באחד הסוגים → כשל מפורש, לא תמונה חלקית כאילו מלאה", async () => {
+    const o = await runBulkQuery(moti, { recordTypes: [...ALL], date: "מחר" }, NOW, { ...deps, fetchDealsForBulk: async () => { throw new Error("down"); } });
+    expect(o.ok).toBe(false);
+  });
+
+  it("סוג לא נתמך / סינון פרויקט על לידים — שגיאה שמבקשת לשאול", async () => {
+    expect((await runBulkQuery(moti, { recordTypes: ["tasks", "meetings" as never] }, NOW, deps)).ok).toBe(false);
+    const p = await runBulkQuery(moti, { recordTypes: ["tasks", "leads"], projects: ["רמות"] }, NOW, deps);
+    expect(!p.ok && p.error).toMatch(/רק למשימות/);
+  });
+
+  it("'תביא גם את הלידים': recordTypes חדש מחליף, התאריך והאדם נשמרים", () => {
+    const prev: BulkFilters = { recordType: "tasks", assignees: ["אני"], date: "מחר" };
+    expect(mergeFilters(prev, { recordTypes: ["tasks", "leads"] })).toEqual({ assignees: ["אני"], date: "מחר", recordTypes: ["tasks", "leads"] });
+    // ו"לא, ביקשתי לראשון" — רק התאריך מתחלף
+    expect(mergeFilters({ recordTypes: ["tasks", "leads"], date: "מחר" }, { date: "יום ראשון" })).toEqual({ recordTypes: ["tasks", "leads"], date: "יום ראשון" });
+  });
+
+  it("סוג יחיד ממשיך לעבוד כמו קודם (recordType)", async () => {
+    const o = await runBulkQuery(moti, { recordType: "deals", date: "מחר" }, NOW, deps);
+    expect(o.ok && o.recordType).toBe("deals");
+    expect(o.ok && o.records.map((r) => r.itemId)).toEqual(["D1"]);
   });
 });

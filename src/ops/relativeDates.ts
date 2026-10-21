@@ -189,7 +189,7 @@ const DAY_PHRASES: RegExp[] = [
   new RegExp(String.raw`(?:^|\s)(?:[לב])?יום\s+(?:${DAY_WORDS})(?:\s+(?:הבא|הקרוב|שעבר))?(?=$|[\s.,!?])`, "g"),
   new RegExp(String.raw`(?:^|\s)[לב](?:${DAY_WORDS})(?:\s+(?:הבא|הקרוב))?(?=$|[\s.,!?])`, "g"),
   new RegExp(String.raw`(?:^|\s)(?:${DAY_WORDS})\s+(?:הבא|הקרוב|שעבר)(?=$|[\s.,!?])`, "g"),
-  /(?:^|\s)[לב]?(?:מחרתיים|מחר|היום)(?=$|[\s.,!?])/g,
+  /(?:^|\s)[לבו]?(?:מחרתיים|מחר|היום)(?=$|[\s.,!?])/g,
   /(?:^|\s)בעוד\s+\d{1,3}\s+ימים(?=$|[\s.,!?])/g,
 ];
 
@@ -202,9 +202,31 @@ export function explicitDayInText(text: string, now: DateTime): string | null {
   const found = new Set<string>();
   for (const re of DAY_PHRASES) {
     for (const m of text.matchAll(re)) {
-      const day = resolveSingleDay(m[0].trim().replace(/^[לב](?=(יום|מחר|היום|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת))/, ""), now);
+      const day = resolveSingleDay(m[0].trim().replace(/^[לבו](?=(יום|מחר|היום|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת))/, ""), now);
       if (day) found.add(day);
     }
   }
   return found.size === 1 ? [...found][0]! : null;
+}
+
+const RANGE_PHRASES: RegExp[] = [
+  /(?:^|\s)[לב]?(?:השבוע|שבוע הבא|שבוע שעבר|החודש|חודש הבא)(?=$|[\s.,!?])/g,
+  /(?:^|\s)[לב]?-?(\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)(?=$|[\s.,!?])/g,
+];
+
+/**
+ * האם המשתמש ציין בטקסט תאריך/טווח שאינו "היום" ("למחר", "ביום ראשון", "שבוע הבא", "25/10").
+ * משמש בצ'אט כדי שסיכום היום (get_today_tasks/get_my_pipeline) לא יוגש כתשובה לבקשה על יום אחר —
+ * באג production 2026-10-21: "תביא לי את כל מה שיש לי למחר" קיבל את סיכום היום, פעמיים.
+ */
+export function mentionsNonTodayDate(text: string, now: DateTime): boolean {
+  const today = now.toFormat(ISO);
+  const exprs: string[] = [];
+  for (const re of [...DAY_PHRASES, ...RANGE_PHRASES]) {
+    for (const m of text.matchAll(re)) exprs.push((m[1] ?? m[0]).trim().replace(/^[לבו]-?(?=(יום|מחר|היום|השבוע|שבוע|החודש|חודש|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת|\d))/, ""));
+  }
+  return exprs.some((e) => {
+    const r = resolveDateExpr(e, now);
+    return !!r && !(r.from === today && r.to === today);
+  });
 }

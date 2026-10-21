@@ -92,6 +92,7 @@ const SAFE_TESTS = [
   "tests/integration/attendanceReminderLifecycle.test.ts",
   "tests/integration/bulkUpdate.test.ts",
   "tests/integration/bulkChat.test.ts",
+  "tests/integration/dateRouting.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
 ];

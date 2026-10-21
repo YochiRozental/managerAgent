@@ -13,7 +13,7 @@
 
 import { mondayRequest } from "./client.js";
 import { BOARD_GENERAL_TASKS, BOARD_PROJECT_STAGE_TASKS, type OpsTaskSource } from "./opsRead.js";
-import { BOARD_LEADS } from "./crmRead.js";
+import { BOARD_DEALS, BOARD_LEADS } from "./crmRead.js";
 
 const MONDAY_HOST = "https://gottlieb-league.monday.com";
 
@@ -181,4 +181,60 @@ export async function readItemsForVerification(itemIds: string[]): Promise<Map<s
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// עסקאות — לתמונת "כל מה שיש לי ב..." (קריאה בלבד; עדכון קבוצתי לעסקאות לא נתמך).
+// אותו מבנה כמו fetchLeadsForBulk: מזהי אחראים + סינון אחראי בצד Monday + pagination מלא.
+// fetchOpenDeals (crmRead.ts) מחזיר רק טקסט אחראי — לא מספיק לאכיפת "רק העסקאות שלי".
+// ---------------------------------------------------------------------------
+
+export interface BulkDeal {
+  itemId: string;
+  name: string;
+  /** שלב העסקה (color__1) */
+  stage: string;
+  /** "תאריך הבא לתזכורת" */
+  reminderDate?: string;
+  expectedClose?: string;
+  owner: string;
+  ownerIds: string[];
+  updatedAt?: string;
+  url: string;
+}
+
+const DEAL_COLS = `["color__1", "date__1", "date8__1", "multiple_person__1"]`;
+
+export async function fetchDealsForBulk(ownerMondayId?: string): Promise<BulkDeal[]> {
+  if (ownerMondayId !== undefined && !/^\d+$/.test(ownerMondayId)) throw new Error(`מזהה משתמש Monday לא תקין: "${ownerMondayId}"`);
+  const rules = ownerMondayId
+    ? `, query_params: { rules: [{ column_id: "multiple_person__1", compare_value: ["person-${ownerMondayId}"], operator: any_of }] }`
+    : "";
+  const selection = `id name updated_at column_values(ids: ${DEAL_COLS}) { id text ${FRAGMENTS} }`;
+  const first = await mondayRequest<{ boards: { items_page: { cursor: string | null; items: LeadItem[] } }[] }>(
+    `query { boards(ids: [${BOARD_DEALS}]) { items_page(limit: 500${rules}) { cursor items { ${selection} } } } }`,
+  );
+  const page = first.boards[0]?.items_page;
+  if (!page) throw new Error("בורד העסקאות לא הוחזר מ-Monday");
+  const items = [...page.items];
+  let cursor = page.cursor;
+  while (cursor) {
+    const next = await mondayRequest<{ next_items_page: { cursor: string | null; items: LeadItem[] } }>(
+      `query ($cursor: String!) { next_items_page(cursor: $cursor, limit: 500) { cursor items { ${selection} } } }`,
+      { cursor },
+    );
+    items.push(...next.next_items_page.items);
+    cursor = next.next_items_page.cursor;
+  }
+  return items.map((it) => ({
+    itemId: it.id,
+    name: it.name,
+    stage: cv(it.column_values, "color__1"),
+    reminderDate: dateOnly(cv(it.column_values, "date__1")),
+    expectedClose: dateOnly(cv(it.column_values, "date8__1")),
+    owner: cv(it.column_values, "multiple_person__1"),
+    ownerIds: personIds(it.column_values, "multiple_person__1"),
+    updatedAt: it.updated_at ?? undefined,
+    url: `${MONDAY_HOST}/boards/${BOARD_DEALS}/pulses/${it.id}`,
+  }));
 }

@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { DateTime } from "luxon";
-import { explicitDayInText, resolveDateExpr, resolveSingleDay, shiftIsoDate } from "../../src/ops/relativeDates.js";
+import { explicitDayInText, mentionsNonTodayDate, resolveDateExpr, resolveSingleDay, shiftIsoDate } from "../../src/ops/relativeDates.js";
 
 const TZ = "Asia/Jerusalem";
 const at = (iso: string) => DateTime.fromISO(iso, { zone: TZ });
@@ -110,4 +110,20 @@ describe("explicitDayInText — אימות התאריך שהמודל העביר 
   ])("'%s' → %s", (t, iso) => expect(explicitDayInText(t, WED)).toBe(iso));
   it.each(["חוץ מהראשונה ברשימה", "תעביר לתאריך 25/10", "המשימה השנייה", "מחר או ביום ראשון", ""])("'%s' → null", (t) =>
     expect(explicitDayInText(t, WED)).toBeNull());
+});
+
+describe("mentionsNonTodayDate — סיכום היום לא עונה על בקשה ליום אחר (באג production 2026-10-21)", () => {
+  it.each([
+    "הצג לי את כל המשימות שלי למחר",
+    "תביא לי את כל מה שיש לי למחר",
+    "אני ביקשתי את מה שיש לי למחר!!!!!!!!",
+    "לא, ביקשתי למחר",
+    "מה יש לי ביום ראשון",
+    "מה מתוכנן לי שבוע הבא?",
+    "מה יש לי השבוע",
+    "מה יש לי ב-25/10",
+    "מה יש לי היום ומחר",
+  ])("'%s' → כן", (t) => expect(mentionsNonTodayDate(t, WED)).toBe(true));
+  it.each(["מה יש לי היום", "בוקר טוב", "מה המשימות שלי", "מה יש לי לבצע", "חוץ מהראשונה ברשימה", "תביא גם את הלידים", ""])(
+    "'%s' → לא", (t) => expect(mentionsNonTodayDate(t, WED)).toBe(false));
 });

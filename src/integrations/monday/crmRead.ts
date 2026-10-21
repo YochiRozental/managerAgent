@@ -158,7 +158,7 @@ export interface Deal {
   url: string;
 }
 
-const DEAL_CLOSED = new Set([
+export const DEAL_CLOSED = new Set([
   "נחתם",
   "לא נסגר-ללא חיבור ללב",
   "לא ניתן לביצוע - פרוייקט סגור",

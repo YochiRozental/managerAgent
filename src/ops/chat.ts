@@ -75,8 +75,8 @@ import { attendanceEnabledForUser, checkAttendanceDayStart } from "./attendance.
 import { buildMessageIdempotencySeed } from "./attendanceEngine.js";
 import { countUserMessagesInSession } from "../db/repositories/chatHistory.js";
 import { getLatestPendingPlan, getLatestResultSet, saveResultSet } from "../db/repositories/bulkOps.js";
-import { explicitDayInText, resolveSingleDay } from "./relativeDates.js";
-import { formatQueryText, mergeFilters, runBulkQuery, type BulkFilters, type BulkRecordType } from "./bulkQuery.js";
+import { explicitDayInText, mentionsNonTodayDate, resolveSingleDay } from "./relativeDates.js";
+import { formatQueryText, mergeFilters, runBulkQuery, type BulkFilters } from "./bulkQuery.js";
 import {
   buildBulkContextLines,
   cancelBulkUpdate,
@@ -815,10 +815,19 @@ interface ToolDef {
 /** פעולה על כמה רשומות בבת אחת — "תעביר את כל המשימות...", "שנה את כולן...". */
 const BULK_INTENT = /(כל\s+ה(משימות|לידים)|כולן|כולם)/;
 /** בקשת המשך שמתייחסת לקבוצה הקודמת — "חוץ מ...", "רק של...", "אותן", "השלישית", אישור. */
-const BULK_FOLLOWUP = /(חוץ מ|בלי ה|רק ה|רק של|אותן|אותם|את אלה|רשימה|ראשונה|שנייה|שלישית|תעביר|תשנה|תזיז|העבר|שנה|הזז|כן|מאשר|תבצע|בטל)/;
+const BULK_FOLLOWUP = /(חוץ מ|בלי ה|רק ה|רק של|גם ה|גם את|אותן|אותם|את אלה|רשימה|ראשונה|שנייה|שלישית|ביקשתי|התכוונתי|תעביר|תשנה|תזיז|העבר|שנה|הזז|כן|מאשר|תבצע|בטל)/;
 
 const BULK_FILTER_PROPERTIES = {
-  recordType: { type: "string", enum: ["tasks", "leads"], description: "tasks = משימות (משרד + פרויקטים, פתוחות בלבד); leads = לידים" },
+  recordType: {
+    type: "string",
+    enum: ["tasks", "leads", "deals", "commitments"],
+    description: "סוג יחיד: tasks = משימות (משרד + פרויקטים, פתוחות בלבד); leads = לידים; deals = עסקאות; commitments = התחייבויות שהמשתמש רשם",
+  },
+  recordTypes: {
+    type: "array",
+    items: { type: "string", enum: ["tasks", "leads", "deals", "commitments"] },
+    description: "כמה סוגים יחד. 'כל מה שיש לי' / 'מה יש לי' + תאריך = כל ארבעת הסוגים. 'תביא גם את הלידים' = הסוגים הקודמים + leads.",
+  },
   assignees: {
     type: "array",
     items: { type: "string" },
@@ -864,6 +873,8 @@ function buildBulkTools(
         "שליפה מסוננת של רשומות Monday — כל הרשומות התואמות (לא מדגם), עם כמה תנאים יחד: עובד + פרויקט + תאריך + סטטוס + תעדוף. " +
         "השתמש בזה לכל בקשת הצגה עם סינון: 'המשימות שלי למחר', 'המשימות של איתן שעבר להן התאריך', 'הדחופות שלי בפרויקטים פעילים', " +
         "'לידים פתוחים שלא טופלו השבוע' — ולא ב-get_today_tasks (שמיועד רק לתדריך 'מה יש לי היום'). " +
+        "'כל מה שיש לי למחר' / 'מה יש לי ביום ראשון' / 'מה מתוכנן לי שבוע הבא' → recordTypes=['tasks','leads','deals','commitments'] + date כפי שנאמר — רק מה שמתוכנן לאותו תאריך, בלי משימות באיחור (overdue) אלא אם ביקשו. " +
+        "'תביא גם את הלידים' → base='last' + recordTypes = הקודמים + 'leads' (התאריך והאדם נשמרים). 'לא, ביקשתי למחר' → תיקון: base='last' + date החדש. " +
         "גם השלב הראשון של כל עדכון קבוצתי ('העבר את כל המשימות של מחר...'): קודם query_records, ואז prepare_bulk_update. " +
         "בקשת המשך שמשנה סינון קודם ('חוץ מפרויקט X', 'רק של דוב') → base='last' ורק התנאי שהשתנה; excludeIndexes = מספרי השורות מהרשימה הקודמת להחרגה. " +
         "אם לא ברור לאיזה סוג רשומות/איזה תאריך/איזה אדם הכוונה — שאל לפני הקריאה. התשובה (text) מוצגת למשתמש כמו שהיא.",
@@ -887,7 +898,7 @@ function buildBulkTools(
             if (bad.length) return { ok: false, error: `מספרי שורה לא קיימים ברשימה הקודמת: ${bad.join(", ")} (יש ${prev.records.length}).` };
             excludeIds = excludeIndexes.map((i) => prev.records[i - 1]!.itemId);
           }
-          filters = mergeFilters(prev.filters as BulkFilters, { ...filters, recordType: filters.recordType ?? (prev.recordType as BulkRecordType), excludeItemIds: excludeIds });
+          filters = mergeFilters(prev.filters as BulkFilters, { ...filters, excludeItemIds: excludeIds });
         } else if (excludeIndexes?.length) {
           return { ok: false, error: "excludeIndexes עובד רק עם base='last'." };
         }
@@ -1325,6 +1336,18 @@ export async function runOpsChat(
     attendance_report_correction: { message: (r) => `📝 ${(r as { message: string }).message}` },
   };
 
+  // באג production (2026-10-21): "תביא לי את כל מה שיש לי למחר" ו"אני ביקשתי את מה שיש לי למחר!!!" קיבלו
+  // את סיכום *היום* — כלל הפרומפט "'מה יש לי' → get_today_tasks" ניצח את התאריך, ו-finalizeText מגיש את
+  // הסיכום מילה במילה. כשהמשתמש ציין תאריך אחר מהיום, שני כלי הסיכום מסרבים ומפנים ל-query_records —
+  // בקוד, לא תלוי בשיקול המודל. (רשימת הכלים לא משתנה — מטמון ה-prompt לא נפגע.)
+  const askedOtherDate = mentionsNonTodayDate(history[history.length - 1]?.content ?? "", now);
+  const OTHER_DATE_REDIRECT = {
+    ok: false,
+    error:
+      "המשתמש ביקש תאריך אחר מהיום — סיכום היום אינו התשובה. קרא query_records עם date כפי שנאמר, " +
+      "ול'מה יש לי' / 'כל מה שיש לי' — recordTypes=['tasks','leads','deals','commitments'].",
+  };
+
   const tools: (ToolDef | ToolDefinition)[] = [
     {
       name: "get_today_tasks",
@@ -1334,6 +1357,7 @@ export async function runOpsChat(
         "כשמבקשים 'מה יש לי היום', 'מה המשימות שלי', 'מה יש לי לבצע' — בלי לצרף תדריך ישן נוסף.",
       input_schema: { type: "object", properties: {} },
       run: async () => {
+        if (askedOtherDate) return OTHER_DATE_REDIRECT;
         // lazy loading (2026-10-14) — זה הכלי שבגללו tasks בכלל נדרש; נטען כאן, לא לפני.
         await ensureTasksLoaded();
         // v (needsAttention/waitingOnMe) נשאר מחושב — לא נגעתי במנגנון השליפה/הבקרה הישן — אבל
@@ -1365,6 +1389,7 @@ export async function runOpsChat(
         "'מה יש לי לטפל בו' כשרוצים תמונה מלאה כולל CRM, לא רק משימות.",
       input_schema: { type: "object", properties: {} },
       run: async () => {
+        if (askedOtherDate) return OTHER_DATE_REDIRECT;
         const feed = await getEmployeeFeed(user.mondayUserId!, now);
         const text = formatEmployeeFeedText(feed);
         capturedPipelineText = text;

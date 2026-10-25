@@ -82,6 +82,7 @@ import {
   createTaskAction,
   findLeadAction,
   reassignItem,
+  setItemStatus,
   updateLeadContactAction,
   updateTask,
   type CreateLeadActionInput,
@@ -190,6 +191,7 @@ export interface BuildAgentToolsDeps {
   createTaskAction?: typeof createTaskAction;
   updateTask?: typeof updateTask;
   reassignItem?: typeof reassignItem;
+  setItemStatus?: typeof setItemStatus;
   createLeadAction?: typeof createLeadAction;
   createProjectStageAction?: typeof createProjectStageAction;
   addUpdateToItem?: typeof addUpdateToItem;
@@ -208,6 +210,7 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
   const doCreateTaskAction = deps.createTaskAction ?? createTaskAction;
   const doUpdateTask = deps.updateTask ?? updateTask;
   const doReassignItem = deps.reassignItem ?? reassignItem;
+  const doSetItemStatus = deps.setItemStatus ?? setItemStatus;
   const doCreateLeadAction = deps.createLeadAction ?? createLeadAction;
   const doCreateProjectStageAction = deps.createProjectStageAction ?? createProjectStageAction;
   const doAddUpdateToItem = deps.addUpdateToItem ?? addUpdateToItem;
@@ -376,6 +379,36 @@ export function buildAgentTools(deps: BuildAgentToolsDeps = {}): AgentTool[] {
       execute: async (input: Record<string, unknown>, ctx) => {
         const r = await doReassignItem(ctx.user, String(input.itemId), String(input.person));
         return r;
+      },
+    },
+    {
+      // 2026-10-25: set_status מכסה רק משימות — זה הכלי לכל שאר הבורדים (ליד / עסקה / פרויקט / שלב /
+      // גבייה / תשלום / כל בורד אחר). ההרשאה לפי סוג הבורד נאכפת ב-setItemStatus (ops/actions.ts).
+      name: "set_item_status",
+      description:
+        "משנה סטטוס של פריט ב-Monday שאינו משימה — ליד / עסקה / פרויקט / שלב בפרויקט / גבייה / תשלום / כל בורד אחר. למשימות (משימות משרד ומשימות שלב) השתמש ב-set_status / mark_done. קבל את itemId מ-find_lead_or_deal / find_lead / project_status / query_records. לבקשות כמו 'תעביר את הליד X לפולואפ', 'תסמן את העסקה של Y כנחתם', 'הפרויקט Z קיבל היתר', 'התשלום של W שולם'. התווית מאומתת מול Monday — אם אינה קיימת, הכלי מחזיר את האפשרויות ואתה שואל.",
+      input_schema: {
+        type: "object",
+        properties: {
+          itemId: { type: "string", description: "מזהה הפריט ב-Monday" },
+          status: { type: "string", description: "הסטטוס החדש כפי שהמשתמש אמר" },
+          column: {
+            type: "string",
+            description: "שם עמודת הסטטוס — רק אם המשתמש ציין עמודה מסוימת או שהכלי ביקש לבחור. אחרת השמט (נבחרת עמודת הסטטוס הראשית).",
+          },
+          label: { type: "string", description: "שם הפריט, לאישור בלבד" },
+        },
+        required: ["itemId", "status"],
+      },
+      // ANY-of — ההרשאה המדויקת נקבעת לפי סוג הבורד בתוך setItemStatus. task:update_own לבד לא
+      // מספיק לחשיפה: מי שמעדכן רק משימות שלו (planner) עובד עם set_status.
+      requiredPermission: ["lead:manage", "project:manage", "finance:manage"],
+      execute: async (input: Record<string, unknown>, ctx) => {
+        return doSetItemStatus(ctx.user, {
+          itemId: String(input.itemId ?? ""),
+          status: String(input.status ?? ""),
+          column: input.column ? String(input.column) : undefined,
+        });
       },
     },
     {

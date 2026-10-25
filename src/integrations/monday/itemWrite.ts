@@ -72,6 +72,39 @@ export async function detectPeopleColumn(itemId: string): Promise<PeopleColumnIn
   };
 }
 
+export interface ItemStatusColumns {
+  boardId: string;
+  itemName: string;
+  /** כל עמודות הסטטוס (טיפוס status) של הפריט, עם הערך הנוכחי */
+  columns: { id: string; title: string; text: string }[];
+}
+
+/** קורא את עמודות הסטטוס של פריט — לשינוי סטטוס על כל בורד (setItemStatus ב-ops/actions.ts). */
+export async function readItemStatusColumns(itemId: string): Promise<ItemStatusColumns> {
+  const res = await mondayRequest<{
+    items: {
+      name: string;
+      board: { id: string } | null;
+      column_values: { id: string; type: string; text: string | null; column: { title: string } | null }[];
+    }[];
+  }>(
+    `query ($id: [ID!]) {
+      items(ids: $id) { name board { id } column_values { id type text column { title } } }
+    }`,
+    { id: [itemId] },
+  );
+  const item = res.items[0];
+  if (!item) throw new Error("הפריט לא נמצא ב-Monday");
+  if (!item.board) throw new Error("לא הצלחתי לזהות את הבורד של הפריט");
+  return {
+    boardId: item.board.id,
+    itemName: item.name,
+    columns: item.column_values
+      .filter((c) => c.type === "status")
+      .map((c) => ({ id: c.id, title: c.column?.title ?? c.id, text: c.text ?? "" })),
+  };
+}
+
 /** קובע את רשימת האחראים על עמודת people (מחליף את מה שהיה). */
 export async function setItemPeople(
   boardId: string,

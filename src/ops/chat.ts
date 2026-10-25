@@ -121,6 +121,9 @@ export const CREATE_PROJECT_STAGE_TOOL_DEFINITION: ToolDefinition = buildSharedT
 export const REASSIGN_ITEM_AGENT_TOOL: AgentTool = requireAgentTool("reassign_item", "Web");
 export const REASSIGN_ITEM_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(REASSIGN_ITEM_AGENT_TOOL);
 
+export const SET_ITEM_STATUS_AGENT_TOOL: AgentTool = requireAgentTool("set_item_status", "Web");
+export const SET_ITEM_STATUS_TOOL_DEFINITION: ToolDefinition = buildSharedToolDefinition(SET_ITEM_STATUS_AGENT_TOOL);
+
 /**
  * find_lead/update_lead_contact (2026-10-08) — סוגרים את פער "פרטי קשר שמגיעים בהמשך לא נשמרים
  * בעמודות הנכונות של ליד קיים" (audit 2026-10-08). אותו דפוס בדיוק כמו כל שאר ה-AgentTools: אין
@@ -247,6 +250,7 @@ export const WEB_SHARED_TOOL_VISIBILITY: SharedToolVisibilityEntry[] = [
   { tool: REPORT_BLOCKER_TOOL_DEFINITION, visibility: "always" },
   { tool: ADD_UPDATE_TOOL_DEFINITION, visibility: "always" },
   { tool: REASSIGN_ITEM_TOOL_DEFINITION, visibility: "gated" },
+  { tool: SET_ITEM_STATUS_TOOL_DEFINITION, visibility: "gated" },
   { tool: CREATE_TASK_TOOL_DEFINITION, visibility: "gated" },
   { tool: CREATE_PROJECT_STAGE_TOOL_DEFINITION, visibility: "gated" },
   { tool: CREATE_LEAD_TOOL_DEFINITION, visibility: "gated" },
@@ -281,6 +285,7 @@ export const WIRED_AGENT_TOOL_NAMES: readonly string[] = [
   ADD_UPDATE_AGENT_TOOL.name,
   CREATE_PROJECT_STAGE_AGENT_TOOL.name,
   REASSIGN_ITEM_AGENT_TOOL.name,
+  SET_ITEM_STATUS_AGENT_TOOL.name,
   FIND_LEAD_AGENT_TOOL.name,
   UPDATE_LEAD_CONTACT_AGENT_TOOL.name,
 ];
@@ -1326,6 +1331,7 @@ export async function runOpsChat(
     },
     create_project_stage: { message: (r) => `🆕 ${(r as { message: string }).message}` },
     reassign_item: { message: (r) => `👤 ${(r as { message: string }).message}` },
+    set_item_status: { message: (r) => `↻ ${(r as { message: string }).message}` },
     update_lead_contact: { message: (r) => `📇 ${(r as { message: string }).message}` },
     // מודול נוכחות (שלב ג) — AttendanceActionResult.ok מצביע אם היה ok; message הוא טקסט מוכן
     // (כבר בעברית, כולל הניסוח המדויק שהתבקש ל-day_close) — לא בונים טקסט חדש, רק מציגים.

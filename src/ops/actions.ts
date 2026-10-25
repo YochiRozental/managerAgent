@@ -7,6 +7,10 @@
 
 import { resolveUsersByAssigneeText, TEAM_DIRECTORY, userCan, type IdentifiedUser } from "../identity/index.js";
 import {
+  BOARD_GENERAL_TASKS,
+  BOARD_PROJECT_STAGE_TASKS,
+  BOARD_PROJECT_STAGES,
+  BOARD_PROJECTS,
   BOARDS_WITH_MANDATORY_PROJECT,
   fetchActiveProjects,
   getProjectOwnerIds,
@@ -26,12 +30,21 @@ import {
   createProjectStage,
   createStageTask,
   DONE_LABEL,
+  getColumnLabels,
   setTaskStatus,
   type CreateGeneralTaskInput,
   type CreateProjectStageInput as CreateProjectStageWriteInput,
   type CreateStageTaskInput,
 } from "../integrations/monday/opsWrite.js";
-import { detectPeopleColumn, setItemPeople, type PeopleColumnInfo } from "../integrations/monday/itemWrite.js";
+import {
+  detectPeopleColumn,
+  readItemStatusColumns,
+  setItemColumnValues,
+  setItemPeople,
+  type ItemStatusColumns,
+  type PeopleColumnInfo,
+} from "../integrations/monday/itemWrite.js";
+import { BOARD_COLLECTION, BOARD_DEALS, BOARD_LEADS, BOARD_PAYMENTS } from "../integrations/monday/crmRead.js";
 import { findUsersByName, type MondayUser } from "../integrations/monday/users.js";
 import {
   createLead as createLeadMonday,
@@ -223,6 +236,155 @@ export async function reassignItem(
     `👤 ${col.columnTitle} שונה/תה ל${targetName} — ע"י ${user.name} דרך העוזר התפעולי`,
   );
   return { ok: true, message: `${col.columnTitle} של "${col.itemName}" עודכן/ה ל${targetName}` };
+}
+
+// ---------------------------------------------------------------------------
+// שינוי סטטוס על כל בורד (set_item_status) — 2026-10-25.
+//
+// set_status מכסה רק משימות (משרד + משימות שלב). כאן: ליד / עסקה / פרויקט / שלב / גבייה / תשלום,
+// וכל בורד אחר. העמודה נבחרת לפי מפה קבועה לבורדים המוכרים (עמודת הסטטוס ה"ראשית" — לבורדים יש
+// כמה עמודות מסוג status: מקור הגעה, מוצר, אופן תשלום...), אחרת לפי כותרת "סטטוס", ואחרת שואלים.
+// התווית מאומתת מול Monday — לא כותבים תווית שלא קיימת בעמודה.
+//
+// הרשאות לפי סוג הבורד:
+//   task    — כמו set_status: משימה שלי (task:update_own), אחרת task:manage + ניהול הפרויקט.
+//   project — project:manage + ניהול הפרויקט (owner/admin תמיד).
+//   sales   — lead:manage (לידים + עסקאות).
+//   finance — finance:manage (גבייה + תשלומים — גולדי, מוטי, יוכי).
+//   other   — owner/admin בלבד (בורד שאין לו מדיניות מוגדרת).
+// ---------------------------------------------------------------------------
+
+type StatusBoardKind = "task" | "project" | "sales" | "finance";
+
+const STATUS_BOARDS: Record<string, { kind: StatusBoardKind; columnId: string; noun: string }> = {
+  [BOARD_GENERAL_TASKS]: { kind: "task", columnId: "status", noun: "משימה" },
+  [BOARD_PROJECT_STAGE_TASKS]: { kind: "task", columnId: "color85__1", noun: "משימת שלב" },
+  [BOARD_PROJECT_STAGES]: { kind: "project", columnId: "status", noun: "שלב" },
+  [BOARD_PROJECTS]: { kind: "project", columnId: "status_17__1", noun: "פרויקט" },
+  [BOARD_LEADS]: { kind: "sales", columnId: "color__1", noun: "ליד" },
+  [BOARD_DEALS]: { kind: "sales", columnId: "color__1", noun: "עסקה" },
+  [BOARD_COLLECTION]: { kind: "finance", columnId: "status", noun: "גבייה" },
+  [BOARD_PAYMENTS]: { kind: "finance", columnId: "status", noun: "תשלום" },
+};
+
+const STATUS_DONE_WORDS = /^(בוצע|הושלם|done|completed?|סיים|סיימתי|גמור)$/i;
+
+function normLabel(s: string): string {
+  return s.replace(/[‏‎]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** תווית מדויקת, "בוצע"↔"הושלם", או התאמה חלקית יחידה. אחרת זורק עם האפשרויות. */
+export function matchStatusLabel(labels: readonly string[], wanted: string, columnTitle: string): string {
+  const w = wanted.trim();
+  if (!w) throw new Error("לא צוין סטטוס");
+  if (labels.includes(w)) return w;
+  const q = normLabel(w);
+  const exact = labels.filter((l) => normLabel(l) === q);
+  if (exact.length === 1) return exact[0]!;
+  if (STATUS_DONE_WORDS.test(w)) {
+    const done = labels.filter((l) => STATUS_DONE_WORDS.test(normLabel(l)));
+    if (done.length === 1) return done[0]!;
+  }
+  const loose = labels.filter((l) => normLabel(l).includes(q));
+  if (loose.length === 1) return loose[0]!;
+  if (loose.length > 1) {
+    throw new Error(`"${w}" מתאים לכמה סטטוסים ב"${columnTitle}": ${loose.join(" / ")} — שאל את המשתמש איזה.`);
+  }
+  throw new Error(`"${w}" אינו סטטוס קיים ב"${columnTitle}". האפשרויות: ${labels.join(", ")} — שאל את המשתמש.`);
+}
+
+/** בוחר את עמודת הסטטוס: לפי שם שהמשתמש ציין, לפי המפה הקבועה, או לפי כותרת "סטטוס". */
+export function pickStatusColumn(
+  cols: ItemStatusColumns["columns"],
+  boardColumnId: string | undefined,
+  wantedTitle: string | undefined,
+): ItemStatusColumns["columns"][number] {
+  if (!cols.length) throw new Error("לפריט הזה אין עמודת סטטוס");
+  const list = cols.map((c) => `"${c.title}"`).join(", ");
+  if (wantedTitle?.trim()) {
+    const q = normLabel(wantedTitle);
+    const hits = cols.filter((c) => normLabel(c.title) === q);
+    const loose = hits.length ? hits : cols.filter((c) => normLabel(c.title).includes(q));
+    if (loose.length === 1) return loose[0]!;
+    throw new Error(`לא זיהיתי עמודה בשם "${wantedTitle}". עמודות הסטטוס בפריט: ${list} — שאל את המשתמש איזו.`);
+  }
+  const known = boardColumnId ? cols.find((c) => c.id === boardColumnId) : undefined;
+  if (known) return known;
+  const titled = cols.filter((c) => /סטטוס|status/i.test(c.title));
+  if (titled.length === 1) return titled[0]!;
+  if (cols.length === 1) return cols[0]!;
+  throw new Error(`לפריט יש כמה עמודות סטטוס: ${list} — שאל את המשתמש איזו לשנות, וקרא שוב עם column.`);
+}
+
+export interface SetItemStatusDeps extends ScopeDeps {
+  readItemStatusColumns?: (itemId: string) => Promise<ItemStatusColumns>;
+  getColumnLabels?: (boardId: string, columnId: string) => Promise<string[]>;
+  setItemColumnValues?: (boardId: string, itemId: string, values: Record<string, unknown>) => Promise<void>;
+  addTaskNote?: (itemId: string, body: string) => Promise<void>;
+}
+
+async function authorizeStatusChange(
+  user: IdentifiedUser,
+  itemId: string,
+  kind: StatusBoardKind | "other",
+  deps: ScopeDeps,
+): Promise<void> {
+  switch (kind) {
+    case "task":
+      return authorize(user, itemId, deps);
+    case "project":
+      if (!userCan(user, "project:manage")) throw new Error("אין לך הרשאה לשנות סטטוס של פרויקטים ושלבים");
+      return assertManagesItemProject(user, itemId, deps);
+    case "sales":
+      if (!userCan(user, "lead:manage")) throw new Error("אין לך הרשאה לשנות סטטוס של לידים ועסקאות");
+      return;
+    case "finance":
+      if (!userCan(user, "finance:manage")) throw new Error("אין לך הרשאה לשנות סטטוס בגבייה");
+      return;
+    case "other":
+      if (user.role !== "owner" && user.role !== "admin") {
+        throw new Error("שינוי סטטוס בבורד הזה שמור לבעלים ולאדמין");
+      }
+      return;
+  }
+}
+
+/**
+ * שינוי סטטוס של פריט Monday בכל בורד. הרשאה לפי סוג הבורד → בחירת עמודה → אימות תווית מול
+ * Monday → כתיבה → Update שמתעד מי ביצע.
+ */
+export async function setItemStatus(
+  user: IdentifiedUser,
+  input: { itemId: string; status: string; column?: string },
+  deps: SetItemStatusDeps = {},
+): Promise<{ ok: true; message: string }> {
+  const doRead = deps.readItemStatusColumns ?? readItemStatusColumns;
+  const doGetLabels = deps.getColumnLabels ?? getColumnLabels;
+  const doSetValues = deps.setItemColumnValues ?? setItemColumnValues;
+  const doAddTaskNote = deps.addTaskNote ?? addTaskNote;
+
+  const itemId = String(input.itemId ?? "");
+  if (!/^\d+$/.test(itemId)) throw new Error("מזהה פריט לא תקין — זהה את הפריט קודם (find_task / find_lead_or_deal / project_status)");
+  if (!String(input.status ?? "").trim()) throw new Error("לא צוין סטטוס");
+
+  const item = await doRead(itemId);
+  const board = STATUS_BOARDS[item.boardId];
+  await authorizeStatusChange(user, itemId, board?.kind ?? "other", deps);
+
+  const col = pickStatusColumn(item.columns, board?.columnId, input.column);
+  const labels = await doGetLabels(item.boardId, col.id);
+  if (!labels.length) throw new Error(`לא הצלחתי לקרוא את האפשרויות של "${col.title}" — לא מעדכן בלי לאמת.`);
+  const label = matchStatusLabel(labels, input.status, col.title);
+
+  if (col.text === label) {
+    return { ok: true, message: `${col.title} של "${item.itemName}" כבר "${label}"` };
+  }
+  await doSetValues(item.boardId, itemId, { [col.id]: { label } });
+  await doAddTaskNote(
+    itemId,
+    `↻ ${col.title}: ${col.text ? `"${col.text}" → ` : ""}"${label}" — ע"י ${user.name} דרך העוזר התפעולי`,
+  );
+  return { ok: true, message: `${col.title} של "${item.itemName}" עודכן ל"${label}"` };
 }
 
 export interface UpdateTaskDeps extends ScopeDeps {

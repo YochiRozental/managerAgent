@@ -543,11 +543,12 @@ async function main() {
         "mark_done",
         "reassign_item",
         "report_blocker",
+        "set_item_status",
         "set_status",
         "update_lead_contact",
       ].sort(),
     ),
-    "WIRED_AGENT_TOOL_NAMES: עדיין בדיוק 11 הכלים (9 ישנים + find_lead + update_lead_contact, 2026-10-08)",
+    "WIRED_AGENT_TOOL_NAMES: בדיוק 12 הכלים (9 ישנים + find_lead + update_lead_contact, 2026-10-08; + set_item_status, 2026-10-25)",
   );
 
   // ───────────────────────── 9. Web-local tools — ללא שינוי ─────────────────────────

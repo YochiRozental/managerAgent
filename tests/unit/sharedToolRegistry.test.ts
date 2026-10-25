@@ -230,8 +230,8 @@ async function main() {
   }
 
   // ═══════════════════════ WEB_SHARED_TOOL_VISIBILITY — הטבלה המוצהרת ═══════════════════════
-  logger.info("— WEB_SHARED_TOOL_VISIBILITY: 11 entries, 5 always / 6 gated (2026-10-08: +find_lead/update_lead_contact), זהה ל-WIRED_AGENT_TOOL_NAMES —");
-  assert(WEB_SHARED_TOOL_VISIBILITY.length === 11, `WEB_SHARED_TOOL_VISIBILITY: 11 entries (בפועל ${WEB_SHARED_TOOL_VISIBILITY.length})`);
+  logger.info("— WEB_SHARED_TOOL_VISIBILITY: 12 entries, 5 always / 7 gated (2026-10-08: +find_lead/update_lead_contact; 2026-10-25: +set_item_status), זהה ל-WIRED_AGENT_TOOL_NAMES —");
+  assert(WEB_SHARED_TOOL_VISIBILITY.length === 12, `WEB_SHARED_TOOL_VISIBILITY: 12 entries (בפועל ${WEB_SHARED_TOOL_VISIBILITY.length})`);
   const alwaysNames = WEB_SHARED_TOOL_VISIBILITY.filter((e) => e.visibility === "always").map((e) => e.tool.name).sort();
   const gatedNames = WEB_SHARED_TOOL_VISIBILITY.filter((e) => e.visibility === "gated").map((e) => e.tool.name).sort();
   assert(
@@ -241,9 +241,9 @@ async function main() {
   assert(
     deepEqual(
       gatedNames,
-      ["create_lead", "create_project_stage", "create_task", "find_lead", "reassign_item", "update_lead_contact"].sort(),
+      ["create_lead", "create_project_stage", "create_task", "find_lead", "reassign_item", "set_item_status", "update_lead_contact"].sort(),
     ),
-    `visibility='gated' === 6 הכלים (בפועל: ${gatedNames.join(",")})`,
+    `visibility='gated' === 7 הכלים (בפועל: ${gatedNames.join(",")})`,
   );
   assert(
     deepEqual([...WIRED_AGENT_TOOL_NAMES].sort(), [...alwaysNames, ...gatedNames].sort()),
@@ -258,6 +258,7 @@ async function main() {
     if (userCan(user, "lead:manage")) names.push("create_lead", "find_lead", "update_lead_contact");
     if (userCan(user, "project:manage")) names.push("create_project_stage");
     if (userCan(user, "task:manage") || userCan(user, "lead:manage") || userCan(user, "project:manage")) names.push("reassign_item");
+    if (userCan(user, "lead:manage") || userCan(user, "project:manage") || userCan(user, "finance:manage")) names.push("set_item_status");
     return names.sort();
   }
   for (const user of ALL_ROLES) {

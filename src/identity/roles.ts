@@ -78,7 +78,9 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "client:communicate",
   ],
   planner: ["view:own_work", "report:hours", "task:update_own", "task:create"],
-  finance: ["view:own_work", "view:finance", "finance:manage", "report:hours"],
+  // task:update_own — סטטוס/הערה/חסם על משימות שלה בלבד (בעלות נאכפת בשרת ב-authorize, actions.ts).
+  // בלי task:manage → משימה של מישהו אחר נחסמת.
+  finance: ["view:own_work", "view:finance", "finance:manage", "report:hours", "task:update_own"],
 };
 
 /** תיאור התפקיד בעברית — נכנס ל-system prompt כדי שה-AI יידע מול מי הוא מדבר. */

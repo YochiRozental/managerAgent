@@ -52,6 +52,7 @@ const SAFE_TESTS = [
   "tests/unit/relativeDates.test.ts",
   "tests/unit/bulkQuery.test.ts",
   "tests/unit/setItemStatus.test.ts",
+  "tests/unit/goldiAccess.test.ts",
   // integration — DB זמני מבודד בלבד
   "tests/integration/loop.test.ts",
   "tests/integration/approvals.test.ts",

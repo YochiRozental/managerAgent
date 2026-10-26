@@ -61,7 +61,7 @@ import {
 import { reassignItem, type ReassignItemDeps } from "../../src/ops/actions.js";
 import type { MondayUser } from "../../src/integrations/monday/users.js";
 import type { PeopleColumnInfo } from "../../src/integrations/monday/itemWrite.js";
-import { resolveUserByKey, userCan } from "../../src/identity/index.js";
+import { resolveUserByKey, userCan, TEAM_DIRECTORY } from "../../src/identity/index.js";
 import { logger } from "../../src/utils/logger.js";
 import { assert } from "../helpers/check.js";
 
@@ -281,11 +281,12 @@ async function main() {
   assert(!ruchamaNames.includes("create_lead"), "רוחמה לא רואה create_lead (אין lead:manage)");
   assert(!ruchamaNames.includes("create_project_stage"), "רוחמה לא רואה create_project_stage (אין project:manage)");
 
-  const goldi = resolveUserByKey("goldi")!; // finance: view:own_work, view:finance, finance:manage, report:hours
+  const goldi = resolveUserByKey("goldi")!; // finance: view:own_work, view:finance, finance:manage, report:hours, task:update_own
   const goldiNames = agentToolsForUser(goldi).map((t) => t.name).sort();
   assert(goldiNames.includes("add_update"), "גולדי (finance:manage) כן רואה add_update");
   assert(!goldiNames.includes("create_task"), "גולדי לא רואה create_task (אין task:create/task:manage)");
-  assert(!goldiNames.includes("mark_done"), "גולדי לא רואה mark_done (אין task:update_own)");
+  assert(goldiNames.includes("mark_done"), "גולדי רואה mark_done (task:update_own — משימות שלה בלבד)");
+  assert(!goldiNames.includes("reassign_item"), "גולדי לא רואה reassign_item (אין task:manage)");
 
   const dov = resolveUserByKey("dov")!; // project_manager: task:create, task:manage, project:manage, lead:manage...
   const dovNames = agentToolsForUser(dov).map((t) => t.name).sort();
@@ -354,9 +355,11 @@ async function main() {
     assert(chatTool.name === name, `tool name זהה ('${name}')`);
   }
 
-  // permission *denial* אמיתי — גולדי (finance: אין task:update_own) — נדחה לפני כל קריאת Monday
+  // permission *denial* אמיתי — משתמש בלי task:update_own (גולדי שהוסרה ממנה ההרשאה — מאז 2026-10-26
+  // ל-finance יש task:update_own) — נדחה לפני כל קריאת Monday
   // (authorize() ב-actions.ts בודק userCan(task:update_own) כצעד הראשון, לפני isOwnItem/Monday).
-  const goldiForDenial = resolveUserByKey("goldi")!;
+  const goldiReal = resolveUserByKey("goldi")!;
+  const goldiForDenial = { ...goldiReal, permissions: goldiReal.permissions.filter((p) => p !== "task:update_own") };
   for (const [name, chatTool] of familyChatTools.slice(0, 4)) {
     // ה-4 הראשונים (לא add_update) — כולם עוברים ב-updateTask's authorize().
     let threw = false;
@@ -626,21 +629,28 @@ async function main() {
     assert(addNoteCalls.length === 1, "addTaskNote נקרא פעם אחת בדיוק — אין כתיבה כפולה");
   }
 
-  // 2. ספר הצוות — match יחיד, אבל בלי חשבון Monday ("גולדי")
+  // 2. ספר הצוות — match יחיד, אבל בלי חשבון Monday. מאז 2026-10-26 לכל חברי הצוות יש mondayUserId,
+  //    אז הענף נבדק עם חבר צוות מדומה שנוסף זמנית לספר ומוסר מיד.
   {
     let monday_touched = false;
-    const r = await tryReassign("גולדי", {
-      findUsersByName: async () => {
-        monday_touched = true;
-        return [];
-      },
-      detectPeopleColumn: async () => {
-        monday_touched = true;
-        return fakeColumn;
-      },
-    });
-    assert(!r.ok && !!r.error?.includes("אין חשבון Monday פעיל"), "ספר הצוות: match יחיד בלי Monday פעיל (גולדי) → נדחה בהודעה הנכונה");
-    assert(!monday_touched, "גולדי בלי Monday: נדחה *לפני* כל קריאת Monday (גם לא detectPeopleColumn)");
+    TEAM_DIRECTORY.push({ key: "test-no-monday", name: "פלונית-בדיקה", role: "finance", mondayUserId: null, email: null, whatsappJid: null });
+    let r: { ok: boolean; message?: string; error?: string };
+    try {
+      r = await tryReassign("פלונית-בדיקה", {
+        findUsersByName: async () => {
+          monday_touched = true;
+          return [];
+        },
+        detectPeopleColumn: async () => {
+          monday_touched = true;
+          return fakeColumn;
+        },
+      });
+    } finally {
+      TEAM_DIRECTORY.splice(TEAM_DIRECTORY.findIndex((m) => m.key === "test-no-monday"), 1);
+    }
+    assert(!r.ok && !!r.error?.includes("אין חשבון Monday פעיל"), "ספר הצוות: match יחיד בלי Monday פעיל → נדחה בהודעה הנכונה");
+    assert(!monday_touched, "חבר צוות בלי Monday: נדחה *לפני* כל קריאת Monday (גם לא detectPeopleColumn)");
   }
 
   // 3. ספר הצוות — ambiguous ("דוב ואיתן" — אותו תרחיש אמיתי כמו test-task-creation.ts)

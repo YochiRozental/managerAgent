@@ -67,7 +67,7 @@ export const TEAM_DIRECTORY: TeamMember[] = [
     key: "goldi",
     name: "גולדי",
     role: "finance",
-    mondayUserId: null, // guest 63386527 ולא פעילה — כותבת ל-Monday דרך חיבור המערכת
+    mondayUserId: "63386527", // guest ב-Monday — יש לה משימות משויכות; ה-API מחזיר guests כרגיל
     email: null,
     whatsappJid: null,
   },

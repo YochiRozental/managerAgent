@@ -63,7 +63,10 @@ function registryTool(name: string) {
 }
 
 const moti = resolveUserByKey("moti")!; // owner — יש לו הכל
-const goldi = resolveUserByKey("goldi")!; // finance: view:own_work, view:finance, finance:manage, report:hours — *אין* task:update_own
+// משתמש finance *בלי* task:update_own — מאז 2026-10-26 ל-finance האמיתי יש task:update_own, אז ההרשאה
+// מוסרת כאן במפורש כדי לשמור על כיסוי הדחייה (view:own_work, view:finance, finance:manage, report:hours).
+const goldiReal = resolveUserByKey("goldi")!;
+const goldi = { ...goldiReal, permissions: goldiReal.permissions.filter((p) => p !== "task:update_own") };
 const ruchama = resolveUserByKey("ruchama")!; // planner — אין lead:manage
 
 async function main() {

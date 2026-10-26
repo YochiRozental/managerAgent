@@ -152,7 +152,9 @@ export async function addUpdateToItem(
   user: IdentifiedUser,
   itemId: string,
   body: string,
+  deps: AddUpdateDeps = {},
 ): Promise<{ ok: true; message: string }> {
+  const doAddTaskNote = deps.addTaskNote ?? addTaskNote;
   const canNote =
     userCan(user, "task:update_own") ||
     userCan(user, "task:create") ||
@@ -162,9 +164,34 @@ export async function addUpdateToItem(
   if (!canNote) throw new Error("אין לך הרשאה להוסיף הערות");
   if (!body.trim()) throw new Error("הערה ריקה");
   if (!/^\d+$/.test(itemId)) throw new Error("מזהה פריט לא תקין");
+  await assertFinanceNoteOnOwnTask(user, itemId, deps);
   // כל כתיבה ל-Monday רשומה על חשבון ה-API (מוטי). השורה הראשונה היא מי באמת רשם.
-  await addTaskNote(itemId, `✍️ נרשם ע"י ${user.name} (דרך העוזר התפעולי)\n\n${body.trim()}`);
+  await doAddTaskNote(itemId, `✍️ נרשם ע"י ${user.name} (דרך העוזר התפעולי)\n\n${body.trim()}`);
   return { ok: true, message: "ההערה נוספה ל-Monday" };
+}
+
+export interface AddUpdateDeps extends ScopeDeps {
+  addTaskNote?: (itemId: string, body: string) => Promise<void>;
+}
+
+/** בורדי המשימות — משימות משרד, תת-המשימות שלהן, ומשימות בתוך שלבי פרויקט. */
+const TASK_BOARDS = new Set([BOARD_GENERAL_TASKS, "1550734559", BOARD_PROJECT_STAGE_TASKS]);
+
+/**
+ * finance (גולדי) — הערה על *משימה* רק אם היא משויכת אליה (לפי מזהה Monday, נבדק בשרת). הערות על
+ * גבייה/ליד/עסקה/פרויקט לא משתנות. שאר התפקידים לא עוברים כאן — ההרשאות שלהם נשארו כמו שהיו.
+ * לא מזהים את הבורד → נחסם (לא מנחשים).
+ */
+async function assertFinanceNoteOnOwnTask(user: IdentifiedUser, itemId: string, deps: ScopeDeps): Promise<void> {
+  if (user.role !== "finance") return;
+  const doResolveScope = deps.resolveItemProjectScope ?? resolveItemProjectScope;
+  const doIsOwnItem = deps.isOwnItem ?? isOwnItem;
+  const scope = await doResolveScope(itemId);
+  if (!scope) throw new Error("לא הצלחתי לזהות את הפריט ב-Monday — ההערה לא נוספה.");
+  if (!TASK_BOARDS.has(scope.boardId)) return;
+  if (!user.mondayUserId || !(await doIsOwnItem(itemId, user.mondayUserId))) {
+    throw new Error("המשימה הזו לא משויכת אליך — אפשר להוסיף הערה רק למשימות שלך");
+  }
 }
 
 export interface ReassignItemDeps extends ScopeDeps {

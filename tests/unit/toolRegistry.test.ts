@@ -50,7 +50,9 @@ function main() {
 
   logger.info("— isToolAllowedForUser: ההתנהגות לא השתנתה (sanity, לא תחליף לבדיקות המלאות של test-whatsapp-agent-tools) —");
   const moti = resolveUserByKey("moti")!;
-  const goldi = resolveUserByKey("goldi")!;
+  // finance בלי task:update_own (מאז 2026-10-26 ל-finance האמיתי יש אותה — מוסרת כאן לכיסוי הדחייה)
+  const goldiReal = resolveUserByKey("goldi")!;
+  const goldi = { ...goldiReal, permissions: goldiReal.permissions.filter((p) => p !== "task:update_own") };
   const markDone = whatsappTools.find((t) => t.name === "mark_done")! as unknown as RegistryToolDefinition;
   const legacyStatus = whatsappTools.find((t) => t.name === "update_monday_task_status")! as unknown as RegistryToolDefinition;
   assert(registryIsToolAllowedForUser(markDone, moti), "mark_done (agentTool-backed): מוטי מורשה");

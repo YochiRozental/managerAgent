@@ -399,7 +399,9 @@ async function main() {
     // משמש כ-build-time gate כאן — כי לפחות תפקיד אחד (finance/גולדי) שרואה את הכלי היום לא
     // מחזיק את ההרשאה (חוץ מ-add_update, שמכיל finance:manage ברשימה שלו וכן מכיל את כל 5
     // התפקידים — ר' audit 3F.5B). זו לא טעות, זו ה"discrepancy מתועד" שהתבקש.
-    const goldiAllowedByAgentTool = isToolAllowedForUser(toolDef, goldi);
+    // finance בלי task:update_own (מאז 2026-10-26 ל-finance האמיתי יש אותה — מוסרת כאן לכיסוי הדחייה)
+    const goldiNoUpdate = { ...goldi, permissions: goldi.permissions.filter((p) => p !== "task:update_own") };
+    const goldiAllowedByAgentTool = isToolAllowedForUser(toolDef, goldiNoUpdate);
     if (name === "add_update") {
       assert(
         goldiAllowedByAgentTool,

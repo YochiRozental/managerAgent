@@ -163,6 +163,14 @@ a{color:var(--color-link)}
 .notice--error .notice__icon{color:var(--error-icon)}
 .notice--error .notice__title{color:var(--error-title)}
 .notice--error .notice__text{color:var(--error-text)}
+/* ===== עדכון בצ'אט הסוכן: עובד השיב לפנייה שהסוכן שלח (נשען על טוקני notice--info, בהיר/כהה) ===== */
+.upd{margin:2px 0}
+.upd__sub{font-size:var(--font-size-xs);color:var(--color-text-muted)}
+.upd__open{align-self:flex-start;margin-top:6px}
+/* תווית "פנייה מהסוכן" על הודעת צוות שנשלחה דרך מנגנון הפניות */
+.tm__tag{align-self:flex-start;font-size:var(--font-size-2xs);font-weight:600;color:var(--approval-head-fg);background:var(--approval-head-bg);border:1px solid var(--approval-border);border-radius:999px;padding:1px 9px}
+@keyframes tmflash{from{box-shadow:0 0 0 3px var(--color-link)}to{box-shadow:0 0 0 0 transparent}}
+.tm--flash{animation:tmflash 1.8s ease-out}
 
 /* ===== Approval card ===== */
 .approval{border:1px solid var(--approval-border);background:var(--color-surface);border-radius:var(--radius-lg);overflow:hidden}
@@ -534,7 +542,7 @@ async function api(path, opts) {
 // הנפח תמיד קטן, ברגע שמטפלים/מסמנים יורד מכאן), notifHistory הוא עמוד ה-pagination (נקראות+
 // לא-נקראות). נקרא (seenAt) ≠ מטופל/נסגר (finding_events) — markNotificationSeenById לא נוגע
 // בממצאי בקרה בכלל (ר' server/index.ts), אז התראה שסומנה נקרא עוברת ל"היסטוריה" בלבד, לא "נפתרת".
-const state = { user: null, session: null, thread: [], busy: false, nudges: [], activeNudge: null, approvals: [], es: null, notifTab: "active", notifActive: [], notifHistory: { items: [], hasMore: false }, unseenCount: 0 };
+const state = { user: null, session: null, thread: [], updates: [], updatesDirty: false, busy: false, nudges: [], activeNudge: null, approvals: [], es: null, notifTab: "active", notifActive: [], notifHistory: { items: [], hasMore: false }, unseenCount: 0 };
 function fmtDate(iso) {
   if (!iso) return "?";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
@@ -738,7 +746,8 @@ function openEventStream() {
   es.addEventListener("approval_update", (e) => { try { onApprovalReplyLive(JSON.parse(e.data)); } catch {} });
   es.addEventListener("notification", (e) => { try { onLiveNotification(JSON.parse(e.data)); } catch {} });
   es.addEventListener("team", (e) => { try { onTeamEvent(JSON.parse(e.data)); } catch {} });
-  es.addEventListener("open", () => { try { onTeamStreamOpen(); } catch {} });
+  es.addEventListener("agent_update", (e) => { try { onAgentUpdateEvent(JSON.parse(e.data)); } catch {} });
+  es.addEventListener("open", () => { try { onTeamStreamOpen(); } catch {} try { resyncAgentUpdates(); } catch {} });
   es.onerror = () => { /* EventSource מתחבר מחדש לבד */ };
 }
 const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
@@ -775,11 +784,97 @@ async function login(identifier) {
 // state.session = מזהה השיחה הנוכחית · state.thread = ההודעות שלה
 async function loadSession(id) {
   try {
-    const { messages } = await api("/api/chat/session?id=" + encodeURIComponent(id));
+    const { messages, teamUpdates } = await api("/api/chat/session?id=" + encodeURIComponent(id));
     state.session = id;
     state.thread = messages.map(m => ({ role: m.role, content: m.content, actions: m.actions || [] }));
+    mergeAgentUpdates(id, messages, teamUpdates || [], true);
   } catch { state.thread = []; }
 }
+
+/* ---------- עדכוני צוות בשיחת הסוכן (תשובות לפניות) ----------
+   state.updates = תשובות מפורשות ("השב") של עובדים להודעות שהסוכן שלח בשם המשתמש. מקור האמת: ה-DB
+   (teamUpdates מ-/api/chat/session). לא נשמרים ב-state.thread, לא נשלחים למודל (activeContext מסנן רק
+   user/assistant) ולא נכתבים ל-chat_messages. מפתח dedupe: messageId. after = כמה הודעות צ'אט קדמו
+   לעדכון (לפי חותמות הזמן בשרת) — כך המיקום זהה בהצגה חיה ואחרי רענון. */
+function mergeAgentUpdates(sessionId, messages, list, replaceAll) {
+  const prev = new Map(state.updates.filter(u => u.sessionId === sessionId).map(u => [u.messageId, u]));
+  const others = state.updates.filter(u => u.sessionId !== sessionId);
+  const out = new Map(replaceAll ? [] : prev);
+  for (const u of list) {
+    const old = prev.get(u.messageId);
+    const after = old ? old.after : messages.filter(m => m.createdAt && m.createdAt <= u.createdAt).length;
+    out.set(u.messageId, { ...u, sessionId, after });
+  }
+  state.updates = others.concat([...out.values()].sort((a, b) => a.after - b.after || a.messageId - b.messageId));
+}
+function currentUpdates() {
+  return state.session ? state.updates.filter(u => u.sessionId === state.session) : [];
+}
+// full=true: שליפה מלאה (חיבור מחדש / עריכה / מחיקה — after מחזיר רק חדשות); אחרת רק מה שאחרי האחרון שהכרנו.
+async function syncAgentUpdates(sessionId, full) {
+  if (!sessionId || !state.user) return;
+  try {
+    const known = state.updates.filter(u => u.sessionId === sessionId).map(u => u.messageId);
+    const afterId = full ? 0 : Math.max(0, ...known);
+    const r = await api(`/api/chat/session?id=${encodeURIComponent(sessionId)}&after=${afterId}`);
+    mergeAgentUpdates(sessionId, r.messages || [], r.teamUpdates || [], full);
+    if (sessionId === state.session) refreshUpdatesView();
+  } catch {}
+}
+function refreshUpdatesView() {
+  if (state.busy) { state.updatesDirty = true; return; } // באמצע שליחה — מצטייר אחריה, בלי לקלקל את מחוון ההקלדה
+  const sc = $("#scroll");
+  const visible = team.tab === "agent";
+  const near = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
+  const top = sc.scrollTop;
+  renderChat();
+  if (visible && !near) sc.scrollTop = top; // לא קופצים לסוף אם המשתמש קורא היסטוריה
+}
+const firstName = (n) => String(n || "").trim().split(/\s+/)[0] || "העובד";
+function updateCard(u) {
+  const wrap = el("div", "notice notice--info upd"); wrap.setAttribute("role", "status"); wrap.dataset.mid = String(u.messageId);
+  const body = el("div", "notice__body");
+  body.appendChild(el("strong", "notice__title", `💬 ${firstName(u.fromName)} השיב/ה לפנייה שלך בנושא:`));
+  const subject = Array.from(u.outreachBody || "").length > 70 ? Array.from(u.outreachBody).slice(0, 70).join("") + "…" : (u.outreachBody || "");
+  body.appendChild(el("span", "notice__text", "«" + subject + "»"));
+  if (u.deleted) body.appendChild(el("span", "upd__sub", "התשובה נמחקה"));
+  else if (u.edited) body.appendChild(el("span", "upd__sub", "התשובה נערכה"));
+  const open = el("button", "btn btn--secondary upd__open", "פתח בהודעות צוות"); open.type = "button";
+  open.onclick = () => openUpdateInTeam(u);
+  body.appendChild(open);
+  wrap.appendChild(body);
+  return wrap;
+}
+// פותח את לשונית "הודעות צוות" על השיחה עם העובד וגולל להודעת התשובה. סימון "נקרא" נעשה רק על ידי
+// openThread הרגיל (כלומר כשהמשתמש באמת פותח את השיחה) — לא כאן.
+async function openUpdateInTeam(u) {
+  if (!team.booted) await teamBoot();
+  showMainTab("team");
+  openThread(u.threadId);
+  await syncThread(u.threadId);
+  const T = getT(u.threadId);
+  for (let i = 0; i < 3 && !T.messages.has(u.messageId) && T.hasOlder; i++) await loadOlder(T);
+  const target = $(`#teamMsgs [data-id="${u.messageId}"]`);
+  if (target) {
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.add("tm--flash");
+    setTimeout(() => target.classList.remove("tm--flash"), 2000);
+  }
+}
+function onAgentUpdateEvent(ev) {
+  if (!ev || typeof ev.sessionId !== "string" || typeof ev.messageId !== "number") return;
+  const inThis = ev.sessionId === state.session;
+  syncAgentUpdates(ev.sessionId, ev.change !== "new").then(() => {
+    if (ev.change !== "new") return;
+    const watching = inThis && team.tab === "agent" && document.visibilityState === "visible";
+    if (watching) return; // הכרטיס מופיע מול העיניים — בלי הודעה נוספת
+    const u = state.updates.find(x => x.messageId === ev.messageId);
+    toast(`💬 ${firstName(u && u.fromName)} השיב/ה לפנייה שלך` + (inThis ? "" : " (בשיחה אחרת)"));
+  });
+}
+function resyncAgentUpdates() { if (state.session) syncAgentUpdates(state.session, true); }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resyncAgentUpdates(); });
+window.addEventListener("online", resyncAgentUpdates);
 function activeContext() {
   return state.thread.filter(m => m.role === "user" || m.role === "assistant").slice(-20);
 }
@@ -1215,6 +1310,7 @@ function msgNode(m, T) {
     };
     node.appendChild(q);
   }
+  if (m.viaAgent && !m.deleted) node.appendChild(el("div", "tm__tag", "פנייה מהסוכן"));
   node.appendChild(el("div", "tm__body" + (m.deleted ? " tm__body--deleted" : ""), m.body));
   const meta = el("div", "tm__meta");
   const t = el("span", null, fmtTime(d));
@@ -1713,10 +1809,16 @@ function scrollDown() { const c = $("#scroll"); c.scrollTop = c.scrollHeight; }
 function renderChat() {
   const c = $("#chat"); c.innerHTML = "";
   agentTurn("בוקר טוב 🌤️ אני העוזר התפעולי שלך. תגיד/י לי 'בוקר טוב' ואראה לך מה על הפרק היום, ועדכן/י אותי במהלך היום מה ביצעת — אני אדאג לרשום ב-Monday.");
-  for (const m of state.thread) {
+  // עדכוני צוות (תשובות לפניות) משולבים בסדר כרונולוגי בין הודעות הצ'אט; לא חלק מ-state.thread.
+  const ups = currentUpdates();
+  let ui = 0;
+  const flushUpdates = (i) => { while (ui < ups.length && ups[ui].after <= i) c.appendChild(updateCard(ups[ui++])); };
+  state.thread.forEach((m, i) => {
+    flushUpdates(i);
     if (m.role === "user") userBubble(m.content);
     else agentTurn(m.content, m.actions);
-  }
+  });
+  flushUpdates(Infinity);
   // הפנייה שהמשתמש בחר במפורש לטפל בה (מתוך "התראות") — היחידה שמוצגת כהודעת-מערכת בשיחה.
   // שאר הפניות הפתוחות לא מוזרקות לכאן בכלל, ר' loadNotifications/nudgeCard.
   if (state.activeNudge) {
@@ -1826,6 +1928,7 @@ async function sendMessage(text) {
     $("#send").disabled = false;
     $("#input").focus();
     scrollDown();
+    if (state.updatesDirty) { state.updatesDirty = false; refreshUpdatesView(); } // עדכון צוות שהגיע באמצע השליחה
   }
 }
 

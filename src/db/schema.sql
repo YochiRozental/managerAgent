@@ -429,3 +429,29 @@ CREATE TABLE IF NOT EXISTS team_messages (
   FOREIGN KEY (thread_id, reply_to_id) REFERENCES team_messages (thread_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_team_messages_thread ON team_messages (thread_id, id);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- פניות יזומות של הסוכן לעובד (2026-10-28, שלב 1 — תשתית נתונים בלבד). משתמש מבקש מהסוכן לפנות לעובד;
+-- הסוכן מכין טיוטה (draft), ורק אחרי אישור מפורש נשלחת הודעת צוות רגילה בשם המשתמש. כאן רק ניהול
+-- מחזור החיים של הפנייה — השליחה עצמה (team_messages) נעשית בשכבה אחרת.
+-- sending = נשלח/בדרך; אחרי קריסה נשאר כך. אין איפוס אוטומטי ל-draft: התאוששות היא שליחה מחדש עם
+-- אותו client_message_id (ao:<id>), ש-team_messages מזהה כהודעה קיימת.
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS agent_outreach (
+  id TEXT PRIMARY KEY,                  -- ao_xxxxxxxx
+  user_key TEXT NOT NULL,               -- בעל הפנייה (השולח)
+  session_id TEXT NOT NULL,             -- שיחת הסוכן המקורית
+  recipient_key TEXT NOT NULL,
+  body TEXT NOT NULL,                   -- הנוסח המדויק שהוצג ואושר
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sending','sent','cancelled','expired')),
+  created_turn TEXT NOT NULL,           -- ההודעה שבה נוצרה הטיוטה — אישור חייב להגיע בהודעה אחרת
+  expires_at TEXT NOT NULL,             -- ISO UTC
+  team_message_id INTEGER,              -- ההודעה שנשלחה; NULL עד השלמה
+  thread_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  sent_at TEXT,
+  CHECK (status <> 'sent' OR (team_message_id IS NOT NULL AND thread_id IS NOT NULL))
+);
+-- הודעת צוות אחת משויכת לפנייה אחת לכל היותר (NULL-ים מרובים מותרים).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_outreach_team_message ON agent_outreach (team_message_id);
+CREATE INDEX IF NOT EXISTS idx_agent_outreach_scope ON agent_outreach (user_key, session_id, status);

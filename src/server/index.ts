@@ -20,7 +20,6 @@ import {
   appendChatTurn,
   clearChatHistory,
   deleteSession,
-  getSessionMessages,
   latestSessionId,
   listSessions,
   newSessionId,
@@ -38,6 +37,7 @@ import {
 import { subscribeNudges } from "../ops/nudgeBus.js";
 import { subscribeNotifications } from "../ops/notificationBus.js";
 import { handleTeamRequest, isTeamPath, teamSseFrame } from "./teamApi.js";
+import { loadChatSession } from "./chatSession.js";
 import { approveApproval, giveApprovalInstruction, rejectApproval } from "../ops/approvalActions.js";
 import { listApprovalsForManager, recoverStuckApprovals } from "../db/repositories/managerApprovals.js";
 import { listApprovalMessages } from "../db/repositories/approvalMessages.js";
@@ -413,9 +413,10 @@ const server = createServer(async (req, res) => {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
       const id = url.searchParams.get("id");
-      return send(res, 200, {
-        messages: getSessionMessages(user.key, !id || id === "legacy" ? null : id),
-      });
+      // teamUpdates: תשובות מפורשות לפניות הסוכן לעובדים (נשלפות מה-DB, לא מועתקות) — ר' chatSession.ts.
+      const afterRaw = url.searchParams.get("after");
+      const after = afterRaw && /^\d+$/.test(afterRaw) ? Number(afterRaw) : 0;
+      return send(res, 200, loadChatSession(user.key, id, after));
     }
 
     if (req.method === "POST" && path === "/api/chat/new") {

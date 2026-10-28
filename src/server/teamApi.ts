@@ -12,19 +12,9 @@
  */
 
 import { TEAM_DIRECTORY, type IdentifiedUser } from "../identity/index.js";
-import {
-  TeamMessageError,
-  deleteMessage,
-  editMessage,
-  listMessages,
-  listThreadMemberKeys,
-  listThreads,
-  markRead,
-  openDm,
-  sendMessage,
-  unreadTotal,
-} from "../db/repositories/teamMessages.js";
-import { publishNotificationLive, type BusNotification } from "../ops/notificationBus.js";
+import { TeamMessageError, listMessages, listThreads, markRead, openDm, unreadTotal } from "../db/repositories/teamMessages.js";
+import { type BusNotification } from "../ops/notificationBus.js";
+import { AGENT_UPDATE_KIND_PREFIX, TEAM_EVENT_KIND_PREFIX, deleteTeamMessage, editTeamMessage, sendTeamMessage } from "../ops/teamDelivery.js";
 import { logger } from "../utils/logger.js";
 
 export interface TeamRequest {
@@ -50,35 +40,30 @@ const ERROR_STATUS = { not_found: 404, invalid: 400, forbidden: 403, deleted: 40
 
 // ── SSE ───────────────────────────────────────────────────────────────────────────────────────
 
-type TeamEventType = "new" | "edited" | "deleted";
-const KIND_PREFIX = "team_message_";
-
-/** מפרסם אירוע לכל משתתפי השיחה (כולל השולח — לשוניות אחרות שלו). בלי גוף הודעה. */
-function publishTeamEvent(type: TeamEventType, memberKeys: string[], threadId: number, messageId: number, rev: number, senderKey: string): void {
-  for (const userKey of memberKeys) {
-    try {
-      publishNotificationLive({
-        userKey,
-        id: messageId,
-        kind: `${KIND_PREFIX}${type}`,
-        body: "",
-        findingKey: null,
-        itemId: null,
-        itemSource: null,
-        context: { threadId, messageId, rev, senderKey },
-        createdAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      logger.error(err, "פרסום אירוע הודעת צוות נכשל");
-    }
-  }
-}
+// פרסום האירועים (publishTeamEvent) וכל שליחה/עריכה/מחיקה — ב-ops/teamDelivery.ts, מסלול משותף ל-API ולסוכן.
+const KIND_PREFIX = TEAM_EVENT_KIND_PREFIX;
 
 /**
  * ל-/api/events. undefined → זה לא אירוע צוות (הקוד הקיים ממשיך כרגיל, בלי שינוי). null → אירוע צוות
  * של משתמש אחר (לא כותבים כלום). מחרוזת → פריים SSE להזרמה. הפריים כולל מזהים בלבד.
  */
 export function teamSseFrame(n: BusNotification, forUserKey: string): string | null | undefined {
+  // עדכון בצ'אט הסוכן על תשובה לפנייה: event ייעודי (agent_update), מזהים בלבד, לבעל הפנייה בלבד.
+  // נתפס כאן כדי שלא ייפול לענף ה-"notification" (פעמון) של /api/events.
+  if (n.kind.startsWith(AGENT_UPDATE_KIND_PREFIX)) {
+    if (n.userKey !== forUserKey) return null;
+    const c = n.context ?? {};
+    const data = {
+      type: n.kind.slice(AGENT_UPDATE_KIND_PREFIX.length),
+      change: c.change,
+      sessionId: c.sessionId,
+      outreachId: c.outreachId,
+      threadId: c.threadId,
+      messageId: c.messageId,
+      rev: c.rev,
+    };
+    return `event: agent_update\ndata: ${JSON.stringify(data)}\n\n`;
+  }
   if (!n.kind.startsWith(KIND_PREFIX)) return undefined;
   if (n.userKey !== forUserKey) return null;
   const ctx = n.context ?? {};
@@ -169,10 +154,7 @@ async function route(req: TeamRequest, user: IdentifiedUser, method: string, pat
       else if (typeof body.replyTo === "number") replyTo = body.replyTo;
       else throw new TeamMessageError("invalid");
       // senderKey בגוף הבקשה (אם נשלח) מתעלמים ממנו — השולח הוא תמיד המשתמש המאומת.
-      const { message, duplicate } = sendMessage(me, threadId, body.body, body.clientMessageId, replyTo);
-      if (!duplicate) {
-        publishTeamEvent("new", listThreadMemberKeys(me, threadId), threadId, message.id, message.rev, me);
-      }
+      const { message, duplicate } = sendTeamMessage(me, threadId, body.body, body.clientMessageId, replyTo);
       return { status: duplicate ? 200 : 201, body: { message, duplicate } };
     }
     return NOT_FOUND;
@@ -184,12 +166,10 @@ async function route(req: TeamRequest, user: IdentifiedUser, method: string, pat
     const messageId = idFrom(messageMatch[2]!);
     if (method === "PATCH") {
       const body = await req.readBody();
-      const message = editMessage(me, messageId, body.body, threadId);
-      publishTeamEvent("edited", listThreadMemberKeys(me, threadId), threadId, message.id, message.rev, me);
+      const message = editTeamMessage(me, threadId, messageId, body.body);
       return { status: 200, body: { message } };
     }
-    const message = deleteMessage(me, messageId, threadId);
-    publishTeamEvent("deleted", listThreadMemberKeys(me, threadId), threadId, message.id, message.rev, me);
+    const message = deleteTeamMessage(me, threadId, messageId);
     return { status: 200, body: { message } };
   }
 

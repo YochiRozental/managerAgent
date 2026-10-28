@@ -50,6 +50,11 @@ export interface TeamMessage {
   deletedAt: string | null;
   /** revision פר-שיחה — עולה בכל הוספה/עריכה/מחיקה של ההודעה. ה-cursor של הסנכרון. */
   rev: number;
+  /**
+   * true ⇔ ההודעה נשלחה באמצעות פנייה של הסוכן (agent_outreach במצב sent) — לתווית "פנייה מהסוכן".
+   * דגל בוליאני על הודעה בשיחה שהמבקש חבר בה בלבד; לא חושף שום נתון אחר של הפנייה (בעלים/סשן/נוסח).
+   */
+  viaAgent: boolean;
 }
 
 export interface TeamThreadSummary {
@@ -78,6 +83,7 @@ interface MessageRow {
   r_sender: string | null;
   r_body: string | null;
   r_deleted: string | null;
+  via_agent: number;
 }
 
 interface AccessRow {
@@ -113,12 +119,14 @@ function toMessage(r: MessageRow): TeamMessage {
     editedAt: r.edited_at,
     deletedAt: r.deleted_at,
     rev: r.rev,
+    viaAgent: r.via_agent === 1,
   };
 }
 
 const MESSAGE_SELECT = `
   SELECT m.id, m.thread_id, m.sender_key, m.body, m.reply_to_id, m.created_at, m.edited_at, m.deleted_at, m.rev,
-         r.sender_key AS r_sender, r.body AS r_body, r.deleted_at AS r_deleted
+         r.sender_key AS r_sender, r.body AS r_body, r.deleted_at AS r_deleted,
+         EXISTS (SELECT 1 FROM agent_outreach ao WHERE ao.team_message_id = m.id AND ao.status = 'sent') AS via_agent
   FROM team_messages m
   LEFT JOIN team_messages r ON r.id = m.reply_to_id`;
 

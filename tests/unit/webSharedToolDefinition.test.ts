@@ -585,9 +585,13 @@ async function main() {
         "prepare_bulk_update",
         "confirm_bulk_update",
         "cancel_bulk_update",
+        // נוספו 2026-10-28 — פנייה לעובד דרך הסוכן (buildOutreachTools ב-chat.ts), Web בלבד
+        "prepare_team_outreach",
+        "confirm_team_outreach",
+        "cancel_team_outreach",
       ].sort(),
     ),
-    "WEB_CHAT_LOCAL_TOOL_NAMES: בדיוק 24 הכלים המקומיים (19 + get_my_pipeline 2026-10-11 + 4 כלי עדכון קבוצתי 2026-10-21)",
+    "WEB_CHAT_LOCAL_TOOL_NAMES: בדיוק 27 הכלים המקומיים (24 + 3 כלי פנייה לעובד 2026-10-28)",
   );
 
   // ───────────────────────── 12. WhatsApp's 22-tool registry (2026-10-08: +find_lead/update_lead_contact) ─────────────────────────

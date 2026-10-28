@@ -85,6 +85,14 @@ import {
   type BulkChangeInput,
   type BulkContext,
 } from "./bulkUpdate.js";
+import {
+  buildOutreachContextLines,
+  cancelTeamOutreach,
+  confirmTeamOutreach,
+  looksLikeOutreachRequest,
+  prepareTeamOutreach,
+  type OutreachContext,
+} from "./teamOutreach.js";
 
 const MAX_TURNS = 7;
 
@@ -321,6 +329,10 @@ export const WEB_CHAT_LOCAL_TOOL_NAMES: readonly string[] = [
   "prepare_bulk_update",
   "confirm_bulk_update",
   "cancel_bulk_update",
+  // פנייה לעובד דרך הסוכן (2026-10-28) — ר' buildOutreachTools / ops/teamOutreach.ts. Web בלבד.
+  "prepare_team_outreach",
+  "confirm_team_outreach",
+  "cancel_team_outreach",
 ];
 
 /**
@@ -992,6 +1004,70 @@ function buildBulkTools(
   return tools;
 }
 
+/**
+ * פנייה לעובד דרך הסוכן (2026-10-28): prepare → אישור מפורש בהודעה נפרדת → confirm. כל הלוגיקה והבטיחות
+ * ב-ops/teamOutreach.ts; כאן רק חיווט הכלים. הטקסט שמוחזר (תצוגה/אישור/שגיאה) מוגש למשתמש מילה במילה.
+ * ללא הרשאה ייעודית — כמו /api/team/* (כל משתמש מזוהה), והשולח הוא תמיד המשתמש המאומת.
+ */
+function buildOutreachTools(
+  user: IdentifiedUser,
+  ctx: OutreachContext,
+  history: ChatMessage[],
+  setCaptured: (text: string) => void,
+  actions: string[],
+  turnState: { prepared: boolean },
+): ToolDef[] {
+  const show = (r: { ok: true; text: string } | { ok: false; error: string }) => {
+    setCaptured(r.ok ? r.text : r.error);
+    return r;
+  };
+  return [
+    {
+      name: "prepare_team_outreach",
+      description:
+        "מכין הודעה לעובד אחר דרך 'הודעות צוות' ומציג למשתמש תצוגה מקדימה — **לא שולח כלום**. " +
+        "השתמש כשהמשתמש מבקש לפנות/לשאול/לבקש/לשלוח הודעה לעובד: 'תשאל את דוב איפה התכניות', 'תשלח לאיתן הודעה', 'תבקש מרוחמה עדכון'. " +
+        "recipient = שם העובד כפי שנאמר; text = נוסח ההודעה בגוף ראשון בשם המשתמש, קצר וברור, בלי להוסיף עובדות שלא נאמרו. " +
+        "אם הנמען או התוכן לא ברורים — שאל לפני הקריאה. שינוי נוסח/נמען אחרי תצוגה = קריאה חדשה לכלי הזה (לא confirm). " +
+        "אחרי הקריאה הצג את הטקסט כמו שהוא וסיים — אל תקרא שום כלי נוסף באותה הודעה.",
+      input_schema: {
+        type: "object",
+        properties: {
+          recipient: { type: "string", description: "שם העובד" },
+          text: { type: "string", description: "נוסח ההודעה" },
+        },
+        required: ["recipient", "text"],
+      },
+      run: async (input) => show(prepareTeamOutreach(user, ctx, input)),
+    },
+    {
+      name: "confirm_team_outreach",
+      description:
+        "שולח את הפנייה שהוצגה ואושרה. קרא רק כשההודעה האחרונה של המשתמש היא אישור מפורש ('כן', 'שלח', 'מאשר') לתצוגה שהוצגה בהודעה קודמת. " +
+        "אין פרמטר נוסח — נשלח בדיוק מה שהוצג. הקוד בודק את האישור. הצג את התוצאה כמו שהיא; אל תאמר שנשלח אם הכלי לא אישר. " +
+        "outreachId רק להשלמת פנייה שנתקעה באמצע שליחה, אחרי שהמשתמש אישר מפורשות להשלים.",
+      input_schema: { type: "object", properties: { outreachId: { type: "string", description: "ao_... — רק להשלמת פנייה תקועה" } } },
+      run: async (input) => {
+        const latestUserMessage = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+        const r = await confirmTeamOutreach(user, { ...ctx, latestUserMessage }, { outreachId: input.outreachId ? String(input.outreachId) : undefined });
+        if (r.ok && r.executed) actions.push(`💬 נשלחה הודעה ל${r.recipientName ?? "עובד"}`);
+        return show(r);
+      },
+    },
+    {
+      name: "cancel_team_outreach",
+      description: "מבטל פנייה לעובד שממתינה לאישור ('לא', 'בטל', 'עזוב').",
+      input_schema: { type: "object", properties: {} },
+      run: async () => {
+        // כישלון ביטול ("אין פנייה") לא נתפס מילה-במילה — המודל אולי קרא לכלי בטעות כשהכוונה הייתה לעדכון קבוצתי.
+        const r = cancelTeamOutreach(user, ctx);
+        if (r.ok) setCaptured(r.text);
+        return r;
+      },
+    },
+  ];
+}
+
 function isSharedToolDefinition(tool: ToolDef | ToolDefinition): tool is ToolDefinition {
   return "execute" in tool;
 }
@@ -1273,14 +1349,22 @@ export async function runOpsChat(
   };
   // מצב קבוצתי פעיל (תוצאות אחרונות / תוכנית ממתינה) — נכנס לחלק המשתנה של ה-system prompt בלבד,
   // ורק כשקיים; בלי מצב פעיל ה-prompt זהה בדיוק לקודם (ומטמון ה-prompt לא נפגע).
-  const bulkContextSuffix = buildBulkContextLines(user.key, scopeId, now).join("\n");
+  // פניות לעובדים (2026-10-28): טיוטה ממתינה / פנייה תקועה בשיחה נכנסות לאותו חלק משתנה; בלי מצב — [].
+  const outreachLines = buildOutreachContextLines(user.key, scopeId, now);
+  const bulkContextSuffix = [...buildBulkContextLines(user.key, scopeId, now), ...outreachLines].join("\n");
   const bulkTurn = { prepared: false };
+  const outreachTurn = { prepared: false };
+  let capturedOutreachText: string | null = null;
+  const outreachCtx: OutreachContext = { sessionId: scopeId, turnId: bulkCtx.turnId, now };
   // בקשת המשך / פעולה על קבוצה → SMART (נמצא בבדיקה חיה: FAST איבד את ההחרגה מההודעה הקודמת
   // וחישב תאריך שגוי). דיוק בפעולה על כמה רשומות חשוב מהעלות; בקשות רגילות לא מושפעות.
   const latestText = history[history.length - 1]?.content ?? "";
   const bulkNeedsSmart =
     !opts.about &&
     (!!getLatestPendingPlan(user.key, scopeId) || BULK_INTENT.test(latestText) || (!!bulkContextSuffix && BULK_FOLLOWUP.test(latestText)));
+  // פנייה לעובד (יוצאת החוצה, בשם המשתמש) → SMART: בקשה שנראית כפנייה, או שיש טיוטה/פנייה תקועה בשיחה.
+  // לא גורף — שיחה רגילה בלי אחד מאלה נשארת כמו קודם.
+  const outreachNeedsSmart = !opts.about && (looksLikeOutreachRequest(latestText) || outreachLines.length > 0);
   // audit שלב ז (2026-10-13) — נתיב דטרמיניסטי לאישור פעולת נוכחות: מתעד את ה-message *האמיתי*
   // שכלי נוכחות החזיר בהצלחה בסבב הזה (לא ניסוח חופשי של המודל). אם קיים — הוא מחליף את תשובת
   // המודל כליל (ר' למטה, אחרי runCentralAgent). מאופס מחדש בכל ניסיון (ר' runAttempt).
@@ -1539,6 +1623,8 @@ export async function runOpsChat(
   // ---- סינון מתקדם + עדכון קבוצתי (2026-10-21) — ר' ops/bulkQuery.ts / bulkUpdate.ts. ההרשאות
   // נאכפות שם (פר-רשומה); החשיפה כאן רק מונעת להציע כלי כתיבה למי שאין לו שום הרשאת עדכון. ----
   tools.push(...buildBulkTools(user, bulkCtx, history, (t) => (capturedBulkText = t), actions, bulkTurn));
+  // ---- פנייה לעובד דרך הסוכן (2026-10-28) — Web בלבד; ר' ops/teamOutreach.ts. ----
+  tools.push(...buildOutreachTools(user, outreachCtx, history, (t) => (capturedOutreachText = t), actions, outreachTurn));
 
   // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה (פריט Monday אמיתי בלבד —
   // ממצא בלי itemId, כמו התחייבות, מטופל בנפרד למטה דרך close_commitment הקיים, לא כאן). ----
@@ -1968,6 +2054,8 @@ export async function runOpsChat(
     capturedPipelineText = null;
     capturedBulkText = null;
     bulkTurn.prepared = false;
+    capturedOutreachText = null;
+    outreachTurn.prepared = false;
     const cacheSplit = promptCachingEnabled ? buildPromptCachingSplitFor(user, opts.about) : null;
     return {
       system: bulkContextSuffix ? `${systemPrompt(user, opts.about)}\n${bulkContextSuffix}` : systemPrompt(user, opts.about),
@@ -1995,6 +2083,10 @@ export async function runOpsChat(
         // מודל FAST ביטל את התצוגה שהכין ואז ניסה set_status על מזהים מומצאים). התצוגה היא סוף הסבב.
         if (bulkTurn.prepared && call.name !== "prepare_bulk_update") {
           return { content: "שגיאה: התצוגה המקדימה מוכנה — הצג אותה למשתמש וסיים. אסור לקרוא לכלים נוספים בהודעה הזו.", sideEffect: false };
+        }
+        // פנייה לעובד: אחרי שתצוגה הוכנה בסבב הזה — שום כלי נוסף (במיוחד לא confirm באותה הודעה).
+        if (outreachTurn.prepared && call.name !== "prepare_team_outreach") {
+          return { content: "שגיאה: התצוגה של הפנייה מוכנה — הצג אותה למשתמש וסיים. אסור לקרוא לכלים נוספים בהודעה הזו.", sideEffect: false };
         }
         const tool = tools.find((t) => t.name === call.name);
         if (!tool) return { content: `שגיאה: כלי לא ידוע ${call.name}`, sideEffect: false };
@@ -2046,6 +2138,7 @@ export async function runOpsChat(
         const before = actions.length; // כלי כתיבה מוסיף ל-actions — כך יודעים אם הייתה תופעת לוואי
         try {
           const out = await tool.run(input);
+          if (call.name === "prepare_team_outreach" && (out as { ok?: boolean })?.ok) outreachTurn.prepared = true;
           return { content: JSON.stringify(out), sideEffect: actions.length > before };
         } catch (err) {
           logger.warn({ err, tool: call.name, user: user.key }, "כלי צ'אט תפעולי נכשל");
@@ -2060,6 +2153,8 @@ export async function runOpsChat(
       },
       finalizeText: (modelText: string) => {
         if (capturedBulkText) return capturedBulkText;
+        // פנייה לעובד: התצוגה/אישור/שגיאה מוגשים מילה במילה — המודל לא מנסח "נשלח" בעצמו.
+        if (capturedOutreachText) return capturedOutreachText;
         // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא (כולל ברכה+כותרת,
         // ר' formatEmployeeFeedBriefing) במקום הניסוח החופשי של המודל (שנוטה לשבש את מבנה חמש
         // הקטגוריות). לא רלוונטי בתשובה לפנייה יזומה — שם רוצים את התשובה של הכלי.
@@ -2082,7 +2177,7 @@ export async function runOpsChat(
       historyLength: history.length,
       canSeeAllWork: userCan(user, "view:all_work"),
       // תשובה לפנייה יזומה → SMART: הבנת הכוונה + הפעולה הנכונה ב-Monday חשובה מהעלות.
-      forceTier: forceTier ?? (opts.about || bulkNeedsSmart ? "smart" : undefined),
+      forceTier: forceTier ?? (opts.about || bulkNeedsSmart || outreachNeedsSmart ? "smart" : undefined),
       buildLoop,
       // ל-ops chat "תופעת לוואי" = כתיבה ל-Monday/DB (actions), לא סתם קריאת מידע
       sideEffectCount: () => actions.length,

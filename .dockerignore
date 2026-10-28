@@ -9,3 +9,5 @@ google-credentials.json
 *.log
 docs
 scratchpad
+.env.*
+!.env.example

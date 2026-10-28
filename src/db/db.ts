@@ -42,6 +42,51 @@ for (const stmt of [
     /* העמודה כבר קיימת */
   }
 }
+/**
+ * שדרוג idempotent של team_messages לגרסה עם `rev` (cursor הסנכרון של הודעות צוות). CREATE TABLE IF NOT
+ * EXISTS לא משדרג טבלה קיימת, ולכן: (1) מוסיפים את העמודה אם חסרה, (2) ממלאים rev לשורות קיימות לפי סדר
+ * id בתוך כל שיחה, (3) רק אז יוצרים אינדקס ייחודי וטריגרים — כדי שלעולם לא יתייחסו לעמודה שלא קיימת.
+ * הכל בטרנזקציה אחת; לא מוחק ולא משנה נתונים קיימים מלבד מילוי rev=0. בטוח להרצה חוזרת.
+ */
+export function upgradeTeamMessagesSchema(conn: DatabaseSync): void {
+  const cols = conn.prepare(`PRAGMA table_info(team_messages)`).all() as { name: string }[];
+  if (cols.length === 0) return; // הטבלה לא קיימת (לא אמור לקרות אחרי schema.sql)
+  conn.exec("BEGIN IMMEDIATE");
+  try {
+    if (!cols.some((c) => c.name === "rev")) {
+      conn.exec(`ALTER TABLE team_messages ADD COLUMN rev INTEGER NOT NULL DEFAULT 0`);
+    }
+    // מילוי רק בשיחות שעוד אין בהן שום rev (MAX=0): הדירוג לפי id, כלומר 1..N ללא כפילויות.
+    conn.exec(
+      `UPDATE team_messages SET rev = (SELECT COUNT(*) FROM team_messages b WHERE b.thread_id = team_messages.thread_id AND b.id <= team_messages.id)
+       WHERE rev = 0 AND thread_id IN (SELECT thread_id FROM team_messages GROUP BY thread_id HAVING MAX(rev) = 0)`,
+    );
+    conn.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_team_messages_thread_rev ON team_messages (thread_id, rev)`);
+    // הטריגרים נאכפים ב-DB (גם לכתיבה גולמית); עדכון rev עצמו לא מפעיל את טריגר העדכון (מוגבל ל-body/deleted_at).
+    conn.exec(`CREATE TRIGGER IF NOT EXISTS trg_team_messages_rev_ins AFTER INSERT ON team_messages
+BEGIN
+  UPDATE team_messages
+  SET rev = (SELECT COALESCE(MAX(rev), 0) + 1 FROM team_messages WHERE thread_id = NEW.thread_id)
+  WHERE id = NEW.id;
+END`);
+    conn.exec(`CREATE TRIGGER IF NOT EXISTS trg_team_messages_rev_upd AFTER UPDATE OF body, deleted_at ON team_messages
+BEGIN
+  UPDATE team_messages
+  SET rev = (SELECT MAX(rev) + 1 FROM team_messages WHERE thread_id = NEW.thread_id)
+  WHERE id = NEW.id;
+END`);
+    conn.exec("COMMIT");
+  } catch (err) {
+    try {
+      conn.exec("ROLLBACK");
+    } catch {
+      /* אין טרנזקציה פתוחה */
+    }
+    throw err;
+  }
+}
+upgradeTeamMessagesSchema(db);
+
 // UNIQUE נפרד (לא ב-ALTER עצמו — SQLite לא תומך "ADD COLUMN ... UNIQUE" כש-יש כבר שורות):
 // NULL מרובים מתעלמים מ-UNIQUE ב-SQLite כברירת מחדל, אז שורות ישנות בלי idempotency_key לא מתנגשות.
 try {

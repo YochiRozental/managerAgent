@@ -383,3 +383,49 @@ CREATE TABLE IF NOT EXISTS bulk_plans (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_bulk_plans_owner ON bulk_plans (user_key, session_id, created_at);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- הודעות צוות (2026-10-28, שלב 1) — הודעות אישיות בין עובדים. עולם נפרד לגמרי מ-chat_messages
+-- (הצ'אט עם הסוכן) ומ-notifications. v1 = DM בלבד; kind='group' ו-N חברים כבר נתמכים במבנה.
+-- פרטיות: הגישה נקבעת אך ורק לפי team_thread_members — אין עקיפה לפי תפקיד/הרשאה.
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS team_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'dm' CHECK (kind IN ('dm','group')),
+  dm_key TEXT UNIQUE,                   -- "keyA|keyB" ממוין — מונע שתי שיחות DM לאותו זוג. NULL לקבוצות
+  title TEXT,                           -- לקבוצות בעתיד
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (kind <> 'dm' OR dm_key IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS team_thread_members (
+  thread_id INTEGER NOT NULL REFERENCES team_threads(id),
+  user_key TEXT NOT NULL,
+  joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_read_message_id INTEGER NOT NULL DEFAULT 0,  -- מצב קריאה פר-חבר; נפרד מ-notifications.seen_at
+  PRIMARY KEY (thread_id, user_key)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_thread_members (user_key, thread_id);
+
+CREATE TABLE IF NOT EXISTS team_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL REFERENCES team_threads(id),
+  sender_key TEXT NOT NULL,
+  body TEXT NOT NULL,
+  reply_to_id INTEGER,
+  client_message_id TEXT NOT NULL,      -- idempotency: אותה שליחה (retry) לא יוצרת הודעה שנייה
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  edited_at TEXT,
+  deleted_at TEXT,                      -- soft delete: התוכן נשמר ב-DB, ה-API מסתיר אותו
+  -- revision פר-שיחה: מספר שלם עולה וייחודי, שנקבע בכל הוספה/עריכה/מחיקה. הוא ה-cursor לסנכרון אחרי
+  -- ניתוק ("תן לי כל מה שהשתנה מאז rev N"). לא timestamp — אין פספוס בגלל שעון/שניות זהות.
+  -- האינדקס הייחודי והטריגרים שמנהלים אותו נוצרים ב-db.ts (upgradeTeamMessagesSchema), *אחרי* שהעמודה
+  -- מובטחת — גם בטבלה שנוצרה בגרסה קודמת בלי rev. אסור להוסיף אותם לכאן (CREATE IF NOT EXISTS לא משדרג).
+  rev INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (thread_id, sender_key, client_message_id),
+  UNIQUE (thread_id, id),               -- יעד ה-FK המרוכב של reply_to_id
+  -- תגובה חייבת להצביע להודעה *מאותה שיחה* (נאכף ב-DB, לא רק בקוד). reply_to_id NULL → לא נבדק.
+  FOREIGN KEY (thread_id, reply_to_id) REFERENCES team_messages (thread_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_messages_thread ON team_messages (thread_id, id);

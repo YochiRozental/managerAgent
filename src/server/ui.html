@@ -263,6 +263,55 @@ thead th{background:var(--color-surface-muted);font-size:var(--font-size-xs);col
 td.num{font-variant-numeric:tabular-nums;text-align:center}
 td.num.hot{color:var(--status-late-fg);font-weight:700}
 
+/* ===== Main tabs: הסוכן שלי / הודעות צוות ===== */
+.main-tabs{flex:none;display:flex;gap:4px;padding:0 24px;border-bottom:1px solid var(--color-border-soft);background:var(--color-bg)}
+.main-tab{font:inherit;font-size:var(--font-size-sm);background:none;border:0;border-bottom:2px solid transparent;padding:0 16px;min-height:var(--touch-target);color:var(--color-text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.main-tab[aria-selected="true"]{color:var(--color-text);border-bottom-color:var(--color-link);font-weight:600}
+.tab-badge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--status-late-dot);color:#fff;font-size:11px;line-height:18px;text-align:center;font-weight:600}
+
+/* ===== Team messages ===== */
+.team{flex:1 1 auto;min-height:0;display:flex}
+.team__list{flex:0 0 300px;display:flex;flex-direction:column;border-inline-end:1px solid var(--color-border);background:var(--color-sidebar-bg);overflow-y:auto}
+.team__conv{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+.team__sec{font-size:var(--font-size-2xs);font-weight:500;color:var(--color-text-subtle);padding:14px 16px 6px}
+.team__note{padding:8px 16px;font-size:var(--font-size-sm);color:var(--color-text-subtle)}
+.team__note .btn{margin-top:8px}
+.tl{display:flex;align-items:center;gap:10px;width:100%;min-height:56px;padding:8px 16px;border:0;background:none;text-align:right;cursor:pointer;color:var(--color-text)}
+.tl:hover{background:var(--color-nav-active)}
+.tl[aria-current="true"]{background:var(--color-nav-active)}
+.tl__av{flex:none;width:36px;height:36px;border-radius:50%;background:var(--color-avatar-bg);display:grid;place-items:center;font-weight:600;font-size:var(--font-size-sm)}
+.tl__txt{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.35}
+.tl__name{font-size:var(--font-size-sm);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl__prev{font-size:var(--font-size-xs);color:var(--color-text-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl--unread .tl__name,.tl--unread .tl__prev{font-weight:700;color:var(--color-text)}
+.tl__side{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:var(--font-size-2xs);color:var(--color-text-subtle)}
+.team__head{flex:none;height:var(--header-height);padding:0 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--color-border-soft)}
+.team__head-name{font-size:15px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team__back{display:none!important}
+.team__empty{flex:1;display:grid;place-items:center;padding:24px;text-align:center;color:var(--color-text-subtle);font-size:var(--font-size-sm)}
+.team__msgs{flex:1 1 auto;min-height:0;overflow-y:auto;padding:20px 24px}
+.tm-wrap{width:100%;max-width:var(--thread-max-width);margin:0 auto;display:flex;flex-direction:column;gap:6px}
+.tm-day{align-self:center;font-size:var(--font-size-2xs);color:var(--color-text-subtle);background:var(--color-surface-muted);padding:2px 12px;border-radius:999px;margin:10px 0 4px}
+.tm{max-width:78%;display:flex;flex-direction:column;gap:4px;padding:8px 14px;border-radius:var(--radius-bubble);word-break:break-word}
+.tm--me{align-self:flex-end;background:var(--color-user-bubble)}
+.tm--them{align-self:flex-start;background:var(--color-surface);border:1px solid var(--color-border)}
+.tm--pending{opacity:.7}
+.tm--failed{border:1px solid var(--error-border);background:var(--error-bg);opacity:1}
+.tm__body{white-space:pre-wrap}
+.tm__body--deleted{font-style:italic;color:var(--color-text-subtle)}
+.tm__quote{display:block;text-align:right;font:inherit;font-size:var(--font-size-xs);border:0;border-inline-start:3px solid var(--color-link);background:var(--color-surface-muted);color:var(--color-text-muted);padding:4px 8px;border-radius:var(--radius-sm);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.tm__quote b{color:var(--color-text-secondary)}
+.tm__meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:var(--font-size-2xs);color:var(--color-text-subtle)}
+.tm__acts{display:flex;gap:2px;margin-inline-start:auto}
+.tm__act{font:inherit;font-size:var(--font-size-2xs);border:0;background:none;color:var(--color-link);cursor:pointer;padding:4px 6px;min-height:28px;border-radius:var(--radius-sm)}
+.tm__err{font-size:var(--font-size-xs);color:var(--error-title)}
+.team__newbtn{position:absolute;inset-inline-start:50%;transform:translateX(50%);bottom:8px}
+.team__msgbox{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.team__ctx{display:flex;align-items:center;gap:8px;font-size:var(--font-size-xs);color:var(--color-text-muted);padding:6px 12px;border-radius:var(--radius-md);background:var(--color-surface-muted)}
+.team__ctx span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team__count{text-align:end;font-size:var(--font-size-2xs);color:var(--color-text-subtle)}
+.team__count.over{color:var(--status-late-fg);font-weight:600}
+
 /* Focus visibility (keyboard) */
 :where(button,a,input,textarea):focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
 
@@ -294,6 +343,22 @@ td.num.hot{color:var(--status-late-fg);font-weight:700}
   .composer__hint{display:none}
 
   #notifOverlay,#oversight{padding:16px 14px 40px}
+}
+@media (min-width:769px) and (max-width:1100px){
+  .team__list{flex-basis:230px}
+  .tm{max-width:88%}
+}
+@media (max-width:768px){
+  .main-tabs{padding:0 6px}
+  .main-tab{flex:1;justify-content:center}
+  .team__list{flex:1 1 auto}
+  .team__conv{display:none}
+  .team.is-open .team__list{display:none}
+  .team.is-open .team__conv{display:flex}
+  .team__back{display:grid!important}
+  .team__head{padding:0 6px}
+  .team__msgs{padding:14px 12px}
+  .tm{max-width:88%}
 }
 </style>
 </head>
@@ -369,6 +434,13 @@ td.num.hot{color:var(--status-late-fg);font-weight:700}
       </span>
     </header>
 
+    <div class="main-tabs" id="mainTabs" role="tablist" aria-label="אזורי עבודה">
+      <button type="button" class="main-tab" id="tabAgent" role="tab" aria-selected="true" aria-controls="scroll">הסוכן שלי</button>
+      <button type="button" class="main-tab" id="tabTeam" role="tab" aria-selected="false" aria-controls="teamPane">
+        הודעות צוות <span class="tab-badge" id="teamTabBadge" hidden></span>
+      </button>
+    </div>
+
     <div class="app__scroll" id="scroll">
       <div class="thread" id="chat" aria-live="polite"></div>
     </div>
@@ -384,6 +456,40 @@ td.num.hot{color:var(--status-late-fg);font-weight:700}
         <span class="composer__hint">Enter לשליחה · Shift+Enter לשורה חדשה</span>
       </div>
     </form>
+
+    <section class="team" id="teamPane" role="tabpanel" aria-labelledby="tabTeam" hidden>
+      <div class="team__list" id="teamList" aria-label="שיחות ואנשי צוות"></div>
+      <div class="team__conv" id="teamConv">
+        <div class="team__empty" id="teamNoConv">בחר/י שיחה או עובד כדי להתחיל</div>
+        <div class="team__head" id="teamHead" hidden>
+          <button type="button" class="icon-btn icon-btn--strong team__back" id="teamBack" aria-label="חזרה לרשימת השיחות">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <span class="team__head-name" id="teamHeadName"></span>
+        </div>
+        <div class="team__msgbox" id="teamMsgBox" hidden>
+          <div class="team__msgs" id="teamMsgs" aria-live="polite"></div>
+          <button type="button" class="btn btn--primary team__newbtn" id="teamNewBtn" hidden>↓ הודעות חדשות</button>
+        </div>
+        <form class="composer" id="teamComposer" autocomplete="off" hidden>
+          <div class="composer__inner">
+            <div class="team__ctx" id="teamCtx" hidden>
+              <span id="teamCtxText"></span>
+              <button type="button" class="icon-btn icon-btn--sm" id="teamCtxCancel" aria-label="ביטול">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div class="composer__box">
+              <textarea class="composer__input" id="teamInput" rows="1" aria-label="הודעה לעובד" placeholder="כתוב/י הודעה…"></textarea>
+              <button type="submit" class="composer__send" id="teamSend" aria-label="שלח">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+              </button>
+            </div>
+            <div class="team__count" id="teamCount" hidden></div>
+          </div>
+        </form>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -631,6 +737,8 @@ function openEventStream() {
   es.addEventListener("approval", (e) => { try { addApprovalLive(JSON.parse(e.data)); } catch {} });
   es.addEventListener("approval_update", (e) => { try { onApprovalReplyLive(JSON.parse(e.data)); } catch {} });
   es.addEventListener("notification", (e) => { try { onLiveNotification(JSON.parse(e.data)); } catch {} });
+  es.addEventListener("team", (e) => { try { onTeamEvent(JSON.parse(e.data)); } catch {} });
+  es.addEventListener("open", () => { try { onTeamStreamOpen(); } catch {} });
   es.onerror = () => { /* EventSource מתחבר מחדש לבד */ };
 }
 const roleHe = { owner:"בעלים", project_manager:"מנהל פרויקט", planner:"שרטוט ותכנון", finance:"כספים", admin:"אדמין" };
@@ -778,6 +886,530 @@ function resetConversation() {
   $("#input").focus();
 }
 
+/* ---------- הודעות צוות ---------- */
+// עולם נפרד מהצ'אט עם הסוכן: state משלו (team), אלמנטים משלו (#teamPane), ו-API משלו (/api/team/*).
+// הסנכרון נשען על rev: אירוע SSE רק מעיר ("השתנה משהו בשיחה X"), והתוכן נמשך תמיד דרך ?since=<cursor>
+// — כך חדש/עריכה/מחיקה/ניתוק-וחיבור-מחדש עוברים באותו מסלול, ואין תלות בסדר הגעת תגובות.
+const TEAM_MAX = 4000;
+const team = {
+  booted: false, tab: "agent", openId: null, users: new Map(), usersList: [], dirErr: null,
+  threads: [], threadsLoaded: false, threadsErr: null, seq: 0, applied: 0, refreshTimer: null,
+  threadState: new Map(), reply: null, edit: null, agentScroll: 0, localSeq: 0,
+};
+const teamCharLen = (s) => Array.from(s).length;
+function newClientId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return `tm-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+function teamName(key) {
+  if (state.user && key === state.user.key) return state.user.name;
+  const u = team.users.get(key);
+  return u ? u.name : key;
+}
+function getT(id) {
+  let T = team.threadState.get(id);
+  if (!T) {
+    T = { id, messages: new Map(), pending: [], cursor: 0, hasOlder: false, loaded: false, loadErr: null, dirty: false,
+          syncing: null, sending: 0, syncAfterSend: false, draft: "", lastReadSent: 0, readInFlight: false, olderLoading: false };
+    team.threadState.set(id, T);
+  }
+  return T;
+}
+// לא זורק על 4xx/5xx (מחזיר status ו-error); שגיאת רשת → status 0.
+async function tapi(path, opts) {
+  try {
+    const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data, error: r.ok ? null : (data.error || ("שגיאה " + r.status)) };
+  } catch {
+    return { ok: false, status: 0, data: {}, error: "אין חיבור לשרת" };
+  }
+}
+const TZ = "Asia/Jerusalem";
+function teamDate(iso) {
+  // created_at מגיע מ-SQLite כ-UTC בפורמט "YYYY-MM-DD HH:MM:SS"
+  return new Date(String(iso).replace(" ", "T") + "Z");
+}
+const fmtTime = (d) => d.toLocaleTimeString("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+const dayKey = (d) => d.toLocaleDateString("en-CA", { timeZone: TZ });
+function teamDayLabel(d) {
+  const k = dayKey(d);
+  const now = new Date();
+  if (k === dayKey(now)) return "היום";
+  if (k === dayKey(new Date(now.getTime() - 86400000))) return "אתמול";
+  return d.toLocaleDateString("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
+}
+function listTime(iso) {
+  const d = teamDate(iso);
+  return dayKey(d) === dayKey(new Date()) ? fmtTime(d) : d.toLocaleDateString("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit" });
+}
+
+/* ---- טעינה ורענון רשימות ---- */
+async function teamBoot() {
+  team.booted = true;
+  team.threadState.clear(); team.threads = []; team.threadsLoaded = false; team.openId = null; team.reply = null; team.edit = null;
+  const [dir] = await Promise.all([tapi("/api/team/directory"), refreshThreads()]);
+  if (dir.ok) { team.usersList = dir.data.users || []; team.users = new Map(team.usersList.map(u => [u.key, u])); team.dirErr = null; }
+  else team.dirErr = dir.error;
+  renderTeamList();
+}
+async function refreshThreads() {
+  const mine = ++team.seq;
+  const r = await tapi("/api/team/threads");
+  if (mine < team.applied) return; // תגובה ישנה שהגיעה אחרי חדשה יותר — לא דורסים
+  team.applied = mine;
+  if (r.ok) { team.threads = r.data.threads || []; team.threadsErr = null; }
+  else team.threadsErr = r.error;
+  team.threadsLoaded = true;
+  updateTeamBadge();
+  renderTeamList();
+}
+function scheduleRefreshThreads() {
+  clearTimeout(team.refreshTimer);
+  team.refreshTimer = setTimeout(refreshThreads, 120);
+}
+function updateTeamBadge() {
+  const total = team.threads.reduce((s, t) => s + (t.unread || 0), 0);
+  const b = $("#teamTabBadge");
+  b.hidden = total === 0;
+  b.textContent = total > 99 ? "99+" : String(total);
+  $("#tabTeam").setAttribute("aria-label", total ? `הודעות צוות, ${total} שלא נקראו` : "הודעות צוות");
+}
+
+/* ---- לשוניות ראשיות ---- */
+function showMainTab(tab) {
+  if (tab === team.tab) return;
+  const scrollEl = $("#scroll");
+  if (team.tab === "agent") team.agentScroll = scrollEl.scrollTop; // display:none מאפס גלילה — שומרים ידנית
+  team.tab = tab;
+  const isTeam = tab === "team";
+  $("#tabAgent").setAttribute("aria-selected", String(!isTeam));
+  $("#tabTeam").setAttribute("aria-selected", String(isTeam));
+  scrollEl.hidden = isTeam;
+  $("#composer").hidden = isTeam;
+  $("#teamPane").hidden = !isTeam;
+  setSidebar(false);
+  if (isTeam) {
+    renderTeamList();
+    refreshThreads();
+    if (team.openId) { syncThread(team.openId).then(() => { renderConv(true); markReadIfVisible(); }); }
+  } else {
+    scrollEl.scrollTop = team.agentScroll;
+  }
+}
+$("#tabAgent").onclick = () => showMainTab("agent");
+$("#tabTeam").onclick = () => showMainTab("team");
+// פעולות סרגל הצד (שיחה חדשה / בחירת שיחה קודמת) שייכות לצ'אט עם הסוכן — עוברים ללשונית שלו לפני שהן רצות.
+document.addEventListener("click", (e) => {
+  if (e.target.closest('[data-action="new-chat"]') || e.target.closest(".history__item")) showMainTab("agent");
+}, true);
+
+/* ---- סנכרון הודעות לפי rev ---- */
+function applyMessages(T, list) {
+  for (const m of list || []) {
+    const ex = T.messages.get(m.id);
+    if (ex && m.rev < ex.rev) continue; // תגובה ישנה לא דורסת מצב חדש
+    T.messages.set(m.id, m);
+    // הודעות שמצטטות את m נשארות ב-cache ללא שינוי (ה-rev שלהן לא זז), אז מרעננים אצלן את הציטוט:
+    // הודעה שנמחקה לא נחשפת בציטוט, והודעה שנערכה מציגה את הנוסח העדכני.
+    for (const x of T.messages.values()) {
+      if (x.replyTo && x.replyTo.id === m.id) {
+        const body = m.body.length > 120 ? m.body.slice(0, 120) + "…" : m.body;
+        x.replyTo = { ...x.replyTo, preview: m.deleted ? "הודעה נמחקה" : body, deleted: m.deleted };
+      }
+    }
+  }
+}
+async function pullSince(T) {
+  if (!T.loaded) {
+    const r = await tapi(`/api/team/threads/${T.id}/messages?limit=30`);
+    if (!r.ok) { T.loadErr = r.status === 404 ? "השיחה לא נמצאה" : r.error; return; }
+    T.loadErr = null;
+    applyMessages(T, r.data.messages);
+    T.cursor = Math.max(T.cursor, r.data.cursor || 0);
+    T.hasOlder = !!r.data.hasMore;
+    T.loaded = true;
+    return;
+  }
+  for (let i = 0; i < 50; i++) {
+    const r = await tapi(`/api/team/threads/${T.id}/messages?since=${T.cursor}&limit=100`);
+    if (!r.ok) return; // ננסה שוב באירוע/חיבור הבא
+    applyMessages(T, r.data.messages);
+    const next = Math.max(T.cursor, r.data.cursor || 0);
+    const advanced = next > T.cursor;
+    T.cursor = next;
+    if (!r.data.hasMore || !advanced) break;
+  }
+}
+// בקשות סנכרון חופפות מתכנסות ללולאה אחת (dirty) — בלי בקשות מקבילות על אותו cursor.
+function syncThread(id) {
+  const T = getT(id);
+  if (T.sending > 0) { T.syncAfterSend = true; return Promise.resolve(); } // לא מציגים את ההודעה שלי פעמיים בזמן שליחה
+  T.dirty = true;
+  if (T.syncing) return T.syncing;
+  T.syncing = (async () => {
+    try { while (T.dirty) { T.dirty = false; await pullSince(T); } }
+    finally { T.syncing = null; }
+  })();
+  return T.syncing;
+}
+async function loadOlder(T) {
+  if (T.olderLoading || !T.hasOlder || T.messages.size === 0) return;
+  T.olderLoading = true;
+  const oldest = Math.min(...T.messages.keys());
+  const r = await tapi(`/api/team/threads/${T.id}/messages?before=${oldest}&limit=30`);
+  T.olderLoading = false;
+  if (!r.ok) { toast("לא ניתן לטעון הודעות קודמות"); return; }
+  const box = $("#teamMsgs");
+  const prevH = box.scrollHeight, prevTop = box.scrollTop;
+  applyMessages(T, r.data.messages);
+  T.hasOlder = !!r.data.hasMore;
+  renderConv(false);
+  box.scrollTop = prevTop + (box.scrollHeight - prevH); // שומרים את המקום בגלילה
+}
+
+/* ---- סימון נקרא (רק כששיחה פתוחה והלשונית פעילה) ---- */
+async function markReadIfVisible() {
+  if (team.tab !== "team" || document.visibilityState !== "visible" || !team.openId) return;
+  const T = getT(team.openId);
+  if (T.readInFlight || !T.loaded) return;
+  let maxId = 0;
+  for (const id of T.messages.keys()) if (id > maxId) maxId = id;
+  const th = team.threads.find(t => t.id === T.id);
+  const known = Math.max(th ? th.lastReadMessageId : 0, T.lastReadSent);
+  if (maxId <= known) return;
+  T.readInFlight = true;
+  const r = await tapi(`/api/team/threads/${T.id}/read`, { method: "POST", body: JSON.stringify({ upTo: maxId }) });
+  T.readInFlight = false;
+  if (!r.ok) return;
+  T.lastReadSent = Math.max(T.lastReadSent, r.data.lastReadMessageId || 0);
+  if (th) { th.unread = r.data.unread; th.lastReadMessageId = r.data.lastReadMessageId; }
+  updateTeamBadge(); renderTeamList();
+}
+
+/* ---- אירועי SSE ---- */
+function onTeamEvent(ev) {
+  if (!team.booted || !ev || typeof ev.threadId !== "number") return;
+  const openActive = team.tab === "team" && team.openId === ev.threadId && document.visibilityState === "visible";
+  const fromOther = ev.senderKey !== state.user.key;
+  if (openActive) {
+    syncThread(ev.threadId).then(() => { renderConv(false); return markReadIfVisible(); }).then(scheduleRefreshThreads);
+  } else {
+    scheduleRefreshThreads();
+    const T = team.threadState.get(ev.threadId);
+    if (T && T.loaded) syncThread(ev.threadId); // שיחה שנטענה בעבר נשארת עדכנית ברקע
+    if (ev.type === "new" && fromOther) toast("💬 הודעה חדשה מ" + teamName(ev.senderKey));
+  }
+}
+function onTeamStreamOpen() {
+  // נקרא בכל חיבור/חיבור מחדש של ה-SSE — משלימים כל מה שהוחמץ בזמן הניתוק דרך ?since (עם hasMore).
+  if (!team.booted) return;
+  refreshThreads();
+  if (team.openId) syncThread(team.openId).then(() => { if (team.tab === "team") { renderConv(false); markReadIfVisible(); } });
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !team.booted) return;
+  refreshThreads();
+  if (team.tab === "team" && team.openId) syncThread(team.openId).then(() => { renderConv(false); markReadIfVisible(); });
+});
+window.addEventListener("online", onTeamStreamOpen);
+
+/* ---- רשימת שיחות ואנשי צוות ---- */
+function threadTitle(t) { return t.kind === "dm" && t.peerKey ? teamName(t.peerKey) : (t.title || "שיחה"); }
+function previewOf(t) {
+  const m = t.lastMessage;
+  if (!m) return "אין הודעות עדיין";
+  const txt = m.deleted ? "הודעה נמחקה" : m.body.replace(/\s+/g, " ");
+  return (m.senderKey === state.user.key ? "את/ה: " : "") + txt;
+}
+function personRow(name, onClick) {
+  const b = el("button", "tl"); b.type = "button";
+  b.setAttribute("aria-label", "פתח שיחה עם " + name);
+  b.appendChild(el("span", "tl__av", name ? name[0] : "?"));
+  const txt = el("span", "tl__txt"); txt.appendChild(el("span", "tl__name", name));
+  b.appendChild(txt);
+  b.onclick = onClick;
+  return b;
+}
+function renderTeamList() {
+  const box = $("#teamList");
+  if (!box) return;
+  box.textContent = "";
+  box.appendChild(el("div", "team__sec", "שיחות"));
+  if (!team.threadsLoaded) box.appendChild(el("div", "team__note", "טוען…"));
+  else if (team.threadsErr) {
+    const n = el("div", "team__note", "לא ניתן לטעון שיחות: " + team.threadsErr);
+    const b = el("button", "btn btn--secondary", "נסה שוב"); b.type = "button"; b.onclick = () => refreshThreads();
+    n.appendChild(el("br")); n.appendChild(b); box.appendChild(n);
+  } else if (team.threads.length === 0) box.appendChild(el("div", "team__note", "אין שיחות עדיין. בחר/י עובד מהרשימה למטה."));
+  for (const t of team.threads) {
+    const row = el("button", "tl" + (t.unread > 0 ? " tl--unread" : "")); row.type = "button";
+    if (t.id === team.openId) row.setAttribute("aria-current", "true");
+    const name = threadTitle(t);
+    row.setAttribute("aria-label", t.unread > 0 ? `${name}, ${t.unread} הודעות שלא נקראו` : name);
+    row.appendChild(el("span", "tl__av", name ? name[0] : "?"));
+    const txt = el("span", "tl__txt");
+    txt.append(el("span", "tl__name", name), el("span", "tl__prev", previewOf(t)));
+    row.appendChild(txt);
+    const side = el("span", "tl__side");
+    if (t.lastMessage) side.appendChild(el("span", null, listTime(t.lastMessage.createdAt)));
+    if (t.unread > 0) side.appendChild(el("span", "tab-badge", t.unread > 99 ? "99+" : String(t.unread)));
+    row.appendChild(side);
+    row.onclick = () => openThread(t.id);
+    box.appendChild(row);
+  }
+  box.appendChild(el("div", "team__sec", "אנשי צוות"));
+  if (team.dirErr) {
+    const n = el("div", "team__note", "לא ניתן לטעון את רשימת העובדים: " + team.dirErr);
+    const b = el("button", "btn btn--secondary", "נסה שוב"); b.type = "button"; b.onclick = () => teamBoot();
+    n.appendChild(el("br")); n.appendChild(b); box.appendChild(n);
+  }
+  const withThread = new Set(team.threads.filter(t => t.kind === "dm").map(t => t.peerKey));
+  for (const u of team.usersList) {
+    if (withThread.has(u.key)) continue;
+    box.appendChild(personRow(u.name, () => openWith(u.key)));
+  }
+}
+async function openWith(key) {
+  const r = await tapi("/api/team/threads", { method: "POST", body: JSON.stringify({ with: key }) });
+  if (!r.ok) { toast(r.error || "לא ניתן לפתוח שיחה"); return; }
+  await refreshThreads();
+  openThread(r.data.threadId);
+}
+
+/* ---- חלון שיחה ---- */
+function saveDraft() {
+  if (team.openId && !team.edit) getT(team.openId).draft = $("#teamInput").value;
+}
+function openThread(id) {
+  saveDraft();
+  team.openId = id; team.reply = null; team.edit = null;
+  const T = getT(id);
+  $("#teamInput").value = T.draft || "";
+  autosizeTeamInput();
+  renderTeamList();
+  renderConv(true);
+  syncThread(id).then(() => { renderConv(true); markReadIfVisible(); });
+  if (!MOBILE.matches) $("#teamInput").focus();
+}
+function closeThread() {
+  saveDraft();
+  team.openId = null; team.reply = null; team.edit = null;
+  renderTeamList();
+  renderConv(false);
+}
+$("#teamBack").onclick = closeThread;
+
+function msgNode(m, T) {
+  const mine = m.senderKey === state.user.key;
+  const d = teamDate(m.createdAt);
+  const node = el("div", "tm " + (mine ? "tm--me" : "tm--them"));
+  node.dataset.id = String(m.id);
+  if (m.replyTo) {
+    const q = el("button", "tm__quote"); q.type = "button";
+    q.append(el("b", null, teamName(m.replyTo.senderKey) + ": "), document.createTextNode(m.replyTo.preview));
+    q.onclick = () => {
+      const target = $(`#teamMsgs [data-id="${m.replyTo.id}"]`);
+      if (target) { target.scrollIntoView({ block: "center", behavior: "smooth" }); }
+      else toast("ההודעה המצוטטת לא נטענה — טען/י הודעות קודמות");
+    };
+    node.appendChild(q);
+  }
+  node.appendChild(el("div", "tm__body" + (m.deleted ? " tm__body--deleted" : ""), m.body));
+  const meta = el("div", "tm__meta");
+  const t = el("span", null, fmtTime(d));
+  t.title = d.toLocaleString("he-IL", { timeZone: TZ });
+  meta.appendChild(t);
+  if (m.editedAt && !m.deleted) meta.appendChild(el("span", null, "נערכה"));
+  if (!m.deleted) {
+    const acts = el("span", "tm__acts");
+    const rb = el("button", "tm__act", "השב"); rb.type = "button"; rb.onclick = () => startReply(m);
+    acts.appendChild(rb);
+    if (mine) {
+      const eb = el("button", "tm__act", "ערוך"); eb.type = "button"; eb.onclick = () => startEdit(m);
+      const db = el("button", "tm__act", "מחק"); db.type = "button"; db.onclick = () => deleteMsg(T, m);
+      acts.append(eb, db);
+    }
+    meta.appendChild(acts);
+  }
+  node.appendChild(meta);
+  return node;
+}
+function pendingNode(p, T) {
+  const node = el("div", "tm tm--me " + (p.status === "failed" ? "tm--failed" : "tm--pending"));
+  if (p.replyTo) {
+    const q = el("div", "tm__quote");
+    q.append(el("b", null, p.replyTo.name + ": "), document.createTextNode(p.replyTo.preview));
+    node.appendChild(q);
+  }
+  node.appendChild(el("div", "tm__body", p.body));
+  const meta = el("div", "tm__meta");
+  if (p.status === "sending") meta.appendChild(el("span", null, "שולח…"));
+  else {
+    meta.appendChild(el("span", "tm__err", "לא נשלחה" + (p.error ? " — " + p.error : "")));
+    const acts = el("span", "tm__acts");
+    const rb = el("button", "tm__act", "נסה שוב"); rb.type = "button"; rb.onclick = () => sendPending(T, p);
+    const cb = el("button", "tm__act", "בטל"); cb.type = "button";
+    cb.onclick = () => { T.pending = T.pending.filter(x => x !== p); renderConv(false); };
+    acts.append(rb, cb);
+    meta.appendChild(acts);
+  }
+  node.appendChild(meta);
+  return node;
+}
+// toBottom=true: גולל לסוף. אחרת גולל לסוף רק אם המשתמש כבר היה בסוף; ואם לא — מציג כפתור "הודעות חדשות".
+function renderConv(toBottom) {
+  const T = team.openId ? getT(team.openId) : null;
+  const pane = $("#teamPane");
+  pane.classList.toggle("is-open", !!T);
+  $("#teamNoConv").hidden = !!T;
+  $("#teamHead").hidden = !T; $("#teamMsgBox").hidden = !T; $("#teamComposer").hidden = !T;
+  if (!T) return;
+  const th = team.threads.find(t => t.id === T.id);
+  $("#teamHeadName").textContent = th ? threadTitle(th) : "שיחה";
+  const box = $("#teamMsgs");
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const prevCount = box.dataset.count ? Number(box.dataset.count) : 0;
+  box.textContent = "";
+  const wrap = el("div", "tm-wrap");
+  if (!T.loaded) {
+    if (T.loadErr) {
+      const n = el("div", "team__note", "לא ניתן לטעון את השיחה: " + T.loadErr);
+      const b = el("button", "btn btn--secondary", "נסה שוב"); b.type = "button";
+      b.onclick = () => syncThread(T.id).then(() => renderConv(true));
+      n.appendChild(el("br")); n.appendChild(b); wrap.appendChild(n);
+    } else wrap.appendChild(el("div", "team__note", "טוען הודעות…"));
+  } else {
+    if (T.hasOlder) {
+      const b = el("button", "load-more", "טען הודעות קודמות"); b.type = "button"; b.onclick = () => loadOlder(T);
+      wrap.appendChild(b);
+    }
+    const msgs = [...T.messages.values()].sort((a, b) => a.id - b.id);
+    if (msgs.length === 0 && T.pending.length === 0) wrap.appendChild(el("div", "team__note", "אין הודעות בשיחה. כתוב/י את ההודעה הראשונה."));
+    let lastDay = "";
+    for (const m of msgs) {
+      const d = teamDate(m.createdAt);
+      const k = dayKey(d);
+      if (k !== lastDay) { wrap.appendChild(el("div", "tm-day", teamDayLabel(d))); lastDay = k; }
+      wrap.appendChild(msgNode(m, T));
+    }
+    for (const p of T.pending) wrap.appendChild(pendingNode(p, T));
+  }
+  box.appendChild(wrap);
+  const count = T.messages.size + T.pending.length;
+  box.dataset.count = String(count);
+  const grew = count > prevCount;
+  if (toBottom || nearBottom) { box.scrollTop = box.scrollHeight; $("#teamNewBtn").hidden = true; }
+  else if (grew) $("#teamNewBtn").hidden = false;
+  renderCtx();
+}
+$("#teamNewBtn").onclick = () => { const b = $("#teamMsgs"); b.scrollTop = b.scrollHeight; $("#teamNewBtn").hidden = true; };
+$("#teamMsgs").addEventListener("scroll", () => {
+  const b = $("#teamMsgs");
+  if (b.scrollHeight - b.scrollTop - b.clientHeight < 80) $("#teamNewBtn").hidden = true;
+});
+
+/* ---- תגובה / עריכה / מחיקה ---- */
+function renderCtx() {
+  const ctx = $("#teamCtx");
+  if (team.edit) { ctx.hidden = false; $("#teamCtxText").textContent = "עריכת הודעה"; }
+  else if (team.reply) { ctx.hidden = false; $("#teamCtxText").textContent = "משיב/ה ל" + team.reply.name + ": " + team.reply.preview; }
+  else ctx.hidden = true;
+}
+function startReply(m) {
+  team.edit = null;
+  team.reply = { id: m.id, name: teamName(m.senderKey), preview: m.body.length > 120 ? m.body.slice(0, 120) + "…" : m.body };
+  renderCtx(); $("#teamInput").focus();
+}
+function startEdit(m) {
+  saveDraft();
+  team.reply = null;
+  team.edit = { id: m.id };
+  $("#teamInput").value = m.body;
+  autosizeTeamInput(); updateTeamCount(); renderCtx(); $("#teamInput").focus();
+}
+function cancelCtx() {
+  const wasEdit = !!team.edit;
+  team.reply = null; team.edit = null;
+  if (wasEdit) { $("#teamInput").value = team.openId ? getT(team.openId).draft || "" : ""; autosizeTeamInput(); updateTeamCount(); }
+  renderCtx();
+}
+$("#teamCtxCancel").onclick = cancelCtx;
+async function deleteMsg(T, m) {
+  if (!confirm("למחוק את ההודעה? היא תוצג לשני הצדדים כ\"הודעה נמחקה\".")) return;
+  const r = await tapi(`/api/team/threads/${T.id}/messages/${m.id}`, { method: "DELETE" });
+  if (!r.ok) { toast(r.error || "המחיקה נכשלה"); return; }
+  applyMessages(T, [r.data.message]);
+  if (team.edit && team.edit.id === m.id) cancelCtx();
+  renderConv(false); scheduleRefreshThreads();
+}
+
+/* ---- שליחה ---- */
+function autosizeTeamInput() {
+  const i = $("#teamInput");
+  // תיבה ריקה: גובה ברירת המחדל (placeholder שנגלל לשתי שורות בעמודה צרה לא יוצר פס גלילה)
+  if (!i.value) { i.style.height = ""; i.style.overflowY = "hidden"; return; }
+  i.style.height = "auto";
+  i.style.height = Math.min(i.scrollHeight, 200) + "px";
+  i.style.overflowY = i.scrollHeight > 200 ? "auto" : "hidden";
+}
+function updateTeamCount() {
+  const n = teamCharLen($("#teamInput").value);
+  const c = $("#teamCount");
+  c.hidden = n < TEAM_MAX - 500;
+  c.textContent = `${n}/${TEAM_MAX}`;
+  c.classList.toggle("over", n > TEAM_MAX);
+  $("#teamSend").disabled = n > TEAM_MAX;
+}
+$("#teamInput").addEventListener("input", () => { autosizeTeamInput(); updateTeamCount(); saveDraft(); });
+$("#teamInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#teamComposer").requestSubmit(); }
+  else if (e.key === "Escape") cancelCtx();
+});
+$("#teamComposer").addEventListener("submit", (e) => { e.preventDefault(); teamSubmit(); });
+async function teamSubmit() {
+  if (!team.openId) return;
+  const T = getT(team.openId);
+  const input = $("#teamInput");
+  const text = input.value.trim();
+  if (!text || teamCharLen(text) > TEAM_MAX) return;
+  if (team.edit) {
+    const id = team.edit.id;
+    $("#teamSend").disabled = true;
+    const r = await tapi(`/api/team/threads/${T.id}/messages/${id}`, { method: "PATCH", body: JSON.stringify({ body: text }) });
+    updateTeamCount();
+    if (!r.ok) { toast(r.error || "העריכה נכשלה"); return; }
+    applyMessages(T, [r.data.message]);
+    team.edit = null; input.value = T.draft || ""; autosizeTeamInput(); updateTeamCount();
+    renderConv(false); scheduleRefreshThreads();
+    return;
+  }
+  const p = { localId: ++team.localSeq, clientMessageId: newClientId(), body: text, replyTo: team.reply ? { ...team.reply } : null, status: "sending", error: null };
+  T.pending.push(p);
+  team.reply = null; T.draft = ""; input.value = "";
+  autosizeTeamInput(); updateTeamCount(); renderCtx();
+  renderConv(true);
+  sendPending(T, p);
+}
+async function sendPending(T, p) {
+  p.status = "sending"; p.error = null;
+  T.sending++;
+  renderConv(false);
+  const payload = { body: p.body, clientMessageId: p.clientMessageId };
+  if (p.replyTo) payload.replyTo = p.replyTo.id;
+  const r = await tapi(`/api/team/threads/${T.id}/messages`, { method: "POST", body: JSON.stringify(payload) });
+  T.sending--;
+  if (r.ok) {
+    T.pending = T.pending.filter(x => x !== p);
+    applyMessages(T, [r.data.message]);
+  } else {
+    p.status = "failed"; p.error = r.error;
+  }
+  renderConv(r.ok);
+  scheduleRefreshThreads();
+  if (T.sending === 0 && T.syncAfterSend) { T.syncAfterSend = false; syncThread(T.id).then(() => { if (team.openId === T.id) renderConv(false); }); }
+}
+
 /* ---------- app ---------- */
 async function startApp() {
   $("#login").hidden = true; $("#app").hidden = false;
@@ -800,6 +1432,7 @@ async function startApp() {
   renderChat();
   loadNotifications(); // טוען גם את הפניות הפתוחות (state.nudges) — לבאדג'/overlay בלבד, לא לגוף השיחה
   openEventStream();
+  teamBoot(); // הודעות צוות: רשימות + מונה לא-נקראות (גם לפני שהלשונית נפתחת)
 }
 
 const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה", attendance_reminder:"⏰ תזכורת נוכחות" };

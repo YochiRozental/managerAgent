@@ -37,6 +37,7 @@ import {
 } from "../db/repositories/notifications.js";
 import { subscribeNudges } from "../ops/nudgeBus.js";
 import { subscribeNotifications } from "../ops/notificationBus.js";
+import { handleTeamRequest, isTeamPath, teamSseFrame } from "./teamApi.js";
 import { approveApproval, giveApprovalInstruction, rejectApproval } from "../ops/approvalActions.js";
 import { listApprovalsForManager, recoverStuckApprovals } from "../db/repositories/managerApprovals.js";
 import { listApprovalMessages } from "../db/repositories/approvalMessages.js";
@@ -209,6 +210,18 @@ const server = createServer(async (req, res) => {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
       return send(res, 200, { user: publicUser(user) });
+    }
+
+    // הודעות צוות — כל ההרשאות והלוגיקה ב-teamApi.ts / teamMessages.ts; כאן רק ניתוב.
+    if (isTeamPath(path)) {
+      const result = await handleTeamRequest({
+        method: req.method ?? "GET",
+        path,
+        query: url.searchParams,
+        readBody: () => readJsonBody(req),
+        user: currentUser(req),
+      });
+      return send(res, result.status, result.body);
     }
 
     if (req.method === "GET" && path === "/api/dashboard") {
@@ -654,6 +667,12 @@ const server = createServer(async (req, res) => {
       // approval_request → כרטיס "נדרש אישור" חדש למוטי; approval_reply → תשובת עובד על כרטיס
       // קיים (מעדכן במקום, לא כרטיס נוסף); כל קינד אחר → רענון שקט של באנר ההתראות.
       const unsubNotif = subscribeNotifications((n) => {
+        // אירועי הודעות צוות (team_message_*): פריים ייעודי עם מזהים בלבד; כל קינד אחר ממשיך למטה כמקודם.
+        const teamFrame = teamSseFrame(n, user.key);
+        if (teamFrame !== undefined) {
+          if (teamFrame) res.write(teamFrame);
+          return;
+        }
         if (n.userKey !== user.key) return;
         const eventName = n.kind === "approval_request" ? "approval" : n.kind === "approval_reply" ? "approval_update" : "notification";
         const mondayUrl = n.itemId && n.itemSource ? mondayItemUrl(n.itemId, n.itemSource as OpsTaskSource) : null;

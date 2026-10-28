@@ -48,6 +48,7 @@ const SAFE_TESTS = [
   "tests/unit/attendanceReminderText.test.ts",
   "tests/unit/mondayItemUrl.test.ts",
   "tests/unit/uiHtmlScriptSyntax.test.ts",
+  "tests/unit/uiHtmlNoDuplicateDeclarations.test.ts",
   "tests/unit/promptAboutBranches.test.ts",
   "tests/unit/relativeDates.test.ts",
   "tests/unit/bulkQuery.test.ts",
@@ -95,8 +96,11 @@ const SAFE_TESTS = [
   "tests/integration/bulkUpdate.test.ts",
   "tests/integration/bulkChat.test.ts",
   "tests/integration/dateRouting.test.ts",
+  "tests/integration/teamMessages.test.ts",
+  "tests/integration/teamApi.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
+  "tests/regression/teamMessagesUpgrade.test.ts",
 ];
 
 const NEVER_AUTOMATIC = ["tests/live/**", "tests/e2e/**", "scripts/**"]; // scripts/live — בדיקות Live ידניות בלבד

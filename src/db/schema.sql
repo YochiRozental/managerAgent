@@ -455,3 +455,11 @@ CREATE TABLE IF NOT EXISTS agent_outreach (
 -- הודעת צוות אחת משויכת לפנייה אחת לכל היותר (NULL-ים מרובים מותרים).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_outreach_team_message ON agent_outreach (team_message_id);
 CREATE INDEX IF NOT EXISTS idx_agent_outreach_scope ON agent_outreach (user_key, session_id, status);
+
+-- קישורי כניסה אישיים: "דור" (epoch) לכל עובד. הנפקה מחדש מגדילה את הדור → הקישור הישן וכל ה-sessions
+-- הקיימים של אותו עובד מפסיקים לעבוד, בלי לגעת באף עובד אחר. אין שורה = דור 0 (הקישור המקורי).
+CREATE TABLE IF NOT EXISTS access_link_epochs (
+  user_key TEXT PRIMARY KEY,
+  epoch INTEGER NOT NULL DEFAULT 0,
+  reissued_at TEXT
+);

@@ -70,7 +70,8 @@ import { startScheduler } from "../ops/scheduler.js";
 import { buildWeeklyReport } from "../ops/weeklyReport.js";
 import { mondayItemUrl, type OpsTaskSource } from "../integrations/monday/opsRead.js";
 import { logger } from "../utils/logger.js";
-import { REQUIRE_ACCESS_LINK, verifyAccessToken } from "./accessLink.js";
+import { REQUIRE_ACCESS_LINK } from "./accessLink.js";
+import { handleRoot, isSecureRequest, renewalCookie } from "./authFlow.js";
 import { clearSessionCookie, createSessionCookie, readSession } from "./session.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -159,7 +160,15 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   const path = url.pathname;
 
+  const secure = isSecureRequest(req.headers, req.socket.remoteAddress);
+
   try {
+    // חידוש sliding של ה-session בכל שימוש (עד פעם ביום). login/logout מגדירים Set-Cookie משלהם ודורסים.
+    if (path.startsWith("/api/")) {
+      const renewed = renewalCookie(req.headers.cookie, secure);
+      if (renewed) res.setHeader("Set-Cookie", renewed);
+    }
+
     if (req.method === "GET" && path === "/health") {
       // ציבורי (בלי עוגייה) — לניטור חיצוני. לא חושף סודות, רק מצב תהליכים/עבודות/גיבוי.
       const health = getHealth();
@@ -167,18 +176,13 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
-      // קישור כניסה אישי: /?t=<token> → מזהה ומכניס ישירות. ה-token נשאר ב-URL כדי שהסימנייה
-      // תמשיך לעבוד גם אחרי שהעוגייה פגה.
-      const token = url.searchParams.get("t");
-      const headers: Record<string, string> = {};
-      if (token) {
-        const userKey = verifyAccessToken(token);
-        if (userKey) {
-          headers["Set-Cookie"] = createSessionCookie(userKey);
-          logger.info({ user: userKey }, "כניסה דרך קישור אישי");
-        }
+      // קישור כניסה אישי: /?t=<token> → session + הפניה לכתובת נקייה (authFlow.ts). הסימנייה נשארת עם ה-token.
+      const root = handleRoot(url.searchParams, secure);
+      if (root.kind === "redirect") {
+        res.writeHead(302, { Location: root.location, "Cache-Control": "no-store", ...root.headers });
+        return res.end();
       }
-      return send(res, 200, UI_HTML, headers);
+      return send(res, 200, UI_HTML, root.headers);
     }
 
     if (req.method === "GET" && path === "/api/users") {
@@ -199,11 +203,11 @@ const server = createServer(async (req, res) => {
       const user = resolveByIdentifier(String(body.identifier ?? ""));
       if (!user) return send(res, 401, { error: "לא זוהה משתמש בשם או במייל הזה" });
       logger.info({ user: user.key }, "כניסה לחלונית");
-      return send(res, 200, { user: publicUser(user) }, { "Set-Cookie": createSessionCookie(user.key) });
+      return send(res, 200, { user: publicUser(user) }, { "Set-Cookie": createSessionCookie(user.key, secure) });
     }
 
     if (req.method === "POST" && path === "/api/logout") {
-      return send(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie() });
+      return send(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie(secure) });
     }
 
     if (req.method === "GET" && path === "/api/session") {

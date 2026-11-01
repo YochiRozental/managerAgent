@@ -102,6 +102,7 @@ const SAFE_TESTS = [
   "tests/integration/teamDelivery.test.ts",
   "tests/integration/teamOutreachChat.test.ts",
   "tests/integration/agentReplyUpdates.test.ts",
+  "tests/integration/sessionLink.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
   "tests/regression/teamMessagesUpgrade.test.ts",

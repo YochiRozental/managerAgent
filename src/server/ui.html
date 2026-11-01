@@ -894,20 +894,30 @@ function setTopbarTitle(t) {
 }
 
 /* ---------- היסטוריית שיחות (סרגל צד) ---------- */
-function dayLabel(lastAt) {
-  const d = new Date(lastAt.replace(" ", "T") + "Z");
-  const now = new Date();
-  const startOf = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diffDays = Math.round((startOf(now) - startOf(d)) / 86400000);
-  if (diffDays <= 0) return "היום";
-  if (diffDays === 1) return "אתמול";
-  if (diffDays <= 7) return "השבוע";
+/* dayBucket:start — חישובי תאריך לפי Asia/Jerusalem בלבד (לא אזור הדפדפן); נבדק ב-tests/unit/historyGroups.test.ts */
+const HIST_DAY_FMT = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit" });
+// מספר יום-לוח רציף (ימים מאז 1970) של רגע נתון בשעון ישראל — חסין לשעון קיץ/חורף, חודש ושנה
+function calDayNum(d) {
+  const [y, m, day] = HIST_DAY_FMT.format(d).split("-").map(Number);
+  return Date.UTC(y, m - 1, day) / 86400000;
+}
+function dayBucket(lastAt, now) {
+  const d = new Date(String(lastAt).replace(" ", "T") + "Z");
+  const today = calDayNum(now || new Date());
+  const day = calDayNum(d);
+  if (day >= today) return "היום";
+  if (day === today - 1) return "אתמול";
+  const weekStart = today - new Date(today * 86400000).getUTCDay(); // יום ראשון = 0
+  if (day >= weekStart) return "השבוע";
+  if (day >= weekStart - 7) return "שבוע שעבר";
   return "קודם לכן";
 }
+/* dayBucket:end */
+const dayLabel = (lastAt) => dayBucket(lastAt);
 function renderHistoryList(sessions) {
   const nav = $("#historyList"); nav.innerHTML = "";
   if (!sessions.length) { nav.appendChild(el("p", "history__empty", "אין שיחות שמורות עדיין")); return; }
-  const order = ["היום", "אתמול", "השבוע", "קודם לכן"];
+  const order = ["היום", "אתמול", "השבוע", "שבוע שעבר", "קודם לכן"];
   const groups = {};
   for (const s of sessions) (groups[dayLabel(s.lastAt)] ??= []).push(s);
   for (const label of order) {
@@ -1040,10 +1050,9 @@ function teamDate(iso) {
 const fmtTime = (d) => d.toLocaleTimeString("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
 const dayKey = (d) => d.toLocaleDateString("en-CA", { timeZone: TZ });
 function teamDayLabel(d) {
-  const k = dayKey(d);
-  const now = new Date();
-  if (k === dayKey(now)) return "היום";
-  if (k === dayKey(new Date(now.getTime() - 86400000))) return "אתמול";
+  const diff = calDayNum(new Date()) - calDayNum(d); // ימי-לוח, לא now-24h (שגוי בשעה הראשונה אחרי יום קצר של שעון קיץ)
+  if (diff === 0) return "היום";
+  if (diff === 1) return "אתמול";
   return d.toLocaleDateString("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
 }
 function listTime(iso) {

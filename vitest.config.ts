@@ -14,6 +14,7 @@ const SAFE_TESTS = [
   "tests/unit/isolation.test.ts",
   // unit — לוגיקה טהורה
   "tests/unit/policy.test.ts",
+  "tests/unit/historyGroups.test.ts",
   "tests/unit/identity.test.ts",
   "tests/unit/modelRouter.test.ts",
   "tests/unit/myWorkBrief.test.ts",

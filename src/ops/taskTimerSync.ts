@@ -19,10 +19,13 @@ import { env } from "../config/env.js";
 import { listAllClosedItems } from "../db/repositories/taskTimers.js";
 import {
   claimItem,
+  clearReviveCheck,
   completeSync,
   failSync,
   getSyncRow,
+  listDeadForReviveCheck,
   listDueItemIds,
+  reviveDeadItem,
   markDirty,
   recoverStuckClaims,
 } from "../db/repositories/taskTimerSync.js";
@@ -48,7 +51,10 @@ export function backoffMinutes(attempts: number): number {
   return Math.min(2 ** Math.max(0, attempts - 1), MAX_BACKOFF_MINUTES);
 }
 
-/** מסמן את כל הפריטים שיש להם מקטעים סגורים (הפעלה ראשונה / אחרי תקופה שהדגל היה כבוי). זול: ההשוואה מקומית. */
+/**
+ * מסמן את כל הפריטים שיש להם מקטעים סגורים (הפעלה ראשונה / אחרי תקופה שהדגל היה כבוי / אתחול שרת). זול:
+ * ההשוואה מקומית. פריט dead לא חוזר לסנכרון בגלל זה — ר' revive_check ו-runTaskTimerMondaySync.
+ */
 export function backfillTaskTimerSync(): number {
   let n = 0;
   for (const it of listAllClosedItems()) {
@@ -66,14 +72,25 @@ export async function runTaskTimerMondaySync(
   const nowIso = now.toUTC().toISO()!;
   result.requeued = recoverStuckClaims(now.minus({ minutes: SYNC_CLAIM_LEASE_MINUTES }).toUTC().toISO()!);
 
+  // פריטי dead שסומנו מחדש (backfill / אתחול שרת / חישוב-מחדש של יום): מתחייים רק אם הזמן שלהם באמת
+  // השתנה מאז הסנכרון האחרון (ms). אחרת נשארים dead — בלי שום קריאה ל-Monday (למשל פריט שנמחק/בארכיון).
+  for (const itemId of listDeadForReviveCheck(SYNC_BATCH_SIZE)) {
+    const row = getSyncRow(itemId);
+    if (!row) continue;
+    const reference = row.deadMs ?? row.lastMs; // ה-ms ברגע שהפריט סומן dead (או, לשורות ישנות, הסנכרון האחרון שהצליח)
+    if (reference !== null && Math.round(computeItemTotalMs(itemId, nowIso)) === reference) clearReviveCheck(itemId);
+    else reviveDeadItem(itemId);
+  }
+
   for (const itemId of listDueItemIds(nowIso, SYNC_BATCH_SIZE)) {
     const claimId = randomUUID();
     if (!claimItem(itemId, claimId, nowIso)) continue; // מישהו אחר תפס / כבר לא due
     result.claimed++;
     const row = getSyncRow(itemId)!;
+    let ms: number | null = null;
     try {
       // הערך מחושב *אחרי* ה-claim: כל שינוי שנרשם עד עכשיו כלול; שינוי שיגיע בזמן הכתיבה יעלה version.
-      const ms = computeItemTotalMs(itemId, nowIso);
+      ms = computeItemTotalMs(itemId, nowIso);
       const display = formatHHMM(ms);
       // דילוג רק כשתצוגת HH:MM זהה לזו שנכתבה לאחרונה. last_display ריק (פריט שמעולם לא נכתב, או אופס ידנית
       // כדי לכפות סנכרון מחדש) ≠ display → נכתב.
@@ -88,7 +105,7 @@ export async function runTaskTimerMondaySync(
       const { permanent, message } = classifySyncError(err);
       const attempts = row.attempts + 1;
       if (permanent || attempts >= SYNC_MAX_ATTEMPTS) {
-        failSync(itemId, claimId, "dead", message, null);
+        failSync(itemId, claimId, "dead", message, null, ms === null ? null : Math.round(ms));
         result.dead++;
         logger.error({ itemId, attempts, message }, "סנכרון זמן עבודה ל-Monday נכשל לצמיתות — הפריט מסומן dead עד שינוי חדש");
       } else {

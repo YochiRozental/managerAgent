@@ -527,6 +527,8 @@ CREATE TABLE IF NOT EXISTS task_timer_sync (
   last_value REAL,                      -- לא בשימוש (היה הערך העשרוני בעמודת המספר שהוסרה); נשאר לתאימות
   last_ms INTEGER,                      -- הדיוק המלא (ms) באותו רגע
   last_display TEXT,                    -- תצוגת HH:MM שנכתבה לאחרונה (NULL = עוד לא נכתבה → סנכרון מחדש)
+  dead_ms INTEGER,                      -- הזמן (ms) ברגע שהפריט סומן dead; ייחוס להחלטה אם הזמן השתנה מאז
+  revive_check INTEGER NOT NULL DEFAULT 0, -- 1 = פריט dead שסומן מחדש; מתחייה רק אם הזמן שלו באמת השתנה (ר' taskTimerSync.ts)
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   next_attempt_at TEXT,

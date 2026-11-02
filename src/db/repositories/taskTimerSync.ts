@@ -17,6 +17,8 @@ export interface SyncRow {
   claimedAt: string | null;
   lastMs: number | null;
   lastDisplay: string | null;
+  reviveCheck: boolean;
+  deadMs: number | null;
   attempts: number;
   lastError: string | null;
   nextAttemptAt: string | null;
@@ -33,6 +35,8 @@ interface Row {
   claimed_at: string | null;
   last_ms: number | null;
   last_display: string | null;
+  revive_check: number;
+  dead_ms: number | null;
   attempts: number;
   last_error: string | null;
   next_attempt_at: string | null;
@@ -49,22 +53,25 @@ const fromRow = (r: Row): SyncRow => ({
   claimedAt: r.claimed_at,
   lastMs: r.last_ms,
   lastDisplay: r.last_display,
+  reviveCheck: r.revive_check === 1,
+  deadMs: r.dead_ms,
   attempts: r.attempts,
   lastError: r.last_error,
   nextAttemptAt: r.next_attempt_at,
   lastSyncedAt: r.last_synced_at,
 });
 
-// UPSERT: version תמיד עולה. מצב syncing נשאר (הסנכרון בדרך יראה version חדש ויחזיר ל-dirty);
-// dead חוזר ל-dirty עם attempts מאופס (שינוי חדש = סיבה לנסות שוב).
+// UPSERT: version תמיד עולה. מצב syncing נשאר (הסנכרון בדרך יראה version חדש ויחזיר ל-dirty).
+// dead נשאר dead (גם ב-backfill / אתחול שרת / חישוב-מחדש של יום): רק מסומן revive_check=1, והסנכרון מחליט
+// אם הזמן באמת השתנה (השוואת ms) — רק אז הפריט מתחייה. אחרת לא נשלחת אליו שום קריאה ל-Monday.
 const markStmt = db.prepare(
   `INSERT INTO task_timer_sync (item_id, item_source, status, version) VALUES (?, ?, 'dirty', 1)
    ON CONFLICT(item_id) DO UPDATE SET
      item_source = excluded.item_source,
      version = version + 1,
-     status = CASE WHEN status = 'syncing' THEN 'syncing' ELSE 'dirty' END,
-     attempts = CASE WHEN status = 'dead' THEN 0 ELSE attempts END,
-     next_attempt_at = CASE WHEN status = 'syncing' THEN next_attempt_at ELSE NULL END,
+     status = CASE WHEN status IN ('syncing','dead') THEN status ELSE 'dirty' END,
+     revive_check = CASE WHEN status = 'dead' THEN 1 ELSE revive_check END,
+     next_attempt_at = CASE WHEN status IN ('syncing','dead') THEN next_attempt_at ELSE NULL END,
      updated_at = datetime('now')`,
 );
 const getStmt = db.prepare(`SELECT * FROM task_timer_sync WHERE item_id = ?`);
@@ -72,6 +79,12 @@ const dueStmt = db.prepare(
   `SELECT item_id FROM task_timer_sync
     WHERE status IN ('dirty','failed') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
     ORDER BY updated_at ASC LIMIT ?`,
+);
+const deadToCheckStmt = db.prepare(`SELECT item_id FROM task_timer_sync WHERE status = 'dead' AND revive_check = 1 LIMIT ?`);
+const clearReviveStmt = db.prepare(`UPDATE task_timer_sync SET revive_check = 0, updated_at = datetime('now') WHERE item_id = ? AND status = 'dead'`);
+const reviveStmt = db.prepare(
+  `UPDATE task_timer_sync SET status = 'dirty', attempts = 0, last_error = NULL, next_attempt_at = NULL, revive_check = 0, updated_at = datetime('now')
+    WHERE item_id = ? AND status = 'dead'`,
 );
 const claimStmt = db.prepare(
   `UPDATE task_timer_sync SET status = 'syncing', claim_id = ?, claimed_at = ?, claimed_version = version, updated_at = datetime('now')
@@ -85,7 +98,7 @@ const completeStmt = db.prepare(
     WHERE item_id = ? AND claim_id = ?`,
 );
 const failStmt = db.prepare(
-  `UPDATE task_timer_sync SET status = ?, attempts = attempts + 1, last_error = ?, next_attempt_at = ?,
+  `UPDATE task_timer_sync SET status = ?, attempts = attempts + 1, last_error = ?, next_attempt_at = ?, dead_ms = ?,
       claim_id = NULL, claimed_at = NULL, updated_at = datetime('now')
     WHERE item_id = ? AND claim_id = ?`,
 );
@@ -97,6 +110,21 @@ const countStmt = db.prepare(`SELECT status, COUNT(*) AS n FROM task_timer_sync 
 
 export function markDirty(itemId: string, itemSource: string): void {
   markStmt.run(itemId, itemSource);
+}
+
+/** פריטי dead שסומנו מחדש וממתינים להחלטה אם הזמן שלהם באמת השתנה. */
+export function listDeadForReviveCheck(limit: number): string[] {
+  return (deadToCheckStmt.all(limit) as unknown as { item_id: string }[]).map((r) => r.item_id);
+}
+
+/** הזמן לא השתנה → נשאר dead, בלי קריאה ל-Monday. */
+export function clearReviveCheck(itemId: string): void {
+  clearReviveStmt.run(itemId);
+}
+
+/** שחזור מפורש (או שינוי אמיתי בזמן): dead → dirty עם attempts מאופס. true ⇔ הפריט אכן היה dead. */
+export function reviveDeadItem(itemId: string): boolean {
+  return Number(reviveStmt.run(itemId).changes) > 0;
 }
 
 export function getSyncRow(itemId: string): SyncRow | null {
@@ -118,8 +146,15 @@ export function completeSync(itemId: string, claimId: string, ms: number, displa
   return Number(completeStmt.run(Math.round(ms), display, nowIso, itemId, claimId).changes) > 0;
 }
 
-export function failSync(itemId: string, claimId: string, status: "failed" | "dead", error: string, nextAttemptAt: string | null): boolean {
-  return Number(failStmt.run(status, error.slice(0, 500), nextAttemptAt, itemId, claimId).changes) > 0;
+export function failSync(
+  itemId: string,
+  claimId: string,
+  status: "failed" | "dead",
+  error: string,
+  nextAttemptAt: string | null,
+  deadMs: number | null = null,
+): boolean {
+  return Number(failStmt.run(status, error.slice(0, 500), nextAttemptAt, status === "dead" ? deadMs : null, itemId, claimId).changes) > 0;
 }
 
 /** claim שנתקע (קריסה באמצע) → חוזר ל-dirty. מחזיר כמה שוחזרו. */

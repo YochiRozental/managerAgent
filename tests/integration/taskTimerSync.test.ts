@@ -15,6 +15,7 @@ import { endSegment, insertSegment, listSegmentsForDate } from "../../src/db/rep
 import { claimItem, getSyncRow, markDirty, recoverStuckClaims } from "../../src/db/repositories/taskTimerSync.js";
 import { startTimer, stopTimer, type TimerTaskRef } from "../../src/ops/taskTimer.js";
 import { computeItemTotalMs, hoursFromMs } from "../../src/ops/taskTimerHours.js";
+import { reviveDeadItem } from "../../src/db/repositories/taskTimerSync.js";
 import { backfillTaskTimerSync, backoffMinutes, runTaskTimerMondaySync, SYNC_MAX_ATTEMPTS } from "../../src/ops/taskTimerSync.js";
 import { markItemTimeDirty } from "../../src/ops/taskTimerSyncMark.js";
 import { PermanentSyncError, type TaskTimerMondayClient } from "../../src/integrations/monday/taskTimerMondayClient.js";
@@ -203,7 +204,7 @@ describe("כשל תקשורת, retry ושחזור", () => {
     client.failWith = null;
     startTimer(yochi, task("3002", "t3002"), at(D, "11:10"), sid("f2", "s2"));
     stopTimer(yochi, at(D, "11:20"), "stopped", sid("f2", "e2"));
-    expect(getSyncRow("3002")).toMatchObject({ status: "dirty", attempts: 0 });
+    expect(getSyncRow("3002")).toMatchObject({ status: "dead", reviveCheck: true }); // מסומן לבדיקה; מתחייה בסבב רק כי הזמן השתנה
     await runTaskTimerMondaySync(client, at(D, "11:30"));
     expect(client.last("3002")!.display).toBe("00:20");
   });
@@ -309,6 +310,92 @@ describe("סנכרון מחדש של תצוגת HH גם כשהמשך לא השת
     markDirty("5002", "general");
     await runTaskTimerMondaySync(client, at("2031-06-12", "08:00"));
     expect(client.last("5002")!.display).toBe("23:59");
+  });
+});
+
+describe("פריט dead (למשל פריט שנמחק/בארכיון ב-Monday)", () => {
+  const D = "2031-06-12";
+  const G = task("6001", "נמחק ב-Monday");
+  const deadClient = new FakeClient();
+
+  async function makeDead(): Promise<void> {
+    openDay(yochi, D);
+    deadClient.failWith = null;
+    startTimer(yochi, G, at(D, "09:00"), sid("d1", "a"));
+    stopTimer(yochi, at(D, "09:30"), "stopped", sid("d1", "b"));
+    deadClient.failWith = new PermanentSyncError("Cannot change column value for inactive items");
+    await runTaskTimerMondaySync(deadClient, at(D, "10:00"));
+    deadClient.failWith = null;
+    expect(getSyncRow("6001")).toMatchObject({ status: "dead", attempts: 1 });
+  }
+
+  it("backfill / אתחול שרת לא מחזירים פריט dead לסנכרון ולא שולחים אליו קריאה ל-Monday", async () => {
+    await makeDead();
+    const writesFor = () => deadClient.writes.filter((w) => w.itemId === "6001").length;
+    const writesBefore = writesFor();
+    const before = getSyncRow("6001")!;
+    for (let restart = 0; restart < 3; restart++) {
+      backfillTaskTimerSync(); // מה שקורה בכל ריסטרט של השרת — מסמן את כל הפריטים (גם dead)
+      expect(getSyncRow("6001")).toMatchObject({ status: "dead", reviveCheck: true });
+      await runTaskTimerMondaySync(deadClient, at(D, "11:00").plus({ minutes: restart }));
+    }
+    expect(writesFor()).toBe(writesBefore); // לפריט ה-dead לא נשלחה שום כתיבה
+    const after = getSyncRow("6001")!;
+    expect(after).toMatchObject({ status: "dead", attempts: before.attempts, reviveCheck: false });
+    expect(after.lastError).toBe(before.lastError);
+  });
+
+  it("שינוי אמיתי בזמן (מקטע חדש שנסגר) מחייה את הפריט וכותב אותו", async () => {
+    startTimer(yochi, G, at(D, "12:00"), sid("d2", "a"));
+    stopTimer(yochi, at(D, "12:15"), "stopped", sid("d2", "b"));
+    expect(getSyncRow("6001")?.status).toBe("dead"); // עדיין לא הוכרע — ממתין לבדיקה בסבב
+    const r = await runTaskTimerMondaySync(deadClient, at(D, "13:00"));
+    expect(r.written).toBe(1);
+    expect(deadClient.last("6001")!.display).toBe("00:45");
+    expect(getSyncRow("6001")).toMatchObject({ status: "synced", attempts: 0, reviveCheck: false });
+  });
+
+  it("תיקון נוכחות רטרואקטיבי שמשנה את הזמן מחייה; תיקון שלא משנה (הפסקה מחוץ למקטעים) לא מחייה", async () => {
+    const D2 = "2031-06-13";
+    const H = task("6002", "ארכיון");
+    const writesFor = () => deadClient.writes.filter((w) => w.itemId === "6002").length;
+    openDay(yochi, D2, "08:00");
+    startTimer(yochi, H, at(D2, "10:00"), sid("d3", "s"));
+    stopTimer(yochi, at(D2, "10:30"), "stopped", sid("d3", "e"));
+    deadClient.failWith = new PermanentSyncError("Cannot change column value for inactive items");
+    await runTaskTimerMondaySync(deadClient, at(D2, "11:00"));
+    deadClient.failWith = null;
+    expect(getSyncRow("6002")).toMatchObject({ status: "dead", deadMs: 30 * 60_000 });
+
+    // הפסקה בדיעבד מחוץ למקטע (08:30–08:40, לפני שהמקטע התחיל) — הזמן האפקטיבי של הפריט זהה → נשאר dead, בלי כתיבה
+    expect(requestAttendanceCorrection(yochi, { workDate: D2, field: "break_start", newReportedForAtUtcIso: iso(D2, "08:30"), insertNew: true, messageSeed: sid("d3", "a") }).ok).toBe(true);
+    expect(requestAttendanceCorrection(yochi, { workDate: D2, field: "break_end", newReportedForAtUtcIso: iso(D2, "08:40"), insertNew: true, messageSeed: sid("d3", "b") }).ok).toBe(true);
+    expect(getSyncRow("6002")).toMatchObject({ status: "dead", reviveCheck: true });
+    await runTaskTimerMondaySync(deadClient, at(D2, "14:00"));
+    expect(getSyncRow("6002")).toMatchObject({ status: "dead", reviveCheck: false });
+    expect(writesFor()).toBe(0);
+
+    // הפסקה בדיעבד שחותכת את המקטע (10:10–10:20) — הזמן משתנה → מתחייה ונכתב
+    expect(requestAttendanceCorrection(yochi, { workDate: D2, field: "break_start", newReportedForAtUtcIso: iso(D2, "10:10"), insertNew: true, messageSeed: sid("d3", "c") }).ok).toBe(true);
+    expect(requestAttendanceCorrection(yochi, { workDate: D2, field: "break_end", newReportedForAtUtcIso: iso(D2, "10:20"), insertNew: true, messageSeed: sid("d3", "d") }).ok).toBe(true);
+    await runTaskTimerMondaySync(deadClient, at(D2, "14:05"));
+    expect(writesFor()).toBe(1);
+    expect(deadClient.last("6002")!.display).toBe("00:20");
+    expect(getSyncRow("6002")?.status).toBe("synced");
+  });
+
+  it("שחזור מפורש (reviveDeadItem) מחזיר לסנכרון גם בלי שינוי בזמן", async () => {
+    deadClient.failWith = new PermanentSyncError("Cannot change column value for inactive items");
+    db.prepare(`UPDATE task_timer_sync SET last_display=NULL, status='dirty' WHERE item_id='6001'`).run();
+    await runTaskTimerMondaySync(deadClient, at(D, "15:00"));
+    expect(getSyncRow("6001")?.status).toBe("dead");
+    deadClient.failWith = null;
+    expect(reviveDeadItem("6001")).toBe(true);
+    expect(reviveDeadItem("6001")).toBe(false); // לא dead יותר
+    expect(getSyncRow("6001")).toMatchObject({ status: "dirty", attempts: 0 });
+    const r = await runTaskTimerMondaySync(deadClient, at(D, "15:05"));
+    expect(r.written).toBe(1);
+    expect(getSyncRow("6001")?.status).toBe("synced");
   });
 });
 

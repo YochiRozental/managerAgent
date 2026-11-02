@@ -67,6 +67,7 @@ import { isPayrollMonthClosed } from "../db/repositories/payrollMonths.js";
 import { listUnseenNotifications, listUnseenNotificationsByKind, markNotificationSeenById } from "../db/repositories/notifications.js";
 import { publishNotificationLive } from "./notificationBus.js";
 import { logger } from "../utils/logger.js";
+import { alignTimersToDayClose } from "./taskTimerDayClose.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // שער ההפעלה
@@ -189,6 +190,17 @@ function effectiveSummary(userKey: string, workDate: string) {
 }
 
 /**
+ * קריאה בלבד, למדידת זמן על משימות (taskTimer.ts): האירועים האפקטיביים של היום (אחרי תיקונים) והסטטוס
+ * העדין (working/on_break/closed). אין כתיבה ואין שינוי התנהגות של הנוכחות — עוטף את effectiveSummary
+ * הקיים ואת אותו overlay תיקונים.
+ */
+export function getEffectiveAttendance(userKey: string, workDate: string): { events: AttendanceEventLike[]; status: AttendanceStatus } {
+  const rawEvents = listEventsForDay(userKey, workDate).filter((e) => e.eventType !== "correction");
+  const events = applyCorrections(rawEvents.map(toEventLike), existingCorrectionOverlay(userKey, workDate));
+  return { events, status: statusAfter(events) };
+}
+
+/**
  * סוגר (markNotificationSeenById) כל התראת attendance_reminder פתוחה של המשתמש ששייכת בוודאות
  * ליום-העבודה הזה — audit "מחזור חיים של התראות נוכחות" (2026-10-19/20): עד כה שום דבר לא חיבר
  * בין סגירת/אימות יום נוכחות לבין ההתראה שהזכירה אותו, אז תזכורת נשארה "פעילה" לנצח גם אחרי
@@ -296,6 +308,15 @@ function recomputeAndPersistDay(userKey: string, workDate: string): StoredAttend
   // (אלא אם כבר שם), כדי שתיקון אחרי שליחה ל-Monday יידחף שוב. ימים פתוחים לא מסונכרנים כלל כרגע.
   if (dayStatus === "closed") {
     markNeedsMondaySync(userKey, workDate);
+    // Task Timer: יישור מקטעי טיימר לשעת הסגירה המדווחת (גם רטרואקטיבית). best-effort — הזמן
+    // האפקטיבי נגזר בקריאה מהנוכחות, אז כשל כאן לא משבש שעות (ר' taskTimerDayClose.ts).
+    if (summary.lastOutAt) {
+      try {
+        alignTimersToDayClose(userKey, workDate, summary.lastOutAt);
+      } catch (err) {
+        logger.error({ err, userKey, workDate }, "יישור טיימרים לסגירת יום נכשל — רישום הנוכחות נשאר תקין; ה-sweep יסגור מקטע פתוח");
+      }
+    }
     // best-effort, מחוץ ל"חובה" של persist היום עצמו — כשל כאן (למשל שאילתת notifications נכשלת)
     // לא אמור אף פעם לבטל/לשבש את כתיבת הנוכחות שכבר הצליחה (ר' upsertDay למעלה).
     try {

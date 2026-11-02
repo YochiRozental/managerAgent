@@ -463,3 +463,45 @@ CREATE TABLE IF NOT EXISTS access_link_epochs (
   epoch INTEGER NOT NULL DEFAULT 0,
   reissued_at TEXT
 );
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- מדידת זמן עבודה על משימות (Task Timer, 2026-11-02). כבוי כברירת מחדל (TASK_TIMER_ENABLED).
+-- מקטע = [started_at, ended_at). ended_at NULL = טיימר פעיל. האינדקס החלקי מבטיח *בדיוק* טיימר פעיל
+-- אחד לעובד גם בבקשות מקבילות. כל התאריכים UTC ISO; work_date = תאריך ישראל של started_at.
+-- הזמן האפקטיבי לא נשמר: הוא נגזר בקריאה מחיתוך המקטע עם מקטעי העבודה של יום הנוכחות
+-- (attendance_events + תיקונים) — לכן הפסקות (גם רטרואקטיביות) וסגירת יום (גם רטרואקטיבית) לעולם לא
+-- נספרות, וכשל בסנכרון/hook לא יכול לייצר חישוב שעות שגוי, רק מקטע פתוח שנסגר בסריקה.
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS task_timer_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_key TEXT NOT NULL,
+  work_date TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  item_source TEXT NOT NULL,            -- general | project_stage
+  task_name TEXT NOT NULL,              -- צילום בזמן ההפעלה (משימה שנמחקה/הועברה לא שוברת דוחות)
+  project_id TEXT,
+  project_name TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  end_reason TEXT,                      -- stopped | done | switched | day_close | stale
+  idempotency_key TEXT NOT NULL UNIQUE, -- התחלה: retry של אותה הודעה לא יוצר מקטע שני
+  end_idempotency_key TEXT,             -- עצירה: retry של אותה הודעה מחזיר את אותה תוצאה
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_timer_active ON task_timer_segments (user_key) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_task_timer_user_date ON task_timer_segments (user_key, work_date);
+CREATE INDEX IF NOT EXISTS idx_task_timer_user_item ON task_timer_segments (user_key, item_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_timer_end_key ON task_timer_segments (end_idempotency_key) WHERE end_idempotency_key IS NOT NULL;
+
+-- מצב עזר פר-עובד: החלפה ממתינה לאישור (תוקף קצר) + זמן התזכורת האחרונה (throttle 10 דקות).
+CREATE TABLE IF NOT EXISTS task_timer_state (
+  user_key TEXT PRIMARY KEY,
+  last_reminder_at TEXT,
+  pending_item_id TEXT,
+  pending_item_source TEXT,
+  pending_task_name TEXT,
+  pending_project_id TEXT,
+  pending_project_name TEXT,
+  pending_expires_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

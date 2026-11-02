@@ -73,6 +73,9 @@ import { getOversightReport } from "./oversight.js";
 import { getEmployeeFeed, formatEmployeeFeedText, formatEmployeeFeedBriefing, employeeFeedCounts } from "./employeeFeed.js";
 import { attendanceEnabledForUser, checkAttendanceDayStart } from "./attendance.js";
 import { buildMessageIdempotencySeed } from "./attendanceEngine.js";
+import { buildTimerTools } from "./taskTimerTools.js";
+import { activeTimerContextLine, isTaskTimerEnabledForUser, projectNameFromContext, takeActiveTimerReminder } from "./taskTimer.js";
+import { getTimerState } from "../db/repositories/taskTimers.js";
 import { countUserMessagesInSession } from "../db/repositories/chatHistory.js";
 import { getLatestPendingPlan, getLatestResultSet, saveResultSet } from "../db/repositories/bulkOps.js";
 import { explicitDayInText, mentionsNonTodayDate, resolveSingleDay } from "./relativeDates.js";
@@ -875,6 +878,16 @@ const BULK_FILTER_PROPERTIES = {
  * הם תלויים בהקשר השיחה — session, מזהה ההודעה וההודעה האחרונה של המשתמש (אכיפת "אישור מפורש
  * בהודעה נפרדת") — ש-AgentToolContext לא נושא. setCaptured — הטקסט שיוגש מילה במילה.
  */
+/** chip קצר בחלונית לכלי טיימר ששינה מצב (הטקסט המלא מוגש כתשובה). */
+const TIMER_ACTION_CHIPS: Record<string, string> = {
+  timer_start: "⏱ טיימר הופעל",
+  timer_confirm_switch: "⏱ הטיימר הוחלף",
+  timer_stop: "⏹ הטיימר נעצר",
+  timer_resume: "⏱ הטיימר חודש",
+};
+/** כלי צפייה/שליפת משימות — כשהם רצים בזמן שפועל טיימר מוסיפים את תזכורת הטיימר (takeActiveTimerReminder). */
+const TIMER_REMINDER_BROWSE_TOOLS = new Set(["get_today_tasks", "find_task", "query_records", "get_my_pipeline"]);
+
 function buildBulkTools(
   user: IdentifiedUser,
   ctx: BulkContext,
@@ -1246,6 +1259,8 @@ export interface OpsChatOptions {
   /** בדיקות בלבד — עוקף את attendanceEnabledForUser האמיתי (בדיוק עיקרון deps ב-agentTools.ts's
    *  buildAgentTools), כדי לא להיות תלוי ב-ATTENDANCE_MODULE_ENABLED/PILOT_USER_KEYS האמיתיים. */
   _attendanceEnabledForUser?: (user: IdentifiedUser) => boolean;
+  /** בדיקות בלבד — עוקף את isTaskTimerEnabledForUser (דגל+פיילוט) של מדידת הזמן. */
+  _taskTimerEnabledForUser?: (user: IdentifiedUser) => boolean;
 }
 
 export async function runOpsChat(
@@ -1354,6 +1369,15 @@ export async function runOpsChat(
   const bulkContextSuffix = [...buildBulkContextLines(user.key, scopeId, now), ...outreachLines].join("\n");
   const bulkTurn = { prepared: false };
   const outreachTurn = { prepared: false };
+  // Task Timer (2026-11-02) — כבוי כברירת מחדל; דורש נוכחות פעילה לעובד (attendanceOn). בלי הדגל: אפס שינוי
+  // ב-tools[], ב-prompt, בניתוב ובתשובה. הטקסטים של כלי הטיימר מוגשים מילה במילה (finalizeText).
+  const timerOn = attendanceOn && (opts._taskTimerEnabledForUser ?? isTaskTimerEnabledForUser)(user);
+  const timerTexts: string[] = [];
+  const timerTurn = { toolCalled: false };
+  const timerContextLine = timerOn ? activeTimerContextLine(user.key, now) : null;
+  const volatileExtraSuffix = [bulkContextSuffix, timerContextLine].filter(Boolean).join("\n");
+  // החלפת טיימר ממתינה לאישור → SMART: הכרעה (אישור/סירוב) צריכה דיוק, ממילא נדיר.
+  const timerNeedsSmart = timerOn && !opts.about && !!getTimerState(user.key).pending;
   let capturedOutreachText: string | null = null;
   const outreachCtx: OutreachContext = { sessionId: scopeId, turnId: bulkCtx.turnId, now };
   // בקשת המשך / פעולה על קבוצה → SMART (נמצא בבדיקה חיה: FAST איבד את ההחרגה מההודעה הקודמת
@@ -1625,6 +1649,34 @@ export async function runOpsChat(
   tools.push(...buildBulkTools(user, bulkCtx, history, (t) => (capturedBulkText = t), actions, bulkTurn));
   // ---- פנייה לעובד דרך הסוכן (2026-10-28) — Web בלבד; ר' ops/teamOutreach.ts. ----
   tools.push(...buildOutreachTools(user, outreachCtx, history, (t) => (capturedOutreachText = t), actions, outreachTurn));
+  // ---- מדידת זמן על משימות (2026-11-02) — Web בלבד, פיילוט; ר' ops/taskTimer.ts. ----
+  if (timerOn) {
+    tools.push(
+      ...buildTimerTools(user, {
+        now,
+        messageSeed,
+        latestUserMessage: history[history.length - 1]?.content ?? "",
+        // שם/פרויקט נלקחים מרשימת המשימות הפתוחות של העובד (לא מהמודל) — וזה גם אימות בעלות.
+        resolveTask: async (itemId) => {
+          await ensureTasksLoaded();
+          const t = findTask(itemId);
+          return t
+            ? { itemId: t.itemId, itemSource: t.source, taskName: t.name, projectId: t.projectId ?? null, projectName: projectNameFromContext(t.context) }
+            : null;
+        },
+        onResult: (tool, r) => {
+          timerTurn.toolCalled = true;
+          // retry (FAST→SMART / אישור נוכחות) מריץ שוב את אותו כלי עם אותו seed ומקבל אותו טקסט — בלי כפילות.
+          if (!timerTexts.includes(r.message)) timerTexts.push(r.message);
+          // chip בחלונית + sideEffect=true (מונע fallback מיותר אחרי שינוי מצב); שאלה/כישלון/קריאה בלבד — בלי.
+          if (r.ok && !r.needsConfirmation) {
+            const chip = TIMER_ACTION_CHIPS[tool];
+            if (chip && !actions.includes(chip)) actions.push(chip);
+          }
+        },
+      }),
+    );
+  }
 
   // ---- סגירת הלולאה: תשובה לפנייה יזומה של הבקרה על משימה ידועה (פריט Monday אמיתי בלבד —
   // ממצא בלי itemId, כמו התחייבות, מטופל בנפרד למטה דרך close_commitment הקיים, לא כאן). ----
@@ -2058,13 +2110,13 @@ export async function runOpsChat(
     outreachTurn.prepared = false;
     const cacheSplit = promptCachingEnabled ? buildPromptCachingSplitFor(user, opts.about) : null;
     return {
-      system: bulkContextSuffix ? `${systemPrompt(user, opts.about)}\n${bulkContextSuffix}` : systemPrompt(user, opts.about),
+      system: volatileExtraSuffix ? `${systemPrompt(user, opts.about)}\n${volatileExtraSuffix}` : systemPrompt(user, opts.about),
       // Prompt Caching — ר' promptCachingEnabled למעלה. כש-הדגל כבוי השדה הזה undefined,
       // ו-agentLoop/anthropic.ts מתנהגים בדיוק כקודם.
       ...(cacheSplit
         ? {
-            promptCaching: bulkContextSuffix
-              ? { ...cacheSplit, volatileSystemSuffix: `${cacheSplit.volatileSystemSuffix}\n${bulkContextSuffix}` }
+            promptCaching: volatileExtraSuffix
+              ? { ...cacheSplit, volatileSystemSuffix: `${cacheSplit.volatileSystemSuffix}\n${volatileExtraSuffix}` }
               : cacheSplit,
           }
         : {}),
@@ -2153,6 +2205,8 @@ export async function runOpsChat(
       },
       finalizeText: (modelText: string) => {
         if (capturedBulkText) return capturedBulkText;
+        // מדידת זמן: הטקסט המוכן של כלי הטיימר (הפעלה/עצירה/שאלת החלפה/דוח) מוגש כלשונו, לא ניסוח המודל.
+        if (timerTexts.length > 0) return timerTexts.join("\n\n");
         // פנייה לעובד: התצוגה/אישור/שגיאה מוגשים מילה במילה — המודל לא מנסח "נשלח" בעצמו.
         if (capturedOutreachText) return capturedOutreachText;
         // אם בסבב הזה נשלף תדריך היום ולא בוצעו עדכונים — מגישים אותו כפי שהוא (כולל ברכה+כותרת,
@@ -2177,7 +2231,7 @@ export async function runOpsChat(
       historyLength: history.length,
       canSeeAllWork: userCan(user, "view:all_work"),
       // תשובה לפנייה יזומה → SMART: הבנת הכוונה + הפעולה הנכונה ב-Monday חשובה מהעלות.
-      forceTier: forceTier ?? (opts.about || bulkNeedsSmart || outreachNeedsSmart ? "smart" : undefined),
+      forceTier: forceTier ?? (opts.about || bulkNeedsSmart || outreachNeedsSmart || timerNeedsSmart ? "smart" : undefined),
       buildLoop,
       // ל-ops chat "תופעת לוואי" = כתיבה ל-Monday/DB (actions), לא סתם קריאת מידע
       sideEffectCount: () => actions.length,
@@ -2230,6 +2284,17 @@ export async function runOpsChat(
         logger.warn({ user: user.key }, "חשד לאישור נוכחות נמשך גם אחרי ניסיון חוזר — מציג כישלון מפורש, לא את הטקסט החשוד");
         finalText = "לא הצלחתי לאשר בוודאות שהפעולה בוצעה בפועל. נסה לשלוח את ההודעה שוב, או נסח אותה במפורש (למשל 'יצאתי להפסקה עכשיו' / 'חזרתי מההפסקה').";
       }
+    }
+  }
+
+  // תזכורת טיימר: צפייה/שאלה על משימות בזמן שפועל טיימר (ולא נעשתה פעולת טיימר בהודעה הזו) — לכל היותר
+  // פעם ב-10 דקות, נוסף בקוד. לא עוצר ולא מפעיל כלום; ההחלפה עצמה תמיד דורשת אישור (timer_start).
+  if (timerOn && !timerTurn.toolCalled && toolCallRecords.some((r) => TIMER_REMINDER_BROWSE_TOOLS.has(r.name))) {
+    try {
+      const reminder = takeActiveTimerReminder(user, now);
+      if (reminder) finalText = `${finalText}\n\n${reminder}`;
+    } catch (err) {
+      logger.warn({ err, user: user.key }, "תזכורת טיימר נכשלה — התשובה עצמה לא מושפעת");
     }
   }
 

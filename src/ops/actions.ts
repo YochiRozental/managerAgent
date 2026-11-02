@@ -60,6 +60,10 @@ import {
 import { getCachedCreation, recordCreation } from "../db/repositories/idempotentCreations.js";
 import { addNotification } from "../db/repositories/notifications.js";
 import { publishNotificationLive } from "./notificationBus.js";
+import { DateTime } from "luxon";
+import { env } from "../config/env.js";
+import { logger } from "../utils/logger.js";
+import { stopTimerIfOnItem } from "./taskTimer.js";
 
 /**
  * side-effects הניתנים להזרקה לבדיקת scope/בעלות — בלי לגעת ב-Monday האמיתי (אותו pattern
@@ -433,6 +437,13 @@ export async function updateTask(
   switch (input.action) {
     case "done":
       await doSetTaskStatus(input.source, input.itemId, DONE_LABEL[input.source]);
+      // Task Timer: אם פועל טיימר על המשימה שסומנה כבוצעה — נעצר (done). אחרי שהכתיבה ל-Monday הצליחה,
+      // ו-best-effort: כשל כאן לא מכשיל את הסימון (מקטע פתוח נסגר בסריקה, והשעות נגזרות מהנוכחות).
+      try {
+        stopTimerIfOnItem(user.key, input.itemId, DateTime.now().setZone(env.TIMEZONE));
+      } catch (err) {
+        logger.warn({ err, itemId: input.itemId }, "עצירת טיימר אחרי סימון בוצע נכשלה — הסימון עצמו הצליח");
+      }
       return { ok: true, message: "סומן כבוצע ✅" };
 
     case "state":

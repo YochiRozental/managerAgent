@@ -22,6 +22,13 @@ const schema = z.object({
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
   ATTENDANCE_PILOT_USER_KEYS: z.string().default(""),
+  // מדידת זמן עבודה על משימות (Task Timer, 2026-11-02) — כבוי כברירת מחדל. כמו הנוכחות: דגל + רשימת
+  // פיילוט (user_key). הטיימר תלוי בנוכחות (attendanceEnabledForUser) — בלי יום נוכחות אין זמן אפקטיבי.
+  TASK_TIMER_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
+  TASK_TIMER_PILOT_USER_KEYS: z.string().default(""),
   // Prompt Caching ל-Web Chat (2026-10-14, הורחב לכל המשתמשים 2026-10-18) — כבוי כברירת מחדל.
   // דגל גלובלי יחיד, בלי רשימת-פיילוט: כש-מופעל, כל משתמש ב-Web Chat מקבל אותה התנהגות (ר'
   // ops/chat.ts's promptCachingEnabled).
@@ -52,5 +59,9 @@ export const allowedWhatsappJids = env.ALLOWED_WHATSAPP_JIDS.split(",")
   .filter(Boolean);
 
 export const attendancePilotUserKeys = env.ATTENDANCE_PILOT_USER_KEYS.split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+export const taskTimerPilotUserKeys = env.TASK_TIMER_PILOT_USER_KEYS.split(",")
   .map((s) => s.trim())
   .filter(Boolean);

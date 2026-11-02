@@ -48,6 +48,9 @@ const listByUserStmt = db.prepare(
   `SELECT * FROM commitments WHERE status = 'open' AND created_by = ? ORDER BY (due_date IS NULL), due_date ASC`,
 );
 const getStmt = db.prepare(`SELECT * FROM commitments WHERE id = ?`);
+const findRecentStmt = db.prepare(
+  `SELECT * FROM commitments WHERE created_by = ? AND to_whom = ? AND what = ? AND created_at >= ? ORDER BY id`,
+);
 const closeStmt = db.prepare(`UPDATE commitments SET status = ?, closed_at = datetime('now') WHERE id = ?`);
 
 export function addCommitment(input: {
@@ -65,6 +68,13 @@ export function addCommitment(input: {
     input.project ?? null,
   );
   return fromRow(getStmt.get(Number(res.lastInsertRowid)) as unknown as Row);
+}
+
+/** התחייבות שנוצרה מאז sinceMs עם אותם למי/מה — להתאמת מצב אחרי ניתוק (ops/forms/service.ts). */
+export function findRecentCommitments(createdBy: string, toWhom: string, what: string, sinceMs: number): Commitment[] {
+  // created_at נשמר כ-datetime('now') (UTC, שניות) — משווים מול אותו פורמט, עם מרווח שנייה.
+  const since = new Date(sinceMs - 1000).toISOString().slice(0, 19).replace("T", " ");
+  return (findRecentStmt.all(createdBy, toWhom, what, since) as unknown as Row[]).map(fromRow);
 }
 
 export function listOpenCommitments(): Commitment[] {

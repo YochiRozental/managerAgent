@@ -57,6 +57,7 @@ import {
   type LeadRecord,
   type UpdateLeadContactInput,
 } from "../integrations/monday/leads.js";
+import { enqueueLeadContactSync, type SyncFields } from "../db/repositories/leadContactSync.js";
 import { getCachedCreation, recordCreation } from "../db/repositories/idempotentCreations.js";
 import { addNotification } from "../db/repositories/notifications.js";
 import { publishNotificationLive } from "./notificationBus.js";
@@ -985,6 +986,10 @@ export interface CreateLeadActionInput {
   referredBy?: string;
   /** שם עובד/ת חופשי. בלי זה — המשתמש היוצר. */
   assignee?: string;
+  /** טופס הצ'אט בלבד (ר' CreateLeadInput): שם הפריט, ווצאפ שונה מהנייד / זהה לנייד. */
+  itemName?: string;
+  whatsapp?: string;
+  whatsappSameAsPhone?: boolean;
 }
 
 export interface CreateLeadResult {
@@ -1000,6 +1005,9 @@ export interface CreateLeadDeps {
   findUsersByName?: (query: string) => Promise<MondayUser[]>;
   getCachedCreation?: typeof getCachedCreation;
   recordCreation?: typeof recordCreation;
+  /** טופס הצ'אט: אפשרויות מקור/מוצר שנטענו מ-Monday. בלי זה — הרשימות הקשיחות (WhatsApp, ללא שינוי). */
+  sourceOptions?: readonly string[];
+  productOptions?: readonly string[];
 }
 
 /**
@@ -1020,11 +1028,13 @@ export async function createLeadAction(
   if (!firstName && !institutionName) {
     throw new Error("חסר שם לליד — שם איש קשר (firstName) או שם עמותה/קהילה/מוסד (institutionName)");
   }
-  if (input.source && !(LEAD_SOURCE_OPTIONS as readonly string[]).includes(input.source)) {
-    throw new Error(`"${input.source}" אינו מקור ליד חוקי. אפשרויות: ${LEAD_SOURCE_OPTIONS.join(", ")}`);
+  const sourceOptions: readonly string[] = deps.sourceOptions ?? LEAD_SOURCE_OPTIONS;
+  const productOptions: readonly string[] = deps.productOptions ?? LEAD_PRODUCT_OPTIONS;
+  if (input.source && !sourceOptions.includes(input.source)) {
+    throw new Error(`"${input.source}" אינו מקור ליד חוקי. אפשרויות: ${sourceOptions.join(", ")}`);
   }
-  if (input.product && !(LEAD_PRODUCT_OPTIONS as readonly string[]).includes(input.product)) {
-    throw new Error(`"${input.product}" אינו מוצר חוקי. אפשרויות: ${LEAD_PRODUCT_OPTIONS.join(", ")}`);
+  if (input.product && !productOptions.includes(input.product)) {
+    throw new Error(`"${input.product}" אינו מוצר חוקי. אפשרויות: ${productOptions.join(", ")}`);
   }
 
   const doCreateLead = deps.createLead ?? createLeadMonday;
@@ -1077,6 +1087,9 @@ export async function createLeadAction(
     product: input.product as CreateLeadInput["product"],
     referredBy: input.referredBy,
     assigneeId,
+    ...(input.itemName ? { itemName: input.itemName } : {}),
+    ...(input.whatsapp ? { whatsapp: input.whatsapp } : {}),
+    ...(input.whatsappSameAsPhone ? { whatsappSameAsPhone: true } : {}),
   });
 
   doRecordCreation(idKey, { itemId: created.id, itemName: created.name });
@@ -1167,6 +1180,23 @@ export async function findLeadAction(
   };
 }
 
+/** מה השתנה בליד ואמור להגיע לאיש הקשר (טלפון / מייל / שם = פרטי+משפחה). ריק אם לא השתנה דבר רלוונטי. */
+export function buildContactSyncFields(
+  lead: { contactFirstName?: string; contactLastName?: string; phone?: string; email?: string },
+  fields: UpdateLeadContactInput,
+): SyncFields {
+  const out: SyncFields = {};
+  if (fields.phone) out.phone = { old: lead.phone ?? null, new: fields.phone };
+  if (fields.email) out.email = { old: lead.email ?? null, new: fields.email };
+  if (fields.firstName !== undefined || fields.lastName !== undefined) {
+    const join = (a?: string, b?: string) => [a, b].filter(Boolean).join(" ").trim();
+    const oldName = join(lead.contactFirstName, lead.contactLastName);
+    const newName = join(fields.firstName ?? lead.contactFirstName, fields.lastName ?? lead.contactLastName);
+    if (newName && newName !== oldName) out.name = { old: oldName || null, new: newName };
+  }
+  return out;
+}
+
 export interface UpdateLeadContactActionInput {
   itemId: string;
   firstName?: string;
@@ -1187,6 +1217,8 @@ export interface UpdateLeadContactResult {
 export interface UpdateLeadContactDeps {
   getLeadRecordById?: (itemId: string) => Promise<LeadRecord | null>;
   updateLeadContactColumns?: (itemId: string, input: UpdateLeadContactInput) => Promise<(keyof UpdateLeadContactInput)[]>;
+  /** תור ההעברה ברקע לאיש הקשר המקושר (ops/leadContactSync.ts). best-effort — כשל בו לא מכשיל את עדכון הליד. */
+  enqueueContactSync?: typeof enqueueLeadContactSync;
 }
 
 /**
@@ -1222,11 +1254,31 @@ export async function updateLeadContactAction(
 
   const updatedFields = await doUpdate(itemId, fields);
 
+  // העתקה ברקע לאיש הקשר המקושר (אם קיים) — רק שדות שהשתנו, ורק אם באיש הקשר עדיין הערך הישן/ריק (לא דורסים עריכה
+  // ידנית). לא חוסם ולא מכשיל: הליד כבר עודכן.
+  const syncFields = buildContactSyncFields(lead, fields);
+  let queued = false;
+  if (Object.keys(syncFields).length > 0) {
+    try {
+      (deps.enqueueContactSync ?? enqueueLeadContactSync)({
+        idemKey: `update:${itemId}:${Date.now()}`,
+        leadItemId: itemId,
+        leadName: lead.name,
+        userKey: user.key,
+        source: "lead_update",
+        fields: syncFields,
+      });
+      queued = true;
+    } catch (err) {
+      logger.warn({ err, itemId }, "לא הצלחתי להכניס לתור את העתקת פרטי הקשר לאיש הקשר המקושר");
+    }
+  }
+
   return {
     ok: true,
     itemId,
     itemName: lead.name,
     updatedFields,
-    message: `פרטי הקשר של "${lead.name}" עודכנו (${updatedFields.join(", ")})`,
+    message: `פרטי הקשר של "${lead.name}" עודכנו (${updatedFields.join(", ")})${queued ? " — ויועתקו לאיש הקשר המקושר ברקע" : ""}`,
   };
 }

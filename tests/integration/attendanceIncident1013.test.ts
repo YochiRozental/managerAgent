@@ -49,6 +49,7 @@ import { runOpsChat, type ChatMessage } from "../../src/ops/chat.js";
 import type { RunModelFn } from "../../src/ai/agentLoop.js";
 import type { NormToolCall, RunModelParams } from "../../src/ai/providers/types.js";
 import { check, assert } from "../helpers/check.js";
+import { submitForm } from "../../src/ops/forms/service.js";
 
 const yochi = resolveUserByKey("yochi")!;
 const TEST_USERS = ["yochi"];
@@ -539,9 +540,12 @@ async function run() {
       _config: TEST_CONFIG,
       _attendanceEnabledForUser: alwaysOn,
     });
-    const rows = db.prepare(`SELECT * FROM commitments WHERE created_by=? AND to_whom=?`).all(yochi.key, "לקוח כלשהו") as unknown[];
-    check("5a. commitment אמיתי לצד שלישי *כן* נוצר (לא נפגע התפקוד התקין)", rows.length === 1, String(rows.length));
-    check("5b. actions (ה-toast) לא טוען 'נשלח' — מבהיר שזה יומן פנימי", result.actions.some((a) => a.includes("נשמר ביומן") || a.includes("לא נשלח")));
+    // טפסי יצירה (2026-11-02): record_commitment בצ'אט פותח טופס ממולא-מראש; ההתחייבות נוצרת רק בשליחתו.
+    const countRows = () => (db.prepare(`SELECT * FROM commitments WHERE created_by=? AND to_whom=?`).all(yochi.key, "לקוח כלשהו") as unknown[]).length;
+    check("5a0. record_commitment בצ'אט לא יוצר ישירות — נפתח טופס ממולא-מראש", countRows() === 0 && result.form?.kind === "commitment" && result.form.values.toWhom === "לקוח כלשהו", JSON.stringify(result.form));
+    const submitted = await submitForm(yochi, result.form!.id, { values: result.form!.values });
+    check("5a. commitment אמיתי לצד שלישי *כן* נוצר (לא נפגע התפקוד התקין)", countRows() === 1, String(countRows()));
+    check("5b. הודעת האישור לא טוענת 'נשלח' — מבהירה שזה יומן פנימי", submitted.confirmation.includes("לא נשלח לאף אחד"), submitted.confirmation);
   }
 
   cleanup();

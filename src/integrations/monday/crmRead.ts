@@ -4,6 +4,7 @@
  */
 
 import { mondayRequest } from "./client.js";
+import { leadSearchScore } from "./leads.js";
 
 const HOST = "https://gottlieb-league.monday.com";
 
@@ -62,7 +63,7 @@ async function pageAll(query: (cursor: string | null) => string): Promise<RawIte
 }
 
 // עמודות שנמשכות לכל שלושת הבורדים הראשיים (איחוד — לא כל אחת קיימת בכל בורד, וזה בסדר)
-const CV_IDS = `["multiple_person__1", "person", "color__1", "status", "date__1", "color1__1", "color5__1", "color04__1", "date8__1", "pulse_log__1", "creation_log__1", "link_to___________1", "lookup64__1", "formula_mkkr1egj", "board_relation_mkqpq309"]`;
+const CV_IDS = `["multiple_person__1", "person", "color__1", "status", "date__1", "color1__1", "color5__1", "color04__1", "date8__1", "pulse_log__1", "creation_log__1", "link_to___________1", "lookup64__1", "formula_mkkr1egj", "board_relation_mkqpq309", "text_mknr5f59", "text_mknrtghs", "text_mm6q8vxy"]`;
 
 function linkedIds(vals: RawCV[], id: string): string[] {
   return vals.find((c) => c.id === id)?.linked_item_ids ?? [];
@@ -323,9 +324,21 @@ export async function searchLeadsAndDeals(query: string): Promise<CrmMatch[]> {
     if (n.includes(q)) return 100;
     return words.reduce((s, w) => s + (n.includes(w) ? 1 : 0), 0);
   };
+  // ליד יכול להיקרא בשם פרויקט — מחפשים גם בשם איש הקשר ובשם המוסד (עמודות הליד), בדיוק כמו searchLeadRecords.
+  const leadScore = (it: RawItem): number =>
+    leadSearchScore(
+      {
+        name: it.name,
+        contactFirst: cv(it.column_values, "text_mknr5f59"),
+        contactLast: cv(it.column_values, "text_mknrtghs"),
+        institution: cv(it.column_values, "text_mm6q8vxy"),
+      },
+      q,
+      words,
+    );
 
   const scored: { it: RawItem; board: "לידים" | "עסקאות"; s: number }[] = [];
-  for (const it of leadItems) scored.push({ it, board: "לידים", s: score(it.name) });
+  for (const it of leadItems) scored.push({ it, board: "לידים", s: leadScore(it) });
   for (const it of dealItems) scored.push({ it, board: "עסקאות", s: score(it.name) });
 
   const exact = scored.filter((x) => x.s >= 100);

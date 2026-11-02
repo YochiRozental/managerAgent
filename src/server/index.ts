@@ -69,6 +69,7 @@ import { getOversightReport } from "../ops/oversight.js";
 import { startScheduler } from "../ops/scheduler.js";
 import { buildWeeklyReport } from "../ops/weeklyReport.js";
 import { mondayItemUrl, type OpsTaskSource } from "../integrations/monday/opsRead.js";
+import { handleFormsRequest, isFormsPath } from "./formsApi.js";
 import { logger } from "../utils/logger.js";
 import { REQUIRE_ACCESS_LINK } from "./accessLink.js";
 import { handleRoot, isSecureRequest, renewalCookie } from "./authFlow.js";
@@ -228,6 +229,18 @@ const server = createServer(async (req, res) => {
       return send(res, result.status, result.body);
     }
 
+    // טפסי יצירה בצ'אט — כל ההרשאות והלוגיקה ב-formsApi.ts / ops/forms/; כאן רק ניתוב.
+    if (isFormsPath(path)) {
+      const result = await handleFormsRequest({
+        method: req.method ?? "GET",
+        path,
+        query: url.searchParams,
+        readBody: () => readJsonBody(req),
+        user: currentUser(req),
+      });
+      return send(res, result.status, result.body);
+    }
+
     if (req.method === "GET" && path === "/api/dashboard") {
       const user = currentUser(req);
       if (!user) return send(res, 401, { error: "לא מחובר" });
@@ -301,7 +314,7 @@ const server = createServer(async (req, res) => {
           if (r.actions.length) {
             logger.info({ user: user.key, actions: r.actions }, "עדכוני משימה מהצ'אט");
           }
-          appendChatTurn(user.key, session, lastUserMessage, r.reply, r.actions);
+          appendChatTurn(user.key, session, lastUserMessage, r.reply, r.actions, r.form?.id);
           return { ...r, session };
         });
         const serverTotalMs = performance.now() - serverStart;

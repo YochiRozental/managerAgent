@@ -536,3 +536,47 @@ CREATE TABLE IF NOT EXISTS task_timer_sync (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_timer_sync_status ON task_timer_sync (status, next_attempt_at);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- טפסי יצירה בצ'אט (2026-11-02) — בקשת טופס אחת = שורה אחת. ה-id הוא מפתח ה-idempotency של היצירה
+-- (לא תוכן הפריט): לחיצה כפולה / retry על אותו טופס לא יוצרים כפילות, ושני טפסים נפרדים עם תוכן זהה
+-- כן יוצרים שני פריטים. status: open → submitting → submitted | cancelled (כשל חוזר ל-open עם last_error).
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS form_requests (
+  id TEXT PRIMARY KEY,
+  user_key TEXT NOT NULL,
+  session_id TEXT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  prefill_json TEXT NOT NULL,
+  result_json TEXT,
+  last_error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,   -- כמה פעמים נתפס ל-submitting (>1 = ייתכן שניסיון קודם כבר יצר את הפריט)
+  first_attempt_ms INTEGER,              -- תחילת הניסיון הראשון — חלון החיפוש של פריט שנוצר ב-Monday ללא אישור
+  checkpoint_json TEXT,                  -- הפריט שנוצר (itemId וכו') + שלבי המשך שהושלמו; נכתב מיד אחרי יצירה
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_form_requests_user ON form_requests (user_key, status);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- סנכרון פרטי קשר מליד לאיש הקשר המקושר (2026-11-02). אוטומציית Monday יוצרת ומקשרת את איש הקשר בצורה
+-- אסינכרונית ואינה מעבירה ווצאפ, ועדכון פרטי קשר בליד לא מגיע אליו. התור כאן משלים זאת ברקע (retry עם
+-- backoff, שורד ריסטרט) — אך ורק על איש הקשר שכבר מקושר לליד; לעולם לא יוצר איש קשר. idem_key ייחודי = אין כפילות.
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lead_contact_sync (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  idem_key TEXT NOT NULL UNIQUE,
+  lead_item_id TEXT NOT NULL,
+  lead_name TEXT,
+  user_key TEXT,
+  source TEXT NOT NULL,                  -- form_create | lead_update
+  fields_json TEXT NOT NULL,             -- {whatsapp?:{old,new}, phone?:…, email?:…, name?:…}
+  status TEXT NOT NULL DEFAULT 'pending',-- pending | done | gave_up
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_ms INTEGER NOT NULL,
+  last_result TEXT,
+  created_ms INTEGER NOT NULL,
+  updated_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lead_contact_sync_due ON lead_contact_sync (status, next_attempt_ms);

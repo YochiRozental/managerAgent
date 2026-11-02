@@ -26,6 +26,10 @@ db.exec(schema);
 // מיגרציות קלות למסדי נתונים קיימים (ALTER ... IF NOT EXISTS לא נתמך ב-sqlite)
 for (const stmt of [
   "ALTER TABLE chat_messages ADD COLUMN session_id TEXT",
+  "ALTER TABLE chat_messages ADD COLUMN form_id TEXT",
+  "ALTER TABLE form_requests ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE form_requests ADD COLUMN first_attempt_ms INTEGER",
+  "ALTER TABLE form_requests ADD COLUMN checkpoint_json TEXT",
   "ALTER TABLE notifications ADD COLUMN item_id TEXT",
   "ALTER TABLE notifications ADD COLUMN item_source TEXT",
   "ALTER TABLE notifications ADD COLUMN context_json TEXT",

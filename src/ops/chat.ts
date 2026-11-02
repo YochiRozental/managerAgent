@@ -97,7 +97,24 @@ import {
   type OutreachContext,
 } from "./teamOutreach.js";
 
+import { buildFormTools } from "./forms/chatTools.js";
+import type { FormPayload } from "./forms/types.js";
+
 const MAX_TURNS = 7;
+
+/**
+ * טפסי יצירה (2026-11-02): בחלונית כלי היצירה פותחים טופס בשיחה במקום ליצור ישירות (ops/forms/). הבלוק נוסף
+ * לחלק המשתנה של ה-system prompt רק כשיש לפחות כלי טופס פעיל, ומבטל במפורש את הכללים הישנים של
+ * "שאל לפני שתקרא לכלי" — הטופס הוא שאוסף את הפרטים החסרים.
+ */
+function formsPromptBlock(toolNames: string[]): string {
+  return (
+    `טפסי יצירה: בחלונית, הכלים ${toolNames.join(" / ")} אינם יוצרים פריט ישירות — ` +
+    "הם פותחים למשתמש טופס בשיחה. קרא להם מיד עם מה שכבר נאמר, גם בלי שם משימה או בלי פרטים נוספים ובלי לשאול על שדות חסרים " +
+    '(כללי "שאל קודם / אל תקרא בלי taskName / ברר taskKind" לא חלים עליהם — הטופס אוסף את זה). אחרי הקריאה: משפט אחד. ' +
+    "אסור לטעון שנוצר/נשמר פריט עד שמופיעה בשיחה הודעת אישור מהמערכת על יצירה."
+  );
+}
 
 /**
  * Step 3F.6 (2026-10-07) — כל תשעת ה-ToolDefinition האלה נבנים עכשיו דרך buildSharedToolDefinition
@@ -414,6 +431,8 @@ export interface OpsChatPerf {
 
 export interface OpsChatResult {
   reply: string;
+  /** טופס יצירה שנפתח בסבב הזה (ממולא-מראש) — ה-UI מרנדר אותו בשיחה; נשמר בהיסטוריה לפי form.id */
+  form?: FormPayload;
   /** תיאור קצר של כל עדכון שבוצע ב-Monday בסבב הזה — לרענון הרשימה ולתצוגה */
   actions: string[];
   /**
@@ -1348,6 +1367,9 @@ export async function runOpsChat(
     return tasksPromise;
   }
   const actions: string[] = [];
+  // טופס יצירה שנפתח בסבב הזה (טופס אחד לכל הודעה) — ר' ops/forms/chatTools.ts.
+  const formState: { form: FormPayload | null } = { form: null };
+  let formsPromptLine = "";
   // התדריך של "בוקר טוב" מוגש מילה במילה — מודלים נוטים לקצר/לנסח מחדש, וכאן חשוב שהמבנה
   // (פרויקט → 'עכשיו:') יישאר בדיוק כמו שבנינו אותו.
   let capturedBriefing: string | null = null;
@@ -1634,7 +1656,23 @@ export async function runOpsChat(
   // לא עוד 5 אלמנטים בלתי-מותנים בתוך ה-literal array למעלה + 4 if-ים מפוזרים בגוף הפונקציה (היה
   // קודם, ר' git history). ה-policy (always/gated) מוצהרת אחת, גלויה, במקום אחד — לא נגזרת מצורת
   // הקוד. סדר הכלים בתוך tools[] לא משפיע על שום דבר (המודל בוחר לפי name, לא לפי מיקום).
-  tools.push(...filterSharedToolsForUser(WEB_SHARED_TOOL_VISIBILITY, user));
+  const sharedVisible = filterSharedToolsForUser(WEB_SHARED_TOOL_VISIBILITY, user);
+  // טפסי יצירה (2026-11-02): כלי היצירה בחלונית פותחים טופס. נחשפים באותם תנאי הרשאה כמו הכלי המשותף שהם
+  // מחליפים (record_commitment — לכולם, כמו קודם). הכלים המשותפים של WhatsApp לא משתנים.
+  const formTools = buildFormTools({
+    user,
+    sessionId: opts.session ?? null,
+    seed: opts.clientMessageId,
+    state: formState,
+  }).filter(
+    (t) =>
+      t.name === "record_commitment" ||
+      sharedVisible.some((s) => s.name === t.name),
+  );
+  const formToolNames = new Set<string>(formTools.map((t) => t.name));
+  for (let i = tools.length - 1; i >= 0; i--) if (formToolNames.has(tools[i]!.name)) tools.splice(i, 1);
+  tools.push(...sharedVisible.filter((t) => !formToolNames.has(t.name)), ...formTools);
+  if (formTools.length > 0) formsPromptLine = formsPromptBlock(formTools.map((t) => t.name));
 
   // מודול נוכחות (שלב ג) — שער נפרד מ-WEB_SHARED_TOOL_VISIBILITY בכוונה: attendanceEnabledForUser
   // כולל Feature Flag+pilot allowlist, לא רק הרשאה (filterSharedToolsForUser בודק permission בלבד
@@ -2109,14 +2147,15 @@ export async function runOpsChat(
     capturedOutreachText = null;
     outreachTurn.prepared = false;
     const cacheSplit = promptCachingEnabled ? buildPromptCachingSplitFor(user, opts.about) : null;
+    const extraSuffix = [volatileExtraSuffix, formsPromptLine].filter(Boolean).join("\n");
     return {
-      system: volatileExtraSuffix ? `${systemPrompt(user, opts.about)}\n${volatileExtraSuffix}` : systemPrompt(user, opts.about),
+      system: extraSuffix ? `${systemPrompt(user, opts.about)}\n${extraSuffix}` : systemPrompt(user, opts.about),
       // Prompt Caching — ר' promptCachingEnabled למעלה. כש-הדגל כבוי השדה הזה undefined,
       // ו-agentLoop/anthropic.ts מתנהגים בדיוק כקודם.
       ...(cacheSplit
         ? {
-            promptCaching: volatileExtraSuffix
-              ? { ...cacheSplit, volatileSystemSuffix: `${cacheSplit.volatileSystemSuffix}\n${volatileExtraSuffix}` }
+            promptCaching: extraSuffix
+              ? { ...cacheSplit, volatileSystemSuffix: `${cacheSplit.volatileSystemSuffix}\n${extraSuffix}` }
               : cacheSplit,
           }
         : {}),
@@ -2204,6 +2243,10 @@ export async function runOpsChat(
         toolCallRecords.push({ name, durationMs, ok });
       },
       finalizeText: (modelText: string) => {
+        // טופס יצירה נפתח: הטקסט קבוע ולא של המודל — המודל לא יכול לטעון שנוצר פריט (הוא עוד לא נוצר).
+        if (formState.form) {
+          return `📝 פתחתי טופס: ${formState.form.title}. מלא/י את הפרטים ולחץ/י "${formState.form.submitLabel}" — עד אז לא נוצר כלום.`;
+        }
         if (capturedBulkText) return capturedBulkText;
         // מדידת זמן: הטקסט המוכן של כלי הטיימר (הפעלה/עצירה/שאלת החלפה/דוח) מוגש כלשונו, לא ניסוח המודל.
         if (timerTexts.length > 0) return timerTexts.join("\n\n");
@@ -2301,6 +2344,7 @@ export async function runOpsChat(
   return {
     reply: attendanceBanner ? `${attendanceBanner}\n\n${finalText}` : finalText,
     actions,
+    ...(formState.form ? { form: formState.form } : {}),
     perf: {
       aiTimeMs: perfAiTimeMs,
       aiCallCount: perfAiCallCount,

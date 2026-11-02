@@ -57,6 +57,7 @@ const SAFE_TESTS = [
   "tests/unit/bulkQuery.test.ts",
   "tests/unit/setItemStatus.test.ts",
   "tests/unit/goldiAccess.test.ts",
+  "tests/unit/formsDefinitions.test.ts",
   // integration — DB זמני מבודד בלבד
   "tests/integration/loop.test.ts",
   "tests/integration/approvals.test.ts",
@@ -110,6 +111,10 @@ const SAFE_TESTS = [
   "tests/integration/teamOutreachChat.test.ts",
   "tests/integration/agentReplyUpdates.test.ts",
   "tests/integration/sessionLink.test.ts",
+  "tests/integration/forms.test.ts",
+  "tests/integration/leadItemName.test.ts",
+  "tests/integration/leadContactSync.test.ts",
+  "tests/integration/formDedup.test.ts",
   // regression — הוכחה שהתנהגות קיימת לא השתנתה (מודל מוזרק, בלי קריאות AI)
   "tests/regression/centralCore.test.ts",
   "tests/regression/teamMessagesUpgrade.test.ts",

@@ -31,6 +31,7 @@ import { buildWeeklyReport } from "./weeklyReport.js";
 import { startAttendanceReminderSchedule } from "./attendanceReminderScheduler.js";
 import { startAttendanceMondaySyncSchedule } from "./attendanceMondaySyncScheduler.js";
 import { startTaskTimerSweepSchedule, startTaskTimerMondaySyncSchedule } from "./taskTimerScheduler.js";
+import { startLeadContactSyncSchedule } from "./leadContactSyncScheduler.js";
 
 const BACKUP_HOUR = Number(process.env.BACKUP_HOUR ?? 6);
 const DAILY_HOUR = Number(process.env.CONTROL_SCAN_HOUR ?? 7);
@@ -258,4 +259,6 @@ export function startScheduler(): void {
   startTaskTimerSweepSchedule();
   // כבוי בפועל כש-TASK_TIMER_MONDAY_SYNC_ENABLED=false (בודק את עצמו) — אפס קריאה ל-Monday.
   startTaskTimerMondaySyncSchedule();
+  // השלמת פרטי קשר (ווצאפ / עדכוני ליד) על איש הקשר המקושר — תור SQLite; בלי משימות פתוחות אין שום קריאה ל-Monday.
+  startLeadContactSyncSchedule();
 }

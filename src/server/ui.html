@@ -146,6 +146,31 @@ a{color:var(--color-link)}
 .chip{font:inherit;font-size:var(--font-size-sm);padding:7px 14px;border:1px solid var(--color-border-input);background:var(--color-surface);color:var(--color-text-secondary);border-radius:999px;cursor:pointer}
 .chip:hover{border-color:var(--color-link);color:var(--color-link)}
 
+/* ===== טפסי יצירה בצ'אט ===== */
+.form-card{width:100%;max-width:560px;border:1px solid var(--color-border);background:var(--color-surface);border-radius:var(--radius-lg);padding:16px;display:flex;flex-direction:column;gap:14px}
+.form-card--closed{background:var(--color-surface-muted);color:var(--color-text-muted);padding:10px 14px;font-size:var(--font-size-sm)}
+.form-card--done{padding:0;border:0;background:none}
+.form-card__form{display:flex;flex-direction:column;gap:14px}
+.form-card__title{margin:0;font-size:15px;font-weight:600}
+.form-card__legend{font-size:var(--font-size-xs);color:var(--color-text-muted)}
+.ff{display:flex;flex-direction:column;gap:6px}
+.ff[hidden]{display:none}
+.ff__top{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.ff__label{font-size:var(--font-size-sm);font-weight:500}
+.ff__req{color:var(--error-icon);margin-inline-start:3px}
+.ff__none{display:inline-flex;align-items:center;gap:6px;font-size:var(--font-size-xs);color:var(--color-text-secondary);cursor:pointer}
+.ff__input{width:100%;min-height:var(--touch-target);padding:8px 12px;border:1px solid var(--color-border-input);border-radius:var(--radius-md);background:var(--color-bg);color:var(--color-text);font:inherit}
+.ff__input:focus-visible{outline:2px solid var(--color-link);outline-offset:1px}
+.ff__input:disabled{opacity:.55}
+.ff--invalid .ff__input{border-color:var(--error-icon)}
+.ff__err{font-size:var(--font-size-xs);color:var(--error-title)}
+.ff__hint{font-size:var(--font-size-xs);color:var(--color-text-muted)}
+.form-card__actions{display:flex;gap:8px;flex-wrap:wrap}
+.form-btn{min-height:var(--touch-target);padding:0 18px;border-radius:var(--radius-md);border:1px solid var(--color-border-input);background:var(--color-surface);cursor:pointer;font:inherit}
+.form-btn--primary{background:var(--color-primary);color:var(--color-on-primary);border-color:var(--color-primary);font-weight:600}
+.form-btn:disabled{opacity:.6;cursor:default}
+@media (max-width:768px){.form-card{max-width:100%;padding:14px}.form-card__actions .form-btn{flex:1}}
+
 /* ===== Notice: info / success / error ===== */
 .notice{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:var(--radius-lg);border:1px solid}
 .notice__icon{flex:none;margin-top:2px;display:flex}
@@ -797,7 +822,7 @@ async function loadSession(id) {
   try {
     const { messages, teamUpdates } = await api("/api/chat/session?id=" + encodeURIComponent(id));
     state.session = id;
-    state.thread = messages.map(m => ({ role: m.role, content: m.content, actions: m.actions || [] }));
+    state.thread = messages.map(m => ({ role: m.role, content: m.content, actions: m.actions || [], form: m.form || undefined }));
     mergeAgentUpdates(id, messages, teamUpdates || [], true);
   } catch { state.thread = []; }
 }
@@ -1552,7 +1577,7 @@ async function startApp() {
   teamBoot(); // הודעות צוות: רשימות + מונה לא-נקראות (גם לפני שהלשונית נפתחת)
 }
 
-const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה", attendance_reminder:"⏰ תזכורת נוכחות" };
+const NT_HEAD = { reminder:"תזכורת מהבקרה", escalation:"הסלמה", briefing:"תדריך הבוקר", eod_summary:"📋 סיכום סוף יום", weekly:"דוח שבועי", approval_request:"נדרש אישור", manager_decision:"תשובה ממוטי", awaiting_decision:"ממתין להחלטתך", task_assigned:"🆕 משימה חדשה", lead_contact_sync:"📇 איש קשר מקושר", attendance_reminder:"⏰ תזכורת נוכחות" };
 /** true ⇔ יש להתראה הזו ממצא בקרה אמיתי מאחוריה (findingKey) — רק אז "טיפול בשיחה" עובר דרך
  *  about. itemId *לא* נדרש כאן יותר (audit "אובדן הקשר בטיפול בשיחה", 2026-10-19): ממצאי
  *  התחייבות (commitment_overdue) נושאים findingKey תקין בלי שום itemId — אין להם פריט Monday
@@ -1793,7 +1818,322 @@ function userBubble(text) {
   $("#chat").appendChild(b);
   return b;
 }
-function agentTurn(text, actions) {
+/* ---------- טפסי יצירה בצ'אט ----------
+   הכרטיס מרנדר את FormPayload שהשרת שלח (שדות/חובה/ערכים מוגדרים בשרת, ops/forms/definitions.ts) — אין כאן
+   לוגיקה פר-סוג-פריט. השרת הוא הסמכות לולידציה והרשאות; כאן רק בדיקת חובה מהירה למשוב. טיוטה (עריכות שלא
+   נשלחו) נשמרת ב-localStorage לפי מזהה הטופס כדי לשרוד רענון. */
+let pendingFormFocus = null;
+const FORM_OPTIONS_TTL = 5 * 60 * 1000;
+const FORM_DATALIST_THRESHOLD = 40;
+const formOptionsCache = new Map();
+function formOptions(source, project) {
+  const key = source + "|" + (project || "");
+  const hit = formOptionsCache.get(key);
+  if (hit && Date.now() - hit.at < FORM_OPTIONS_TTL) return hit.p;
+  const p = api(`/api/forms/options?source=${encodeURIComponent(source)}&project=${encodeURIComponent(project || "")}`)
+    .then(r => { if (r.options === null) formOptionsCache.delete(key); return r.options; })
+    .catch(() => { formOptionsCache.delete(key); return null; });
+  formOptionsCache.set(key, { at: Date.now(), p });
+  return p;
+}
+function loadFormDraft(id) { try { const t = localStorage.getItem("formdraft:" + id); return t ? JSON.parse(t) : null; } catch { return null; } }
+function saveFormDraft(id, d) { try { localStorage.setItem("formdraft:" + id, JSON.stringify(d)); } catch {} }
+function clearFormDraft(id) { try { localStorage.removeItem("formdraft:" + id); } catch {} }
+async function formPost(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) sessionLost();
+  return { ok: r.ok, status: r.status, data };
+}
+function syncThreadForm(form) {
+  const t = state.thread.find(m => m.form && m.form.id === form.id);
+  if (t) t.form = form;
+}
+function formConfirmed(text) {
+  if (!text) return;
+  agentTurn(text, []);
+  state.thread.push({ role: "assistant", content: text, actions: [] });
+  scrollDown();
+}
+
+function renderFormCard(initial, opts) {
+  opts = opts || {};
+  const card = el("section", "form-card");
+  card.setAttribute("aria-label", initial.title);
+  let form = initial;
+  let busy = false;
+  const draft = initial.status === "open" ? loadFormDraft(initial.id) : null;
+  const vals = Object.assign({}, initial.values, draft && draft.values);
+  const none = Object.assign({}, initial.none, draft && draft.none);
+  let rows = {};
+  let errBox = null, submitBtn = null, cancelBtn = null;
+
+  const fieldVisible = f => !f.showWhen || f.showWhen.in.includes(vals[f.showWhen.field] || "");
+  const persist = () => saveFormDraft(form.id, { values: vals, none });
+
+  function paint() {
+    card.textContent = "";
+    rows = {};
+    if (form.status === "submitted") return paintDone();
+    if (form.status === "cancelled") return paintClosed();
+    paintOpen();
+  }
+
+  function paintClosed() {
+    card.className = "form-card form-card--closed";
+    card.textContent = "הטופס \"" + form.title + "\" בוטל — לא נוצר דבר.";
+  }
+
+  function paintDone() {
+    card.className = "form-card form-card--done";
+    const r = form.result || { message: "נוצר" };
+    const wrap = el("div", "notice notice--success"); wrap.setAttribute("role", "status");
+    const body = el("div", "notice__body");
+    body.appendChild(el("strong", "notice__title", "נוצר ✓ " + form.title));
+    body.appendChild(el("span", "notice__text", r.message));
+    if (r.url && /^https:\/\//.test(r.url)) {
+      const a = el("a", "", "פתח ב-Monday"); a.href = r.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      body.appendChild(a);
+    }
+    for (const n of (r.notes || [])) body.appendChild(el("span", "notice__text", "ℹ️ " + n));
+    for (const w of (r.warnings || [])) body.appendChild(el("span", "notice__text", "⚠️ " + w));
+    wrap.appendChild(body);
+    card.appendChild(wrap);
+  }
+
+  function showError(msg) {
+    if (!errBox) return;
+    errBox.textContent = msg || "";
+    errBox.hidden = !msg;
+  }
+  function showFieldErrors(errs) {
+    for (const [name, msg] of Object.entries(errs || {})) {
+      const r = rows[name];
+      if (!r) continue;
+      r.row.classList.add("ff--invalid");
+      r.err.textContent = msg;
+    }
+  }
+  function clearFieldErrors() {
+    for (const r of Object.values(rows)) { r.row.classList.remove("ff--invalid"); r.err.textContent = ""; }
+    showError("");
+  }
+  function setBusy(b) {
+    busy = b;
+    if (submitBtn) { submitBtn.disabled = b; submitBtn.textContent = b ? "יוצר…" : form.submitLabel; }
+    if (cancelBtn) cancelBtn.disabled = b;
+  }
+
+  function refreshVisibility() {
+    for (const f of form.fields) {
+      const r = rows[f.name];
+      if (r) r.row.hidden = !fieldVisible(f);
+    }
+  }
+
+  function setInputValue(r, v) {
+    r.input.value = v || "";
+  }
+
+  function swapInput(r, node) {
+    node.id = r.input.id; node.name = r.def.name;
+    if (r.def.required) node.setAttribute("aria-required", "true");
+    r.input.replaceWith(node); r.input = node;
+    bindInput(r, node);
+  }
+
+  async function fillSelect(r) {
+    const f = r.def;
+    let list;
+    if (f.options) list = f.options.map(o => ({ value: o.value, label: o.label }));
+    else if (f.dependsOn && !vals[f.dependsOn]) list = [];
+    else {
+      r.input.disabled = true;
+      const got = await formOptions(f.optionsSource, f.dependsOn ? vals[f.dependsOn] : "");
+      list = got === null ? null : got.map(v => ({ value: v, label: v }));
+    }
+    if (r.dl) { r.dl.remove(); r.dl = null; }
+    r.hint.textContent = f.hint || "";
+    if (list === null || list.length > FORM_DATALIST_THRESHOLD) {
+      // אין רשימה (כשל טעינה) או רשימה ארוכה: שדה עם השלמה; השרת מאמת חברוּת ברשימה בשליחה.
+      const inp = el("input", "ff__input");
+      inp.type = "text"; inp.autocomplete = "off";
+      if (list) {
+        const dl = el("datalist"); dl.id = r.input.id + "-dl";
+        for (const o of list) { const op = el("option"); op.value = o.value; dl.appendChild(op); }
+        inp.setAttribute("list", dl.id);
+        r.row.appendChild(dl); r.dl = dl;
+      }
+      swapInput(r, inp);
+      inp.value = vals[f.name] || "";
+      inp.disabled = !!none[f.name];
+      if (list === null) r.hint.textContent = "לא הצלחתי לטעון את הרשימה — אפשר להקליד ידנית.";
+      return;
+    }
+    let sel = r.input;
+    if (sel.tagName !== "SELECT") { sel = el("select", "ff__input"); swapInput(r, sel); }
+    sel.textContent = "";
+    const empty = el("option", "", f.emptyLabel || (f.required ? "בחר/י…" : "ללא"));
+    empty.value = "";
+    sel.appendChild(empty);
+    for (const o of list) { const op = el("option", "", o.label); op.value = o.value; sel.appendChild(op); }
+    sel.disabled = !!none[f.name];
+    const cur = vals[f.name];
+    if (cur && list.some(o => o.value === cur)) sel.value = cur;
+    else if (cur) {
+      r.hint.textContent = "\"" + cur + "\" לא נמצא ברשימה — בחר/י מהרשימה.";
+      delete vals[f.name]; persist();
+    }
+  }
+
+  function bindInput(r, input) {
+    const f = r.def;
+    const onChange = () => {
+      vals[f.name] = input.value.trim();
+      if (!vals[f.name]) delete vals[f.name];
+      persist();
+      refreshVisibility();
+      for (const g of form.fields) {
+        if (g.dependsOn === f.name && rows[g.name]) { delete vals[g.name]; rows[g.name].hint.textContent = ""; fillSelect(rows[g.name]); }
+      }
+    };
+    input.addEventListener("input", onChange);
+    input.addEventListener("change", onChange);
+  }
+
+  function paintOpen() {
+    card.className = "form-card";
+    const formEl = el("form", "form-card__form"); formEl.noValidate = true;
+    formEl.appendChild(el("h3", "form-card__title", form.title));
+    if (form.fields.some(f => f.required)) formEl.appendChild(el("div", "form-card__legend", "* שדה חובה"));
+
+    for (const f of form.fields) {
+      const row = el("div", "ff");
+      const id = "ff-" + form.id + "-" + f.name;
+      const top = el("div", "ff__top");
+      const label = el("label", "ff__label", f.label); label.htmlFor = id;
+      if (f.required) { const s = el("span", "ff__req", "*"); s.setAttribute("aria-hidden", "true"); label.appendChild(s); }
+      top.appendChild(label);
+      let input;
+      if (f.type === "select") input = el("select", "ff__input");
+      else if (f.type === "textarea") { input = el("textarea", "ff__input"); input.rows = 3; }
+      else {
+        input = el("input", "ff__input");
+        input.type = f.type === "tel" ? "tel" : f.type === "email" ? "email" : f.type === "date" ? "date" : "text";
+        if (f.type === "tel" || f.type === "email") { input.dir = "ltr"; input.style.textAlign = "right"; input.inputMode = f.type === "tel" ? "tel" : "email"; }
+        if (f.placeholder) input.placeholder = f.placeholder;
+      }
+      input.id = id; input.name = f.name;
+      if (f.required) input.setAttribute("aria-required", "true");
+      const hint = el("div", "ff__hint", f.hint || "");
+      const err = el("div", "ff__err"); err.setAttribute("role", "alert");
+      const r = { def: f, row, input, hint, err };
+      rows[f.name] = r;
+
+      if (f.allowNone) {
+        const lab = el("label", "ff__none");
+        const cb = el("input"); cb.type = "checkbox"; cb.checked = !!none[f.name];
+        cb.addEventListener("change", () => {
+          none[f.name] = cb.checked;
+          if (cb.checked) { delete vals[f.name]; r.input.value = ""; }
+          r.input.disabled = cb.checked;
+          persist();
+        });
+        lab.append(cb, document.createTextNode("אין"));
+        top.appendChild(lab);
+        if (none[f.name]) input.disabled = true;
+      }
+      row.append(top, input, hint, err);
+      formEl.appendChild(row);
+
+      if (f.type === "select") { fillSelect(r); bindInput(r, input); }
+      else { bindInput(r, input); if (vals[f.name]) input.value = vals[f.name]; }
+    }
+    // ברירות מחדל (למשל scope=general) — ממלא ערך שעוד לא נקבע
+    for (const f of form.fields) if (f.defaultValue && vals[f.name] === undefined && f.type === "select" && f.options) { vals[f.name] = f.defaultValue; rows[f.name].input.value = f.defaultValue; }
+    refreshVisibility();
+
+    errBox = el("div", "notice notice--error"); errBox.setAttribute("role", "alert"); errBox.hidden = true;
+    if (form.error) { errBox.textContent = form.error; errBox.hidden = false; }
+    formEl.appendChild(errBox);
+
+    const actions = el("div", "form-card__actions");
+    submitBtn = el("button", "form-btn form-btn--primary", form.submitLabel); submitBtn.type = "submit";
+    cancelBtn = el("button", "form-btn", "ביטול"); cancelBtn.type = "button";
+    actions.append(submitBtn, cancelBtn);
+    formEl.appendChild(actions);
+
+    formEl.addEventListener("submit", e => { e.preventDefault(); submit(); });
+    cancelBtn.addEventListener("click", cancel);
+    card.appendChild(formEl);
+  }
+
+  function clientMissing() {
+    const miss = {};
+    for (const f of form.fields) {
+      if (!f.required || !fieldVisible(f) || none[f.name]) continue;
+      if (!(vals[f.name] || "").trim()) miss[f.name] = "שדה חובה";
+    }
+    return miss;
+  }
+
+  async function submit() {
+    if (busy) return;
+    clearFieldErrors();
+    const miss = clientMissing();
+    if (Object.keys(miss).length) {
+      showFieldErrors(miss);
+      showError("יש למלא את שדות החובה.");
+      const first = rows[Object.keys(miss)[0]];
+      if (first) first.input.focus();
+      return;
+    }
+    setBusy(true);
+    try {
+      const values = {};
+      for (const f of form.fields) if (fieldVisible(f) && vals[f.name] && !none[f.name]) values[f.name] = vals[f.name];
+      const { ok, data } = await formPost("/api/forms/submit", { id: form.id, values, none });
+      if (ok) {
+        form = data.form; clearFormDraft(form.id); syncThreadForm(form); paint();
+        if (!data.alreadySubmitted) formConfirmed(data.confirmation);
+        return;
+      }
+      if (data.form) { form = Object.assign({}, form, { status: data.form.status, result: data.form.result }); if (form.status !== "open") { syncThreadForm(form); paint(); return; } }
+      showFieldErrors(data.fieldErrors);
+      showError(data.error || "היצירה נכשלה");
+    } catch {
+      // לא התקבלה תשובה — ייתכן שהיצירה כן הצליחה. מאמתים מול השרת לפני שמאפשרים שליחה חוזרת.
+      try {
+        const r = await api("/api/forms/get?id=" + encodeURIComponent(form.id));
+        if (r.form && r.form.status === "submitted") { form = r.form; clearFormDraft(form.id); syncThreadForm(form); paint(); return; }
+      } catch {}
+      showError("לא התקבל אישור מהשרת. לפני שליחה חוזרת כדאי לבדוק ב-Monday אם הפריט נוצר.");
+    } finally {
+      if (form.status === "open") setBusy(false);
+    }
+  }
+
+  async function cancel() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { ok, data } = await formPost("/api/forms/cancel", { id: form.id });
+      if (ok) { form = data.form; clearFormDraft(form.id); syncThreadForm(form); paint(); return; }
+      showError(data.error || "הביטול נכשל");
+    } catch { showError("הביטול נכשל — נסה/י שוב."); }
+    finally { if (form.status === "open") setBusy(false); }
+  }
+
+  paint();
+  if (opts.autofocus && form.status === "open") {
+    const first = form.fields.find(f => f.required && !vals[f.name] && fieldVisible(f)) || form.fields[0];
+    // sendMessage מחזיר את הפוקוס לתיבת ההודעה בסיומו — לכן רושמים כאן במקום למקד מיד.
+    if (rows[first.name]) pendingFormFocus = rows[first.name].input;
+  }
+  return card;
+}
+
+function agentTurn(text, actions, form, formOpts) {
   const art = el("article", "msg-agent");
   const avatar = el("span", "msg-agent__avatar", "M"); avatar.setAttribute("aria-hidden", "true");
   art.appendChild(avatar);
@@ -1806,6 +2146,7 @@ function agentTurn(text, actions) {
   const p = el("div", "msg-agent__text");
   p.innerHTML = renderMarkdown(text);
   body.appendChild(p);
+  if (form) body.appendChild(renderFormCard(form, formOpts));
   art.appendChild(body);
   $("#chat").appendChild(art);
   return art;
@@ -1837,7 +2178,7 @@ function renderChat() {
   state.thread.forEach((m, i) => {
     flushUpdates(i);
     if (m.role === "user") userBubble(m.content);
-    else agentTurn(m.content, m.actions);
+    else agentTurn(m.content, m.actions, m.form);
   });
   flushUpdates(Infinity);
   // הפנייה שהמשתמש בחר במפורש לטפל בה (מתוך "התראות") — היחידה שמוצגת כהודעת-מערכת בשיחה.
@@ -1912,12 +2253,12 @@ async function sendMessage(text) {
       catch (e) { lastErr = e; }
     }
     if (!data) throw lastErr;
-    const { reply, actions, session, requestId } = data;
+    const { reply, actions, session, requestId, form } = data;
     state.session = session;
     typing.remove();
-    agentTurn(reply, actions || []);
+    agentTurn(reply, actions || [], form, { autofocus: true });
     const isFirstMessage = state.thread.length === 1;
-    state.thread.push({ role: "assistant", content: reply, actions: actions || [] });
+    state.thread.push({ role: "assistant", content: reply, actions: actions || [], form: form || undefined });
     if (isFirstMessage) setTopbarTitle(text.length > 40 ? text.slice(0, 40) + "…" : text);
     refreshHistorySidebar();
     // דיווח ביצועים — fire-and-forget, אחרי שהתשובה כבר על המסך; כשל בדיווח לא אמור להפריע למשתמש.
@@ -1947,7 +2288,8 @@ async function sendMessage(text) {
   } finally {
     state.busy = false;
     $("#send").disabled = false;
-    $("#input").focus();
+    if (pendingFormFocus && document.contains(pendingFormFocus)) { try { pendingFormFocus.focus(); } catch {} } else $("#input").focus();
+    pendingFormFocus = null;
     scrollDown();
     if (state.updatesDirty) { state.updatesDirty = false; refreshUpdatesView(); } // עדכון צוות שהגיע באמצע השליחה
   }

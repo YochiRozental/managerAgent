@@ -11,6 +11,9 @@
 import { getSessionMessages, type ChatRow } from "../db/repositories/chatHistory.js";
 import { listRepliesForSession } from "../db/repositories/agentOutreach.js";
 import { getTeamMemberByKey } from "../identity/directory.js";
+import { getForm } from "../ops/forms/service.js";
+import { resolveUserByKey } from "../identity/index.js";
+import type { FormPayload } from "../ops/forms/types.js";
 
 export interface TeamUpdate {
   /** מפתח dedupe: מזהה הודעת התשובה */
@@ -34,9 +37,14 @@ export function loadChatSession(
   userKey: string,
   rawSessionId: string | null,
   afterMessageId = 0,
-): { messages: ChatRow[]; teamUpdates: TeamUpdate[] } {
+): { messages: (ChatRow & { form?: FormPayload })[]; teamUpdates: TeamUpdate[] } {
   const legacy = !rawSessionId || rawSessionId === "legacy";
-  const messages = getSessionMessages(userKey, legacy ? null : rawSessionId);
+  const owner = resolveUserByKey(userKey);
+  // טפסי יצירה שהוצמדו להודעות: מצבם העדכני (פתוח / נשלח + תוצאה / בוטל) נשלף בכל טעינה — רענון וחידוש שיחה.
+  const messages = getSessionMessages(userKey, legacy ? null : rawSessionId).map((m) => {
+    const form = m.formId && owner ? getForm(owner, m.formId) : null;
+    return form ? { ...m, form } : m;
+  });
   const teamUpdates: TeamUpdate[] = legacy
     ? []
     : listRepliesForSession(userKey, rawSessionId!, afterMessageId).map((r) => ({

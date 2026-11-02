@@ -5,6 +5,8 @@ export interface ChatRow {
   content: string;
   actions: string[];
   createdAt: string;
+  /** טופס יצירה שהצמיד הסוכן להודעה הזו (form_requests.id), אם יש */
+  formId?: string | null;
 }
 
 export interface SessionSummary {
@@ -20,6 +22,7 @@ interface MsgRow {
   content: string;
   actions: string | null;
   created_at: string;
+  form_id: string | null;
 }
 interface SessRow {
   session_id: string | null;
@@ -30,10 +33,10 @@ interface SessRow {
 }
 
 const insertStmt = db.prepare(
-  `INSERT INTO chat_messages (user_key, session_id, role, content, actions) VALUES (?, ?, ?, ?, ?)`,
+  `INSERT INTO chat_messages (user_key, session_id, role, content, actions, form_id) VALUES (?, ?, ?, ?, ?, ?)`,
 );
 const sessionMsgsStmt = db.prepare(
-  `SELECT role, content, actions, created_at FROM chat_messages
+  `SELECT role, content, actions, created_at, form_id FROM chat_messages
    WHERE user_key = ? AND session_id IS ? ORDER BY id ASC`,
 );
 const listSessionsStmt = db.prepare(
@@ -64,9 +67,15 @@ export function appendChatTurn(
   userMsg: string,
   assistantMsg: string,
   actions: string[],
+  formId?: string | null,
 ): void {
-  insertStmt.run(userKey, sessionId, "user", userMsg, null);
-  insertStmt.run(userKey, sessionId, "assistant", assistantMsg, actions.length ? JSON.stringify(actions) : null);
+  insertStmt.run(userKey, sessionId, "user", userMsg, null, null);
+  insertStmt.run(userKey, sessionId, "assistant", assistantMsg, actions.length ? JSON.stringify(actions) : null, formId ?? null);
+}
+
+/** הודעת סוכן עצמאית (למשל אישור יצירה מטופס) — נשמרת בהיסטוריה כדי שתישאר גם אחרי רענון/חידוש שיחה. */
+export function appendAssistantMessage(userKey: string, sessionId: string | null, content: string): void {
+  insertStmt.run(userKey, sessionId, "assistant", content, null, null);
 }
 
 export function getSessionMessages(userKey: string, sessionId: string | null): ChatRow[] {
@@ -75,6 +84,7 @@ export function getSessionMessages(userKey: string, sessionId: string | null): C
     content: r.content,
     actions: r.actions ? (JSON.parse(r.actions) as string[]) : [],
     createdAt: r.created_at,
+    formId: r.form_id,
   }));
 }
 

@@ -48,6 +48,18 @@ export interface CreateLeadInput {
   referredBy?: string;
   /** מזהה משתמש Monday שיוגדר כאחראי/ת (multiple_person__1). בלי זה — ליד נוצר בלי אחראי. */
   assigneeId?: string;
+  /**
+   * שם הפריט המפורש (טופס הצ'אט: שם הפרויקט / הליד). בלי זה — כמו תמיד: שם איש הקשר, ואם אין — שם המוסד.
+   * שם איש הקשר נשמר בכל מקרה בעמודות text_mknr5f59/text_mknrtghs (משם אוטומציית Monday יוצרת ומקשרת את איש הקשר).
+   */
+  itemName?: string;
+  /**
+   * ווצאפ שונה מהטלפון הנייד (phone_mm0mbhwj). לא מסמנים את "?מקבל ווצאפ": אוטומציות Monday (1717239001/1717238890)
+   * מעתיקות את הנייד לעמודת הווצאפ בכל פעם שהתיבה מסומנת — וידרסו מספר שונה. רק מטופס הצ'אט.
+   */
+  whatsapp?: string;
+  /** ווצאפ זהה לנייד: מסמנים את "?מקבל ווצאפ" ואוטומציית Monday מעתיקה את הנייד לעמודה. רק מטופס הצ'אט. */
+  whatsappSameAsPhone?: boolean;
 }
 
 /**
@@ -65,13 +77,16 @@ export async function createLead(input: CreateLeadInput) {
   if (input.source) columnValues.color1__1 = { label: input.source };
   if (input.product) columnValues.color5__1 = { label: input.product };
   if (input.referredBy) columnValues.text2__1 = input.referredBy;
+  if (input.whatsappSameAsPhone) columnValues.boolean_mm0m3q0p = { checked: "true" };
+  else if (input.whatsapp) columnValues.phone_mm0mbhwj = { phone: input.whatsapp, countryShortName: "IL" };
   if (input.assigneeId) {
     columnValues.multiple_person__1 = { personsAndTeams: [{ id: Number(input.assigneeId), kind: "person" }] };
   }
 
   // שם הפריט: עדיף שם איש קשר (ספציפי יותר) — אם אין, שם העמותה/קהילה — אם אין גם את זה, נופל
   // ל"ליד חדש" (לא אמור לקרות בפועל: createLeadAction מחייב לפחות אחד מהשניים לפני הקריאה לכאן).
-  const itemName = [input.firstName, input.lastName].filter(Boolean).join(" ") || input.institutionName || "ליד חדש";
+  const itemName =
+    input.itemName?.trim() || [input.firstName, input.lastName].filter(Boolean).join(" ") || input.institutionName || "ליד חדש";
 
   const result = await mondayClient.request<{ create_item: { id: string; name: string } }>(
     `mutation ($boardId: ID!, $groupId: String!, $itemName: String!, $columnValues: JSON!) {
@@ -222,6 +237,26 @@ export async function getLeadRecordById(itemId: string): Promise<LeadRecord | nu
   return item ? toLeadRecord(item) : null;
 }
 
+/**
+ * ציון התאמה של ליד לשאילתה. שם הפריט יכול להיות שם פרויקט (טופס הצ'אט), לכן מחפשים גם בשם איש הקשר
+ * (פרטי+משפחה) ובשם המוסד — אחרת ליד שנפתח עם שם פרויקט לא היה נמצא לפי איש הקשר. ליד ששמו שם איש הקשר
+ * (כמו תמיד עד היום) מתנהג בדיוק כמו קודם.
+ */
+export function leadSearchScore(
+  fields: { name: string; contactFirst?: string; contactLast?: string; institution?: string },
+  q: string,
+  words: string[],
+): number {
+  const candidates = [
+    fields.name,
+    [fields.contactFirst, fields.contactLast].filter(Boolean).join(" "),
+    fields.institution ?? "",
+  ].map(normalizeLeadQuery);
+  if (candidates.some((c) => c && c.includes(q))) return 100;
+  const hay = candidates.join(" ");
+  return words.reduce((s, w) => s + (hay.includes(w) ? 1 : 0), 0);
+}
+
 function normalizeLeadQuery(s: string): string {
   return s
     .replace(/["'`״׳,.\-–—()]/g, " ")
@@ -255,13 +290,20 @@ export async function searchLeadRecords(query: string): Promise<LeadRecord[]> {
     cursor = next.next_items_page.cursor;
   }
 
-  const score = (name: string): number => {
-    const n = normalizeLeadQuery(name);
-    if (n.includes(q)) return 100;
-    return words.reduce((s, w) => s + (n.includes(w) ? 1 : 0), 0);
-  };
-
-  const scored = items.map((it) => ({ it, s: score(it.name) }));
+  const colText = (it: RawLeadItem, id: string) => cleanText(it.column_values.find((c) => c.id === id)?.text);
+  const scored = items.map((it) => ({
+    it,
+    s: leadSearchScore(
+      {
+        name: it.name,
+        contactFirst: colText(it, "text_mknr5f59"),
+        contactLast: colText(it, "text_mknrtghs"),
+        institution: colText(it, "text_mm6q8vxy"),
+      },
+      q,
+      words,
+    ),
+  }));
   const exact = scored.filter((x) => x.s >= 100);
   const strong = scored.filter((x) => x.s > 0 && x.s >= words.length && x.s < 100);
   const pool = exact.length ? exact : strong.length ? strong : scored.filter((x) => x.s > 0);
@@ -271,3 +313,6 @@ export async function searchLeadRecords(query: string): Promise<LeadRecord[]> {
     .slice(0, 6)
     .map((x) => toLeadRecord(x.it));
 }
+
+// איש קשר מקושר: האוטומציה הקיימת (121518967, על לוח הלידים) יוצרת ומקשרת אותו בכל יצירת ליד — שם=פרטי+משפחה, טלפון,
+// מייל, אחראי; לא ווצאפ. השלמת ווצאפ ועדכוני פרטים מהליד לאיש הקשר רצים ברקע: ops/leadContactSync.ts + contacts.ts.

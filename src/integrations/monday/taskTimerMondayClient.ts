@@ -8,9 +8,16 @@ import { env } from "../../config/env.js";
 import { mondayRequest } from "./client.js";
 import { BOARD_GENERAL_TASKS, BOARD_PROJECT_STAGE_TASKS } from "./opsRead.js";
 
+export interface CumulativeValue {
+  /** שעות עשרוניות (מעוגל ל-2 ספרות) — עמודת המספר. */
+  hours: number;
+  /** HH:MM — עמודת הטקסט. */
+  display: string;
+}
+
 export interface TaskTimerMondayClient {
-  /** כותב את הסכום הכולל בשעות (כבר מעוגל ל-2 ספרות) לפריט. זורק על כשל. */
-  writeCumulativeHours(itemSource: string, itemId: string, hours: number): Promise<void>;
+  /** כותב את הסכום הכולל (מספר + HH:MM) לפריט בקריאה אחת. זורק על כשל. */
+  writeCumulative(itemSource: string, itemId: string, value: CumulativeValue): Promise<void>;
 }
 
 /** שגיאה שאין טעם לנסות שוב עליה (פריט נמחק, עמודה שגויה) — הפריט יסומן dead עד שינוי חדש. */
@@ -23,10 +30,10 @@ export function classifySyncError(err: unknown): { permanent: boolean; message: 
   return { permanent: err instanceof PermanentSyncError || PERMANENT.test(message), message };
 }
 
-function target(itemSource: string): { boardId: string; columnId: string } {
+function target(itemSource: string): { boardId: string; columnId: string; textColumnId: string | null } {
   return itemSource === "project_stage"
-    ? { boardId: BOARD_PROJECT_STAGE_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_STAGE }
-    : { boardId: BOARD_GENERAL_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_GENERAL };
+    ? { boardId: BOARD_PROJECT_STAGE_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_STAGE, textColumnId: env.TASK_TIMER_MONDAY_TEXT_COLUMN_STAGE.trim() || null }
+    : { boardId: BOARD_GENERAL_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_GENERAL, textColumnId: env.TASK_TIMER_MONDAY_TEXT_COLUMN_GENERAL.trim() || null };
 }
 
 const validated = new Set<string>();
@@ -36,9 +43,9 @@ export function _resetColumnValidationForTests(): void {
   validated.clear();
 }
 
-/** מוודא פעם אחת לתהליך שהעמודה קיימת ומסוג numbers — אחרת לא כותבים (שגיאת קונפיגורציה, לא ניסיון חוזר). */
-async function assertNumbersColumn(boardId: string, columnId: string): Promise<void> {
-  const key = `${boardId}:${columnId}`;
+/** מוודא פעם אחת לתהליך שהעמודה קיימת ומהסוג הצפוי (numbers / text) — אחרת לא כותבים (שגיאת קונפיגורציה, לא ניסיון חוזר). */
+async function assertColumnType(boardId: string, columnId: string, expected: "numbers" | "text"): Promise<void> {
+  const key = `${boardId}:${columnId}:${expected}`;
   if (validated.has(key)) return;
   const res = await mondayRequest<{ boards: { columns: { id: string; type: string }[] }[] }>(
     `query ($boardId: ID!, $columnId: [String!]) { boards(ids: [$boardId]) { columns(ids: $columnId) { id type } } }`,
@@ -46,21 +53,25 @@ async function assertNumbersColumn(boardId: string, columnId: string): Promise<v
   );
   const col = res.boards[0]?.columns[0];
   if (!col) throw new PermanentSyncError(`עמודה ${columnId} לא נמצאה בלוח ${boardId}`);
-  if (col.type !== "numbers") throw new PermanentSyncError(`עמודה ${columnId} בלוח ${boardId} היא ${col.type}, לא numbers`);
+  if (col.type !== expected) throw new PermanentSyncError(`עמודה ${columnId} בלוח ${boardId} היא ${col.type}, לא ${expected}`);
   validated.add(key);
 }
 
 export function createRealTaskTimerMondayClient(): TaskTimerMondayClient {
   return {
-    async writeCumulativeHours(itemSource, itemId, hours) {
+    async writeCumulative(itemSource, itemId, value) {
       if (!/^\d+$/.test(itemId)) throw new PermanentSyncError(`מזהה פריט לא תקין: ${itemId}`);
-      const { boardId, columnId } = target(itemSource);
-      await assertNumbersColumn(boardId, columnId);
+      const { boardId, columnId, textColumnId } = target(itemSource);
+      await assertColumnType(boardId, columnId, "numbers");
+      if (textColumnId) await assertColumnType(boardId, textColumnId, "text");
+      // שני הערכים באותה קריאה (מספר + HH:MM), ורק שתי העמודות האלה — אף עמודה/סטטוס אחר.
+      const columnValues: Record<string, string> = { [columnId]: String(value.hours) };
+      if (textColumnId) columnValues[textColumnId] = value.display;
       await mondayRequest(
-        `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: String!) {
-           change_simple_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) { id }
+        `mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+           change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id }
          }`,
-        { boardId, itemId, columnId, value: String(hours) },
+        { boardId, itemId, columnValues: JSON.stringify(columnValues) },
       );
     },
   };

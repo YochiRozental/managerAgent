@@ -35,6 +35,7 @@ for (const stmt of [
   "ALTER TABLE control_followups ADD COLUMN processing_started_at TEXT",
   "ALTER TABLE control_followups ADD COLUMN last_error TEXT",
   "ALTER TABLE attendance_corrections ADD COLUMN idempotency_key TEXT",
+  "ALTER TABLE task_timer_sync ADD COLUMN last_display TEXT",
 ]) {
   try {
     db.exec(stmt);

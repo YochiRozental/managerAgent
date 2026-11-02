@@ -9,7 +9,8 @@
  *    ל-dirty ויכתב שוב עם הערך העדכני; (3) הערך תמיד מחושב אחרי ה-claim, לא לפניו.
  *  • כשל תקשורת: failed + backoff אקספוננציאלי (עד שעה) ועד MAX_ATTEMPTS; שגיאה קבועה (פריט נמחק, עמודה
  *    שגויה) → dead עד שינוי חדש בפריט. שום שעה לא הולכת לאיבוד כי המקור נשאר ב-SQLite.
- *  • חיסכון: אם הערך המעוגל זהה לזה שנכתב לאחרונה — לא קוראים ל-Monday.
+ *  • חיסכון: אם הערך העשרוני ותצוגת HH:MM זהים לאחרונים שנכתבו — לא קוראים ל-Monday.
+ *  • נכתבים שני ערכים באותה קריאה: שעות עשרוניות (עמודת מספר, לחישובים עתידיים) ו-HH:MM (עמודת טקסט, תצוגה).
  */
 
 import { randomUUID } from "node:crypto";
@@ -27,7 +28,7 @@ import {
 } from "../db/repositories/taskTimerSync.js";
 import { classifySyncError, type TaskTimerMondayClient } from "../integrations/monday/taskTimerMondayClient.js";
 import { logger } from "../utils/logger.js";
-import { computeItemTotalMs, hoursFromMs } from "./taskTimerHours.js";
+import { computeItemTotalMs, formatHHMM, hoursFromMs } from "./taskTimerHours.js";
 
 export const SYNC_BATCH_SIZE = 50;
 export const SYNC_MAX_ATTEMPTS = 8;
@@ -74,13 +75,16 @@ export async function runTaskTimerMondaySync(
       // הערך מחושב *אחרי* ה-claim: כל שינוי שנרשם עד עכשיו כלול; שינוי שיגיע בזמן הכתיבה יעלה version.
       const ms = computeItemTotalMs(itemId, nowIso);
       const hours = hoursFromMs(ms);
-      if (row.lastValue !== null && row.lastValue === hours && row.lastSyncedAt) {
+      const display = formatHHMM(ms);
+      // דילוג רק כשגם הערך העשרוני וגם תצוגת HH:MM זהים לאחרונים שנכתבו. last_display ריק (שורות מלפני
+      // הוספת התצוגה) ≠ display → נכתב מחדש גם אם משך הזמן לא השתנה.
+      if (row.lastValue !== null && row.lastValue === hours && row.lastDisplay === display && row.lastSyncedAt) {
         result.skippedUnchanged++;
       } else {
-        await client.writeCumulativeHours(row.itemSource, itemId, hours);
+        await client.writeCumulative(row.itemSource, itemId, { hours, display });
         result.written++;
       }
-      completeSync(itemId, claimId, hours, ms, nowIso);
+      completeSync(itemId, claimId, hours, ms, display, nowIso);
     } catch (err) {
       const { permanent, message } = classifySyncError(err);
       const attempts = row.attempts + 1;

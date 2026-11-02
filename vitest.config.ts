@@ -26,6 +26,7 @@ const SAFE_TESTS = [
   "tests/unit/aiProviders.test.ts",
   "tests/unit/attendanceEngine.test.ts",
   "tests/unit/taskTimerEngine.test.ts",
+  "tests/unit/taskTimerFormat.test.ts",
   "tests/unit/employeeFeed.test.ts",
   "tests/unit/sharedPrompt.test.ts",
   "tests/unit/toolRegistry.test.ts",

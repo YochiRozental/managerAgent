@@ -34,13 +34,13 @@ const task = (id: string, name: string, source: "project_stage" | "general" = "p
 const openDay = (u: typeof yochi, day: string, hhmm = "09:00") => checkAttendanceDayStart(u, at(day, hhmm));
 
 class FakeClient implements TaskTimerMondayClient {
-  writes: { source: string; itemId: string; hours: number }[] = [];
+  writes: { source: string; itemId: string; hours: number; display: string }[] = [];
   failWith: Error | null = null;
   onWrite: (() => void) | null = null;
-  async writeCumulativeHours(source: string, itemId: string, hours: number) {
+  async writeCumulative(source: string, itemId: string, v: { hours: number; display: string }) {
     if (this.failWith) throw this.failWith;
     this.onWrite?.();
-    this.writes.push({ source, itemId, hours });
+    this.writes.push({ source, itemId, hours: v.hours, display: v.display });
   }
   last(itemId: string) {
     return this.writes.filter((w) => w.itemId === itemId).at(-1);
@@ -86,7 +86,7 @@ describe("סיכום כולל, מספר עובדים וימים", () => {
     expect(getSyncRow("1001")?.status).toBe("dirty");
     const r = await runTaskTimerMondaySync(client, at(D1, "12:00"));
     expect(r.written).toBe(1);
-    expect(client.last("1001")).toEqual({ source: "project_stage", itemId: "1001", hours: 1.5 });
+    expect(client.last("1001")).toEqual({ source: "project_stage", itemId: "1001", hours: 1.5, display: "01:30" });
     expect(getSyncRow("1001")?.status).toBe("synced");
   });
 
@@ -99,6 +99,7 @@ describe("סיכום כולל, מספר עובדים וימים", () => {
     await runTaskTimerMondaySync(client, at(D2, "12:00"));
     // 90 דק' + 20 דק' = 110 דק' = 1.8333 ש' → מוצג 1.83; הדיוק המלא נשמר
     expect(client.last("1001")!.hours).toBe(1.83);
+    expect(client.last("1001")!.display).toBe("01:50"); // 110 דק'
     expect(getSyncRow("1001")!.lastMs).toBe(110 * 60_000);
     expect(hoursFromMs(110 * 60_000)).toBe(1.83);
   });
@@ -118,7 +119,7 @@ describe("סיכום כולל, מספר עובדים וימים", () => {
     expect(getSyncRow("1002")).toBeNull();
     stopTimer(yochi, at(D2, "13:30"), "stopped", sid("s3", "b"));
     await runTaskTimerMondaySync(client, at(D2, "14:00"));
-    expect(client.last("1002")).toEqual({ source: "general", itemId: "1002", hours: 0.5 }); // ניתוב לפי סוג המקור
+    expect(client.last("1002")).toEqual({ source: "general", itemId: "1002", hours: 0.5, display: "00:30" }); // ניתוב לפי סוג המקור
   });
 });
 
@@ -189,7 +190,7 @@ describe("כשל תקשורת, retry ושחזור", () => {
     expect(early.claimed).toBe(0); // עוד לא הגיע זמנו
     const r2 = await runTaskTimerMondaySync(client, at(D, "10:10"));
     expect(r2.written).toBe(1);
-    expect(client.writes.filter((w) => w.itemId === "3001")).toEqual([{ source: "project_stage", itemId: "3001", hours: 1 }]);
+    expect(client.writes.filter((w) => w.itemId === "3001")).toEqual([{ source: "project_stage", itemId: "3001", hours: 1, display: "01:00" }]);
     expect(getSyncRow("3001")).toMatchObject({ status: "synced", attempts: 0, lastError: null });
   });
 
@@ -271,9 +272,44 @@ describe("סנכרון ישן / בקשות מקבילות לא דורסים ער
     recoverStuckClaims(at(D, "13:00").toUTC().toISO()!);
     claimItem("4003", "NEW", at(D, "13:01").toUTC().toISO()!);
     const { completeSync, failSync } = await import("../../src/db/repositories/taskTimerSync.js");
-    expect(completeSync("4003", "OLD", 99, 1, now)).toBe(false);
+    expect(completeSync("4003", "OLD", 99, 1, "00:00", now)).toBe(false);
     expect(failSync("4003", "OLD", "failed", "x", null)).toBe(false);
     expect(getSyncRow("4003")).toMatchObject({ status: "syncing", claimId: "NEW", lastValue: null });
+  });
+});
+
+describe("סנכרון מחדש של תצוגת HH גם כשהמשך לא השתנה", () => {
+  it("שורה שסונכרנה לפני הוספת התצוגה (last_display ריק) נכתבת מחדש; אחרי זה — דילוג", async () => {
+    const client = new FakeClient();
+    const D = "2031-06-10";
+    openDay(yochi, D);
+    startTimer(yochi, task("5001", "legacy"), at(D, "09:00"), sid("h1", "a"));
+    stopTimer(yochi, at(D, "10:20"), "stopped", sid("h1", "b"));
+    await runTaskTimerMondaySync(client, at(D, "11:00"));
+    expect(client.last("5001")).toMatchObject({ hours: 1.33, display: "01:20" });
+    // מדמה שורה ישנה: הערך העשרוני זהה, התצוגה מעולם לא נכתבה
+    db.prepare(`UPDATE task_timer_sync SET last_display = NULL WHERE item_id = '5001'`).run();
+    markDirty("5001", "project_stage");
+    const n = client.writes.length;
+    const r1 = await runTaskTimerMondaySync(client, at(D, "11:05"));
+    expect(r1.written).toBe(1);
+    expect(client.writes.length).toBe(n + 1);
+    expect(getSyncRow("5001")?.lastDisplay).toBe("01:20");
+    markDirty("5001", "project_stage");
+    const r2 = await runTaskTimerMondaySync(client, at(D, "11:10"));
+    expect(r2.skippedUnchanged).toBe(1);
+    expect(client.writes.length).toBe(n + 1);
+  });
+
+  it("מקטע ארוך (כמעט יממה) נכתב במלואו כ-HH:MM; חריגה מ-24 שעות מכוסה ב-taskTimerFormat.test.ts", async () => {
+    const client = new FakeClient();
+    const seg = insertSegment({ userKey: "yochi", workDate: "2031-06-11", itemId: "5002", itemSource: "general", taskName: "ארוך", projectId: null, projectName: null, startedAt: iso("2031-06-11", "00:00"), idempotencyKey: "long-seg" });
+    endSegment(seg.id, iso("2031-06-11", "23:59"), "stopped", null);
+    // נוכחות פתוחה כל היום כדי שהמקטע יחתך כולו
+    openDay(yochi, "2031-06-11", "00:00");
+    markDirty("5002", "general");
+    await runTaskTimerMondaySync(client, at("2031-06-12", "08:00"));
+    expect(client.last("5002")!.display).toBe("23:59");
   });
 });
 

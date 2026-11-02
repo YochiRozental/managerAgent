@@ -524,7 +524,7 @@ CREATE TABLE IF NOT EXISTS task_timer_sync (
   claimed_version INTEGER,
   claim_id TEXT,
   claimed_at TEXT,
-  last_value REAL,                      -- שעות (מעוגל, 2 ספרות) שנכתב לאחרונה ל-Monday
+  last_value REAL,                      -- לא בשימוש (היה הערך העשרוני בעמודת המספר שהוסרה); נשאר לתאימות
   last_ms INTEGER,                      -- הדיוק המלא (ms) באותו רגע
   last_display TEXT,                    -- תצוגת HH:MM שנכתבה לאחרונה (NULL = עוד לא נכתבה → סנכרון מחדש)
   attempts INTEGER NOT NULL DEFAULT 0,

@@ -50,7 +50,7 @@ export function formatHHMM(ms: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-/** שעות עם שתי ספרות אחרי הנקודה — ההצגה ב-Monday בלבד; הדיוק המלא נשאר ב-SQLite. */
+/** שעות עשרוניות (2 ספרות) — לחישובי רווחיות/דוחות עתידיים מ-SQLite; לא נכתב ל-Monday. */
 export function hoursFromMs(ms: number): number {
   return Math.round(ms / 36_000) / 100;
 }

@@ -1,5 +1,5 @@
 /**
- * כתיבת "זמן עבודה מצטבר" ל-Monday (עמודת מספר, שעות). כותב **רק** את העמודה הזו — אף עמודה אחרת, אף
+ * כתיבת "זמן עבודה מצטבר" ל-Monday (עמודת טקסט, HH:MM). כותב **רק** את העמודה הזו — אף עמודה אחרת, אף
  * סטטוס, ולא את עמודת ה-Time Tracking הקיימת ("זמן בפועל", שהיא read-only ב-API ולא נוגעים בה).
  * הערך הוא הסכום הכולל (לא תוספת); קריאה חוזרת עם אותו ערך אידמפוטנטית.
  */
@@ -9,14 +9,12 @@ import { mondayRequest } from "./client.js";
 import { BOARD_GENERAL_TASKS, BOARD_PROJECT_STAGE_TASKS } from "./opsRead.js";
 
 export interface CumulativeValue {
-  /** שעות עשרוניות (מעוגל ל-2 ספרות) — עמודת המספר. */
-  hours: number;
-  /** HH:MM — עמודת הטקסט. */
+  /** HH:MM — מחושב מ-ms ב-SQLite (formatHHMM). */
   display: string;
 }
 
 export interface TaskTimerMondayClient {
-  /** כותב את הסכום הכולל (מספר + HH:MM) לפריט בקריאה אחת. זורק על כשל. */
+  /** כותב את הסכום הכולל (HH:MM) לעמודת הטקסט של הפריט. זורק על כשל. */
   writeCumulative(itemSource: string, itemId: string, value: CumulativeValue): Promise<void>;
 }
 
@@ -30,10 +28,10 @@ export function classifySyncError(err: unknown): { permanent: boolean; message: 
   return { permanent: err instanceof PermanentSyncError || PERMANENT.test(message), message };
 }
 
-function target(itemSource: string): { boardId: string; columnId: string; textColumnId: string | null } {
+function target(itemSource: string): { boardId: string; columnId: string } {
   return itemSource === "project_stage"
-    ? { boardId: BOARD_PROJECT_STAGE_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_STAGE, textColumnId: env.TASK_TIMER_MONDAY_TEXT_COLUMN_STAGE.trim() || null }
-    : { boardId: BOARD_GENERAL_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_GENERAL, textColumnId: env.TASK_TIMER_MONDAY_TEXT_COLUMN_GENERAL.trim() || null };
+    ? { boardId: BOARD_PROJECT_STAGE_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_STAGE.trim() }
+    : { boardId: BOARD_GENERAL_TASKS, columnId: env.TASK_TIMER_MONDAY_COLUMN_GENERAL.trim() };
 }
 
 const validated = new Set<string>();
@@ -43,8 +41,8 @@ export function _resetColumnValidationForTests(): void {
   validated.clear();
 }
 
-/** מוודא פעם אחת לתהליך שהעמודה קיימת ומהסוג הצפוי (numbers / text) — אחרת לא כותבים (שגיאת קונפיגורציה, לא ניסיון חוזר). */
-async function assertColumnType(boardId: string, columnId: string, expected: "numbers" | "text"): Promise<void> {
+/** מוודא פעם אחת לתהליך שהעמודה קיימת ומהסוג הצפוי (text) — אחרת לא כותבים (שגיאת קונפיגורציה, לא ניסיון חוזר). */
+async function assertColumnType(boardId: string, columnId: string, expected: "text"): Promise<void> {
   const key = `${boardId}:${columnId}:${expected}`;
   if (validated.has(key)) return;
   const res = await mondayRequest<{ boards: { columns: { id: string; type: string }[] }[] }>(
@@ -61,12 +59,10 @@ export function createRealTaskTimerMondayClient(): TaskTimerMondayClient {
   return {
     async writeCumulative(itemSource, itemId, value) {
       if (!/^\d+$/.test(itemId)) throw new PermanentSyncError(`מזהה פריט לא תקין: ${itemId}`);
-      const { boardId, columnId, textColumnId } = target(itemSource);
-      await assertColumnType(boardId, columnId, "numbers");
-      if (textColumnId) await assertColumnType(boardId, textColumnId, "text");
-      // שני הערכים באותה קריאה (מספר + HH:MM), ורק שתי העמודות האלה — אף עמודה/סטטוס אחר.
-      const columnValues: Record<string, string> = { [columnId]: String(value.hours) };
-      if (textColumnId) columnValues[textColumnId] = value.display;
+      const { boardId, columnId } = target(itemSource);
+      await assertColumnType(boardId, columnId, "text");
+      // עמודה אחת בלבד (HH:MM) — אף עמודה/סטטוס אחר, ולא עמודת ה-Time Tracking.
+      const columnValues: Record<string, string> = { [columnId]: value.display };
       await mondayRequest(
         `mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
            change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id }

@@ -30,16 +30,14 @@ const schema = z.object({
     .transform((v) => v.toLowerCase() === "true"),
   TASK_TIMER_PILOT_USER_KEYS: z.string().default(""),
   // סנכרון "זמן עבודה מצטבר" ל-Monday (2026-11-02) — כבוי כברירת מחדל, בלי תלות בדגל הטיימר עצמו.
-  // מזהי העמודות (מספר, שעות) נוצרו ב-Monday ב-2026-11-02; ניתנים לעקיפה, ומאומתים (type=numbers) לפני כתיבה.
+  // מזהי עמודות הטקסט "זמן עבודה מצטבר (HH)" (HH:MM) שנוצרו ב-Monday ב-2026-11-02; ניתנים לעקיפה, ומאומתים (type=text)
+  // לפני כתיבה. העמודות המספריות הישנות (numeric_mm8q8czr / numeric_mm8qnjjb) כבר לא נכתבות ולא נקראות.
   TASK_TIMER_MONDAY_SYNC_ENABLED: z
     .string()
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
-  TASK_TIMER_MONDAY_COLUMN_GENERAL: z.string().default("numeric_mm8q8czr"),
-  TASK_TIMER_MONDAY_COLUMN_STAGE: z.string().default("numeric_mm8qnjjb"),
-  // עמודות טקסט "זמן עבודה מצטבר (HH)" (HH:MM) — נכתבות באותה קריאה עם העמודה המספרית. ערך ריק = בלי תצוגת HH.
-  TASK_TIMER_MONDAY_TEXT_COLUMN_GENERAL: z.string().default("text_mm8q5d4g"),
-  TASK_TIMER_MONDAY_TEXT_COLUMN_STAGE: z.string().default("text_mm8q953x"),
+  TASK_TIMER_MONDAY_COLUMN_GENERAL: z.string().min(1).default("text_mm8q5d4g"),
+  TASK_TIMER_MONDAY_COLUMN_STAGE: z.string().min(1).default("text_mm8q953x"),
   // Prompt Caching ל-Web Chat (2026-10-14, הורחב לכל המשתמשים 2026-10-18) — כבוי כברירת מחדל.
   // דגל גלובלי יחיד, בלי רשימת-פיילוט: כש-מופעל, כל משתמש ב-Web Chat מקבל אותה התנהגות (ר'
   // ops/chat.ts's promptCachingEnabled).

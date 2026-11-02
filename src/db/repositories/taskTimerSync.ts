@@ -15,7 +15,6 @@ export interface SyncRow {
   claimedVersion: number | null;
   claimId: string | null;
   claimedAt: string | null;
-  lastValue: number | null;
   lastMs: number | null;
   lastDisplay: string | null;
   attempts: number;
@@ -32,7 +31,6 @@ interface Row {
   claimed_version: number | null;
   claim_id: string | null;
   claimed_at: string | null;
-  last_value: number | null;
   last_ms: number | null;
   last_display: string | null;
   attempts: number;
@@ -49,7 +47,6 @@ const fromRow = (r: Row): SyncRow => ({
   claimedVersion: r.claimed_version,
   claimId: r.claim_id,
   claimedAt: r.claimed_at,
-  lastValue: r.last_value,
   lastMs: r.last_ms,
   lastDisplay: r.last_display,
   attempts: r.attempts,
@@ -83,7 +80,7 @@ const claimStmt = db.prepare(
 const completeStmt = db.prepare(
   `UPDATE task_timer_sync SET
       status = CASE WHEN version = claimed_version THEN 'synced' ELSE 'dirty' END,
-      last_value = ?, last_ms = ?, last_display = ?, attempts = 0, last_error = NULL, next_attempt_at = NULL,
+      last_ms = ?, last_display = ?, attempts = 0, last_error = NULL, next_attempt_at = NULL,
       last_synced_at = ?, claim_id = NULL, claimed_at = NULL, updated_at = datetime('now')
     WHERE item_id = ? AND claim_id = ?`,
 );
@@ -117,8 +114,8 @@ export function claimItem(itemId: string, claimId: string, nowIso: string): bool
 }
 
 /** true ⇔ ה-claim עדיין שלנו. synced רק אם version לא השתנה מאז ה-claim; אחרת חוזר ל-dirty. */
-export function completeSync(itemId: string, claimId: string, value: number, ms: number, display: string, nowIso: string): boolean {
-  return Number(completeStmt.run(value, Math.round(ms), display, nowIso, itemId, claimId).changes) > 0;
+export function completeSync(itemId: string, claimId: string, ms: number, display: string, nowIso: string): boolean {
+  return Number(completeStmt.run(Math.round(ms), display, nowIso, itemId, claimId).changes) > 0;
 }
 
 export function failSync(itemId: string, claimId: string, status: "failed" | "dead", error: string, nextAttemptAt: string | null): boolean {

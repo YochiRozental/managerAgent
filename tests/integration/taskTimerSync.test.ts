@@ -34,13 +34,13 @@ const task = (id: string, name: string, source: "project_stage" | "general" = "p
 const openDay = (u: typeof yochi, day: string, hhmm = "09:00") => checkAttendanceDayStart(u, at(day, hhmm));
 
 class FakeClient implements TaskTimerMondayClient {
-  writes: { source: string; itemId: string; hours: number; display: string }[] = [];
+  writes: { source: string; itemId: string; display: string }[] = [];
   failWith: Error | null = null;
   onWrite: (() => void) | null = null;
-  async writeCumulative(source: string, itemId: string, v: { hours: number; display: string }) {
+  async writeCumulative(source: string, itemId: string, v: { display: string }) {
     if (this.failWith) throw this.failWith;
     this.onWrite?.();
-    this.writes.push({ source, itemId, hours: v.hours, display: v.display });
+    this.writes.push({ source, itemId, display: v.display });
   }
   last(itemId: string) {
     return this.writes.filter((w) => w.itemId === itemId).at(-1);
@@ -86,7 +86,7 @@ describe("סיכום כולל, מספר עובדים וימים", () => {
     expect(getSyncRow("1001")?.status).toBe("dirty");
     const r = await runTaskTimerMondaySync(client, at(D1, "12:00"));
     expect(r.written).toBe(1);
-    expect(client.last("1001")).toEqual({ source: "project_stage", itemId: "1001", hours: 1.5, display: "01:30" });
+    expect(client.last("1001")).toEqual({ source: "project_stage", itemId: "1001", display: "01:30" });
     expect(getSyncRow("1001")?.status).toBe("synced");
   });
 
@@ -98,7 +98,6 @@ describe("סיכום כולל, מספר עובדים וימים", () => {
     stopTimer(yochi, at(D2, "09:20"), "stopped", sid("s2", "b"));
     await runTaskTimerMondaySync(client, at(D2, "12:00"));
     // 90 דק' + 20 דק' = 110 דק' = 1.8333 ש' → מוצג 1.83; הדיוק המלא נשמר
-    expect(client.last("1001")!.hours).toBe(1.83);
     expect(client.last("1001")!.display).toBe("01:50"); // 110 דק'
     expect(getSyncRow("1001")!.lastMs).toBe(110 * 60_000);
     expect(hoursFromMs(110 * 60_000)).toBe(1.83);
@@ -119,7 +118,7 @@ describe("סיכום כולל, מספר עובדים וימים", () => {
     expect(getSyncRow("1002")).toBeNull();
     stopTimer(yochi, at(D2, "13:30"), "stopped", sid("s3", "b"));
     await runTaskTimerMondaySync(client, at(D2, "14:00"));
-    expect(client.last("1002")).toEqual({ source: "general", itemId: "1002", hours: 0.5, display: "00:30" }); // ניתוב לפי סוג המקור
+    expect(client.last("1002")).toEqual({ source: "general", itemId: "1002", display: "00:30" }); // ניתוב לפי סוג המקור
   });
 });
 
@@ -133,22 +132,22 @@ describe("תיקונים רטרואקטיביים בנוכחות", () => {
     startTimer(dov, B, at(D, "09:00"), sid("r1", "a"));
     stopTimer(dov, at(D, "11:00"), "stopped", sid("r1", "b"));
     await runTaskTimerMondaySync(client, at(D, "11:30"));
-    expect(client.last("2001")!.hours).toBe(2);
+    expect(client.last("2001")!.display).toBe("02:00");
 
     const bs = requestAttendanceCorrection(dov, { workDate: D, field: "break_start", newReportedForAtUtcIso: iso(D, "10:00"), insertNew: true, messageSeed: sid("r1", "c") });
     const be = requestAttendanceCorrection(dov, { workDate: D, field: "break_end", newReportedForAtUtcIso: iso(D, "10:30"), insertNew: true, messageSeed: sid("r1", "d") });
     expect(bs.ok && be.ok).toBe(true);
     expect(getSyncRow("2001")?.status).toBe("dirty"); // התיקון סימן את הפריט
     await runTaskTimerMondaySync(client, at(D, "12:00"));
-    expect(client.last("2001")!.hours).toBe(1.5);
+    expect(client.last("2001")!.display).toBe("01:30");
 
     reportDayClose(dov, at(D, "12:00"), sid("r1", "e"));
     await runTaskTimerMondaySync(client, at(D, "12:05"));
-    expect(client.last("2001")!.hours).toBe(1.5); // סגירה אחרי הסוף — אין שינוי
+    expect(client.last("2001")!.display).toBe("01:30"); // סגירה אחרי הסוף — אין שינוי
     const fix = requestAttendanceCorrection(dov, { workDate: D, field: "day_close", newReportedForAtUtcIso: iso(D, "10:45"), messageSeed: sid("r1", "f") });
     expect(fix.ok).toBe(true);
     await runTaskTimerMondaySync(client, at(D, "12:10"));
-    expect(client.last("2001")!.hours).toBe(1.25); // 09:00–10:45 פחות הפסקה של 30 דק'
+    expect(client.last("2001")!.display).toBe("01:15"); // 09:00–10:45 פחות הפסקה של 30 דק'
   });
 
   it("סגירת יום עוצרת טיימר פעיל ומסמנת את הפריט לסנכרון", async () => {
@@ -161,7 +160,7 @@ describe("תיקונים רטרואקטיביים בנוכחות", () => {
     reportDayClose(dov, at(D2, "11:00"), sid("r2", "d"));
     expect(listSegmentsForDate(dov.key, D2)[0]!.endReason).toBe("day_close");
     await runTaskTimerMondaySync(client, at(D2, "12:00"));
-    expect(client.last("2002")!.hours).toBe(1.75); // 120 דק' פחות 15 דק' הפסקה
+    expect(client.last("2002")!.display).toBe("01:45"); // 120 דק' פחות 15 דק' הפסקה
   });
 });
 
@@ -190,7 +189,7 @@ describe("כשל תקשורת, retry ושחזור", () => {
     expect(early.claimed).toBe(0); // עוד לא הגיע זמנו
     const r2 = await runTaskTimerMondaySync(client, at(D, "10:10"));
     expect(r2.written).toBe(1);
-    expect(client.writes.filter((w) => w.itemId === "3001")).toEqual([{ source: "project_stage", itemId: "3001", hours: 1, display: "01:00" }]);
+    expect(client.writes.filter((w) => w.itemId === "3001")).toEqual([{ source: "project_stage", itemId: "3001", display: "01:00" }]);
     expect(getSyncRow("3001")).toMatchObject({ status: "synced", attempts: 0, lastError: null });
   });
 
@@ -206,7 +205,7 @@ describe("כשל תקשורת, retry ושחזור", () => {
     stopTimer(yochi, at(D, "11:20"), "stopped", sid("f2", "e2"));
     expect(getSyncRow("3002")).toMatchObject({ status: "dirty", attempts: 0 });
     await runTaskTimerMondaySync(client, at(D, "11:30"));
-    expect(client.last("3002")!.hours).toBe(0.33);
+    expect(client.last("3002")!.display).toBe("00:20");
   });
 
   it("אחרי SYNC_MAX_ATTEMPTS כשלים זמניים → dead", async () => {
@@ -244,11 +243,11 @@ describe("סנכרון ישן / בקשות מקבילות לא דורסים ער
     openDay(dov, D);
     const r1 = await runTaskTimerMondaySync(client, at(D, "12:00"));
     expect(r1.written).toBe(1);
-    expect(client.writes[0]!.hours).toBe(1); // הערך הישן נכתב, אבל…
+    expect(client.writes[0]!.display).toBe("01:00"); // הערך הישן נכתב, אבל…
     expect(getSyncRow("4001")?.status).toBe("dirty"); // …לא מסומן כעדכני
     const r2 = await runTaskTimerMondaySync(client, at(D, "12:05"));
     expect(r2.written).toBe(1);
-    expect(client.last("4001")!.hours).toBe(2);
+    expect(client.last("4001")!.display).toBe("02:00");
     expect(getSyncRow("4001")?.status).toBe("synced");
   });
 
@@ -272,22 +271,22 @@ describe("סנכרון ישן / בקשות מקבילות לא דורסים ער
     recoverStuckClaims(at(D, "13:00").toUTC().toISO()!);
     claimItem("4003", "NEW", at(D, "13:01").toUTC().toISO()!);
     const { completeSync, failSync } = await import("../../src/db/repositories/taskTimerSync.js");
-    expect(completeSync("4003", "OLD", 99, 1, "00:00", now)).toBe(false);
+    expect(completeSync("4003", "OLD", 1, "00:00", now)).toBe(false);
     expect(failSync("4003", "OLD", "failed", "x", null)).toBe(false);
-    expect(getSyncRow("4003")).toMatchObject({ status: "syncing", claimId: "NEW", lastValue: null });
+    expect(getSyncRow("4003")).toMatchObject({ status: "syncing", claimId: "NEW", lastDisplay: null });
   });
 });
 
 describe("סנכרון מחדש של תצוגת HH גם כשהמשך לא השתנה", () => {
-  it("שורה שסונכרנה לפני הוספת התצוגה (last_display ריק) נכתבת מחדש; אחרי זה — דילוג", async () => {
+  it("שורה עם last_display ריק (איפוס ידני / לפני התצוגה) נכתבת מחדש גם אם המשך לא השתנה; אחרי זה — דילוג", async () => {
     const client = new FakeClient();
     const D = "2031-06-10";
     openDay(yochi, D);
     startTimer(yochi, task("5001", "legacy"), at(D, "09:00"), sid("h1", "a"));
     stopTimer(yochi, at(D, "10:20"), "stopped", sid("h1", "b"));
     await runTaskTimerMondaySync(client, at(D, "11:00"));
-    expect(client.last("5001")).toMatchObject({ hours: 1.33, display: "01:20" });
-    // מדמה שורה ישנה: הערך העשרוני זהה, התצוגה מעולם לא נכתבה
+    expect(client.last("5001")).toMatchObject({ display: "01:20" });
+    // מדמה שורה שאופסה ידנית כדי לכפות סנכרון מחדש: המשך זהה, last_display ריק
     db.prepare(`UPDATE task_timer_sync SET last_display = NULL WHERE item_id = '5001'`).run();
     markDirty("5001", "project_stage");
     const n = client.writes.length;

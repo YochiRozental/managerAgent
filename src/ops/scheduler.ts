@@ -30,7 +30,7 @@ import { runDueFollowups, type FollowupRunnerDeps, type FollowupRunResult } from
 import { buildWeeklyReport } from "./weeklyReport.js";
 import { startAttendanceReminderSchedule } from "./attendanceReminderScheduler.js";
 import { startAttendanceMondaySyncSchedule } from "./attendanceMondaySyncScheduler.js";
-import { startTaskTimerSweepSchedule } from "./taskTimerScheduler.js";
+import { startTaskTimerSweepSchedule, startTaskTimerMondaySyncSchedule } from "./taskTimerScheduler.js";
 
 const BACKUP_HOUR = Number(process.env.BACKUP_HOUR ?? 6);
 const DAILY_HOUR = Number(process.env.CONTROL_SCAN_HOUR ?? 7);
@@ -256,4 +256,6 @@ export function startScheduler(): void {
   startAttendanceMondaySyncSchedule();
   // כבוי בפועל כש-TASK_TIMER_ENABLED=false (בודק את עצמו) — אפס שאילתות, אפס טיימר.
   startTaskTimerSweepSchedule();
+  // כבוי בפועל כש-TASK_TIMER_MONDAY_SYNC_ENABLED=false (בודק את עצמו) — אפס קריאה ל-Monday.
+  startTaskTimerMondaySyncSchedule();
 }

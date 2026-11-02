@@ -232,3 +232,31 @@ export function setLastReminderAt(userKey: string, iso: string): void {
   ensureStateStmt.run(userKey);
   setReminderStmt.run(iso, userKey);
 }
+
+
+// ── שאילתות לסנכרון Monday ─────────────────────────────────────────────────────
+
+const closedByItemStmt = db.prepare(`SELECT * FROM task_timer_segments WHERE item_id = ? AND ended_at IS NOT NULL ORDER BY started_at ASC`);
+const itemsForDayStmt = db.prepare(
+  `SELECT DISTINCT item_id, item_source FROM task_timer_segments WHERE user_key = ? AND work_date = ? AND ended_at IS NOT NULL`,
+);
+const allClosedItemsStmt = db.prepare(`SELECT DISTINCT item_id, item_source FROM task_timer_segments WHERE ended_at IS NOT NULL`);
+
+/** מקטעים סגורים של פריט, מכל העובדים וכל הימים — טיימר פעיל לא נכלל בכוונה. */
+export function listClosedSegmentsForItem(itemId: string): TimerSegment[] {
+  return (closedByItemStmt.all(itemId) as unknown as Row[]).map(fromRow);
+}
+
+export function listClosedItemsForDay(userKey: string, workDate: string): { itemId: string; itemSource: string }[] {
+  return (itemsForDayStmt.all(userKey, workDate) as unknown as { item_id: string; item_source: string }[]).map((r) => ({
+    itemId: r.item_id,
+    itemSource: r.item_source,
+  }));
+}
+
+export function listAllClosedItems(): { itemId: string; itemSource: string }[] {
+  return (allClosedItemsStmt.all() as unknown as { item_id: string; item_source: string }[]).map((r) => ({
+    itemId: r.item_id,
+    itemSource: r.item_source,
+  }));
+}

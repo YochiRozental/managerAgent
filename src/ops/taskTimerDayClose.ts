@@ -8,6 +8,7 @@
  */
 
 import { DateTime } from "luxon";
+import { markItemTimeDirty } from "./taskTimerSyncMark.js";
 import {
   listSegmentsNeedingDayCloseAlignment,
   endSegment,
@@ -32,10 +33,14 @@ export function alignTimersToDayClose(userKey: string, workDate: string, closedA
     const startMs = DateTime.fromISO(seg.startedAt).toMillis();
     const targetIso = iso(Math.max(startMs, closeMs));
     if (seg.endedAt === null) {
-      if (endSegment(seg.id, targetIso, "day_close", null)) changed++;
+      if (endSegment(seg.id, targetIso, "day_close", null)) {
+        changed++;
+        markItemTimeDirty(seg.itemId, seg.itemSource);
+      }
     } else if (DateTime.fromISO(seg.endedAt).toMillis() !== DateTime.fromISO(targetIso).toMillis() || seg.endReason !== "day_close") {
       realignSegmentEnd(seg.id, targetIso, "day_close");
       changed++;
+      markItemTimeDirty(seg.itemId, seg.itemSource);
     }
   }
   return changed;

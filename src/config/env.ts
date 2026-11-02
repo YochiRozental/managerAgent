@@ -29,6 +29,14 @@ const schema = z.object({
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
   TASK_TIMER_PILOT_USER_KEYS: z.string().default(""),
+  // סנכרון "זמן עבודה מצטבר" ל-Monday (2026-11-02) — כבוי כברירת מחדל, בלי תלות בדגל הטיימר עצמו.
+  // מזהי העמודות (מספר, שעות) נוצרו ב-Monday ב-2026-11-02; ניתנים לעקיפה, ומאומתים (type=numbers) לפני כתיבה.
+  TASK_TIMER_MONDAY_SYNC_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
+  TASK_TIMER_MONDAY_COLUMN_GENERAL: z.string().default("numeric_mm8q8czr"),
+  TASK_TIMER_MONDAY_COLUMN_STAGE: z.string().default("numeric_mm8qnjjb"),
   // Prompt Caching ל-Web Chat (2026-10-14, הורחב לכל המשתמשים 2026-10-18) — כבוי כברירת מחדל.
   // דגל גלובלי יחיד, בלי רשימת-פיילוט: כש-מופעל, כל משתמש ב-Web Chat מקבל אותה התנהגות (ר'
   // ops/chat.ts's promptCachingEnabled).

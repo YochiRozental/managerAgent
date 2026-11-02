@@ -21,14 +21,9 @@ import { logger } from "../utils/logger.js";
 import { attendanceEnabledForUser, getEffectiveAttendance } from "./attendance.js";
 import { computeDaySummary, workDateFor } from "./attendanceEngine.js";
 import { isExplicitConfirmation } from "./bulkUpdate.js";
-import {
-  effectiveMs,
-  formatDuration,
-  msToMinutes,
-  workIntervals,
-  workDateForInstant,
-  type Interval,
-} from "./taskTimerEngine.js";
+import { effectiveMs, formatDuration, msToMinutes, workDateForInstant, type Interval } from "./taskTimerEngine.js";
+import { makeIntervalsResolver } from "./taskTimerHours.js";
+import { markItemTimeDirty } from "./taskTimerSyncMark.js";
 import {
   clearPendingSwitch,
   endSegment,
@@ -90,19 +85,6 @@ function taskLabel(name: string, project: string | null): string {
   return project ? `'${name}' בפרויקט '${project}'` : `'${name}'`;
 }
 
-/** מקטעי העבודה של יום נוכחות (מטמון פר-קריאה). */
-function makeIntervalsResolver(userKey: string, asOfIso: string): (workDate: string) => Interval[] {
-  const cache = new Map<string, Interval[]>();
-  return (workDate) => {
-    let v = cache.get(workDate);
-    if (!v) {
-      v = workIntervals(getEffectiveAttendance(userKey, workDate).events, asOfIso);
-      cache.set(workDate, v);
-    }
-    return v;
-  };
-}
-
 function segmentMinutes(seg: TimerSegment, intervalsFor: (d: string) => Interval[], asOfIso: string): number {
   return msToMinutes(effectiveMs(seg, intervalsFor(seg.workDate), asOfIso));
 }
@@ -124,10 +106,12 @@ export function reconcileActiveTimer(userKey: string, now: DateTime): TimerSegme
   if (att.status === "closed" && lastOutAt) {
     const endMs = Math.max(DateTime.fromISO(active.startedAt).toMillis(), DateTime.fromISO(lastOutAt).toMillis());
     endSegment(active.id, DateTime.fromMillis(endMs, { zone: "utc" }).toISO()!, "day_close", null);
+    markItemTimeDirty(active.itemId, active.itemSource);
     return active;
   }
   if (active.workDate < workDateFor(localNow(now))) {
     endSegment(active.id, active.startedAt, "stale", null);
+    markItemTimeDirty(active.itemId, active.itemSource);
     return active;
   }
   return null;
@@ -223,6 +207,7 @@ export function confirmSwitch(user: IdentifiedUser, latestUserMessage: string, n
     const active = getActiveSegment(user.key);
     if (active) {
       endSegment(active.id, nowIso, "switched", `${user.key}:timer_switch:${messageSeed}`);
+      markItemTimeDirty(active.itemId, active.itemSource);
       const stopped = getSegmentByEndKey(`${user.key}:timer_switch:${messageSeed}`)!;
       const mins = segmentMinutes(stopped, makeIntervalsResolver(user.key, nowIso), nowIso);
       prefix = `עצרתי את הטיימר של '${active.taskName}' (${formatDuration(mins)}). `;
@@ -267,6 +252,7 @@ export function stopTimer(user: IdentifiedUser, now: DateTime, reason: "stopped"
     if (!active) return { ok: false, message: "אין כרגע טיימר פעיל." };
     const nowIso = toIso(local);
     endSegment(active.id, nowIso, reason, endKey);
+    markItemTimeDirty(active.itemId, active.itemSource);
     return { ok: true, message: stoppedMessage(getSegmentByEndKey(endKey)!, user.key, nowIso) };
   });
 }
@@ -282,6 +268,7 @@ export function stopTimerIfOnItem(userKey: string, itemId: string, now: DateTime
     const active = getActiveSegment(userKey);
     if (!active || active.itemId !== itemId) return null;
     endSegment(active.id, toIso(local), "done", `done:${active.id}`);
+    markItemTimeDirty(active.itemId, active.itemSource);
     return active;
   });
 }

@@ -68,6 +68,7 @@ import { listUnseenNotifications, listUnseenNotificationsByKind, markNotificatio
 import { publishNotificationLive } from "./notificationBus.js";
 import { logger } from "../utils/logger.js";
 import { alignTimersToDayClose } from "./taskTimerDayClose.js";
+import { markDayItemsDirty } from "./taskTimerSyncMark.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // שער ההפעלה
@@ -325,6 +326,10 @@ function recomputeAndPersistDay(userKey: string, workDate: string): StoredAttend
       logger.error({ err, userKey, workDate }, "סגירת תזכורות נוכחות אחרי סגירת יום נכשלה — רישום הנוכחות עצמו נשאר תקין");
     }
   }
+
+  // Task Timer → Monday: כל חישוב-מחדש של היום (סגירה, הפסקה, תיקון רטרואקטיבי של כניסה/יציאה/הפסקה)
+  // יכול לשנות את הזמן האפקטיבי של מקטעי טיימר סגורים — מסמנים אותם לסנכרון מחדש (best-effort, כבוי בדגל).
+  markDayItemsDirty(userKey, workDate);
 
   return day;
 }

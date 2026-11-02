@@ -505,3 +505,31 @@ CREATE TABLE IF NOT EXISTS task_timer_state (
   pending_expires_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- סנכרון "זמן עבודה מצטבר" ל-Monday (2026-11-02). כבוי כברירת מחדל (TASK_TIMER_MONDAY_SYNC_ENABLED).
+-- SQLite (task_timer_segments) הוא מקור האמת; כאן רק תור סנכרון פר-פריט. נכתב ל-Monday הסכום *הכולל*
+-- (כל העובדים, כל הימים, מקטעים סגורים בלבד), לעולם לא תוספת. version עולה בכל סימון "מלוכלך";
+-- סנכרון מסמן synced רק אם version עדיין שווה לזה שנתפס ב-claim — סנכרון ישן/מקביל לא יכול לסמן ערך
+-- ישן כעדכני (ר' ops/taskTimerSync.ts).
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_task_timer_item_only ON task_timer_segments (item_id);
+
+CREATE TABLE IF NOT EXISTS task_timer_sync (
+  item_id TEXT PRIMARY KEY,
+  item_source TEXT NOT NULL,            -- general | project_stage (קובע לוח + עמודה)
+  status TEXT NOT NULL DEFAULT 'dirty', -- dirty | syncing | synced | failed | dead
+  version INTEGER NOT NULL DEFAULT 1,
+  claimed_version INTEGER,
+  claim_id TEXT,
+  claimed_at TEXT,
+  last_value REAL,                      -- שעות (מעוגל, 2 ספרות) שנכתב לאחרונה ל-Monday
+  last_ms INTEGER,                      -- הדיוק המלא (ms) באותו רגע
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TEXT,
+  last_synced_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_timer_sync_status ON task_timer_sync (status, next_attempt_at);
